@@ -1,0 +1,17 @@
+[package]
+name = "velk-editor"
+description = "The Velk editor application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "velk"
+path = "src/main.rs"
+
+[dependencies]
+rxui.workspace = true
+
+[lints]
+workspace = true
