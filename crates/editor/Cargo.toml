@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 rxui.workspace = true
+velk-editor-widget.workspace = true
 
 [lints]
 workspace = true

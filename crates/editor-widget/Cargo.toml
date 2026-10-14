@@ -1,0 +1,15 @@
+[package]
+name = "velk-editor-widget"
+description = "A rope-backed RXUI text editor widget"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ropey.workspace = true
+rxui.workspace = true
+unicode-segmentation.workspace = true
+
+[lints]
+workspace = true

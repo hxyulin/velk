@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/editor"]
+members = ["crates/editor", "crates/editor-widget"]
 default-members = ["crates/editor"]
 resolver = "3"
 
@@ -10,6 +10,9 @@ rust-version = "1.99.0"
 publish = false
 
 [workspace.dependencies]
+velk-editor-widget = { path = "crates/editor-widget" }
+ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
+unicode-segmentation = "1.13.3"
 rxui = { git = "https://github.com/hxyulin/rxui", rev = "093d05d9a2fa5491c3cebe26be46b8720b4c6158", features = ["native"] }
 
 [workspace.lints.rust]
