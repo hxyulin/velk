@@ -4,6 +4,11 @@ mod blink;
 mod buffer;
 mod inline;
 mod surface;
+mod viewport;
+#[cfg(feature = "performance")]
+#[doc(hidden)]
+pub use viewport::CpuViewportProbe;
+pub use viewport::FrameMetrics;
 
 pub use annotations::{
     AnnotationError, Annotations, Color, EditorAppearance, HoverCard, LinePattern, OverlayKind,
@@ -12,7 +17,10 @@ pub use annotations::{
 pub use buffer::{Buffer, Selection};
 use rxui::{Bounds, prelude::*, standard_commands as commands};
 use std::{cell::RefCell, rc::Rc};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use surface::{Composition, Geometry, HoverHit, Surface};
 
 /// An editor view. Create a separate entity per window; document state can be
@@ -23,6 +31,7 @@ pub struct Editor {
     composition: Option<Composition>,
     geometry: Rc<RefCell<Geometry>>,
     epoch: u64,
+    input_started: Option<Instant>,
     reveal_caret: bool,
     annotations: Option<Arc<Annotations>>,
     appearance: EditorAppearance,
@@ -37,6 +46,11 @@ impl Editor {
             buffer: Buffer::new(text),
             ..Self::default()
         }
+    }
+
+    /// Preparation diagnostics from the most recent native frame.
+    pub fn frame_metrics(&self) -> FrameMetrics {
+        self.geometry.borrow().metrics
     }
 
     pub fn buffer(&self) -> &Buffer {
@@ -115,6 +129,7 @@ impl Editor {
     }
 
     pub fn insert(&mut self, text: &str) {
+        self.input_started = Some(Instant::now());
         self.composition = None;
         self.buffer.insert(text);
         self.edited();
@@ -134,6 +149,7 @@ impl Editor {
     }
 
     fn key(&mut self, event: &KeyInput, cx: &mut Context<'_, Self>) {
+        let input_started = Instant::now();
         let key = &event.event;
         if !key.pressed || self.composition.is_some() {
             return;
@@ -219,6 +235,7 @@ impl Editor {
             _ => false,
         };
         if handled {
+            self.input_started = Some(input_started);
             event.prevent_default();
             self.edited();
         } else if !had_hover {
@@ -233,8 +250,10 @@ impl Editor {
         if drag && !event.buttons.contains(PointerButton::Primary) {
             return;
         }
+        let input_started = Instant::now();
         let position = self.geometry.borrow().hit(event.local_position);
         if let Some(position) = position {
+            self.input_started = Some(input_started);
             self.buffer
                 .set_caret(position, drag || event.modifiers.shift);
             self.composition = None;
@@ -273,6 +292,7 @@ impl View for Editor {
             .shortcut(Shortcut::primary("c"));
         let cut = cx
             .command(commands::Cut, |this, _, cx| {
+                this.input_started = Some(Instant::now());
                 match cx.write_clipboard_text(this.buffer.selected_text()) {
                     Ok(()) => {
                         this.composition = None;
@@ -286,6 +306,7 @@ impl View for Editor {
             .shortcut(Shortcut::primary("x"));
         let undo = cx
             .command(commands::Undo, |this, _, _| {
+                this.input_started = Some(Instant::now());
                 this.buffer.undo();
                 this.edited();
             })
@@ -293,6 +314,7 @@ impl View for Editor {
             .shortcut(Shortcut::primary("z"));
         let redo = cx
             .command(commands::Redo, |this, _, _| {
+                this.input_started = Some(Instant::now());
                 this.buffer.redo();
                 this.edited();
             })
@@ -301,23 +323,25 @@ impl View for Editor {
             .shortcut(Shortcut::primary("y"));
         let select_all = cx
             .command(commands::SelectAll, |this, _, _| {
+                this.input_started = Some(Instant::now());
                 this.buffer.select_all();
                 this.edited();
             })
             .enabled(self.composition.is_none())
             .shortcut(Shortcut::primary("a"));
-        let surface = rxui::custom(Surface {
+        let surface = rxui::custom(viewport::ViewportSurface(Surface {
             rope: self.buffer.text().clone(),
             revision: self.buffer.revision(),
             selection: self.buffer.selection(),
             composition: self.composition.clone(),
             geometry: self.geometry.clone(),
             epoch: self.epoch,
+            input_started: self.input_started,
             reveal_caret: self.reveal_caret,
             caret_visible,
             annotations: self.annotations.clone(),
             selection_color: self.appearance.selection,
-        })
+        }))
         .key("editor-surface")
         .fill_width()
         .fill_height()
@@ -348,6 +372,7 @@ impl View for Editor {
         .on_pointer_up(cx.listener(|_, event: &PointerInput, _| event.release_pointer()))
         .on_text_insert(cx.listener(|this, event: &TextInsertInput, _| this.insert(&event.text)))
         .on_ime(cx.listener(|this, event: &ImeInput, _| {
+            this.input_started = Some(Instant::now());
             this.composition = match &event.event {
                 ImeEvent::Preedit { text, cursor } => Some(Composition {
                     text: text.clone(),
@@ -359,6 +384,7 @@ impl View for Editor {
         }))
         .on_wheel(cx.listener(|this, event: &WheelInput, _| {
             this.hide_hover();
+            this.input_started = Some(Instant::now());
             this.geometry.borrow_mut().scroll(event.delta);
             this.epoch += 1;
             this.reveal_caret = false;

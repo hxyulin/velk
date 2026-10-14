@@ -1,0 +1,896 @@
+//! Bounded logical-line layout and GPU cache. Document positions stay in the Rope.
+use crate::{
+    Annotations, Selection,
+    surface::{Geometry, LINE_HEIGHT, PADDING, Surface, SurfaceState},
+};
+use ropey::Rope;
+use rxui::astrelis::{PaintSession, Rect, TextSystem};
+use rxui::{CustomElement, CustomPrepare, ElementInfo, UiError};
+use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, time::Instant};
+
+const CACHE_LIMIT: usize = 256;
+const OVERSCAN: usize = 4;
+
+/// CPU/GPU preparation diagnostics for the most recently prepared frame.
+/// GPU preparation is CPU submission/resource work, not GPU execution time.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameMetrics {
+    pub visible_lines: usize,
+    pub cached_lines: usize,
+    pub cached_source_bytes: usize,
+    pub shaped_lines: usize,
+    pub cache_hits: usize,
+    pub gpu_prepared_lines: usize,
+    pub annotation_index_ms: f64,
+    pub cpu_layout_ms: f64,
+    pub gpu_prepare_ms: f64,
+    pub total_prepare_ms: f64,
+    pub paint_record_ms: f64,
+    /// Native dispatch to completed preparation; excludes GPU execution/presentation.
+    pub input_to_prepare_ms: Option<f64>,
+    pub composition_fallback: bool,
+}
+
+pub(super) struct LineHit {
+    pub top: f32,
+    pub start_char: usize,
+    pub geometry: Rc<RefCell<Geometry>>,
+}
+
+/// A Fenwick tree of deviations from the default line height. No document
+/// strings or shaped glyphs are retained here. Lookups and updates are O(log N).
+struct Heights {
+    values: Vec<f32>,
+    tree: Vec<f32>,
+}
+impl Heights {
+    fn new(count: usize) -> Self {
+        Self {
+            values: vec![LINE_HEIGHT; count],
+            tree: vec![0.; count + 1],
+        }
+    }
+    fn top(&self, line: usize) -> f32 {
+        let mut sum = line as f32 * LINE_HEIGHT;
+        let mut index = line;
+        while index > 0 {
+            sum += self.tree[index];
+            index &= index - 1;
+        }
+        sum
+    }
+    fn set(&mut self, line: usize, height: f32) {
+        let delta = height - self.values[line];
+        self.values[line] = height;
+        let mut index = line + 1;
+        while index < self.tree.len() {
+            self.tree[index] += delta;
+            index += index.isolate_lowest_one();
+        }
+    }
+    fn line_at(&self, y: f32) -> usize {
+        // Prefix lookup with binary lifting, including each node's base height.
+        let mut index = 0;
+        let mut sum = 0.;
+        let mut step = self.values.len().next_power_of_two();
+        while step > 0 {
+            let next = index + step;
+            if next < self.tree.len() {
+                let height = self.tree[next] + next.isolate_lowest_one() as f32 * LINE_HEIGHT;
+                if sum + height <= y {
+                    index = next;
+                    sum += height;
+                }
+            }
+            step >>= 1;
+        }
+        index.min(self.values.len() - 1)
+    }
+}
+
+#[derive(Default)]
+struct AnnotationIndex {
+    snapshot: Option<Arc<Annotations>>,
+    spans: Vec<(usize, usize, usize)>,
+    // Augmented interval tree skips complete subtrees whose ranges end before
+    // the queried line, even with a document-wide span overlapping local spans.
+    max_end: Vec<usize>,
+    leaves: usize,
+    overlays: Vec<(usize, usize)>,
+    line_count: usize,
+}
+impl AnnotationIndex {
+    fn update(&mut self, annotations: &Option<Arc<Annotations>>, rope: &Rope) -> bool {
+        if match (&self.snapshot, annotations) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        } {
+            return false;
+        }
+        self.snapshot = annotations.clone();
+        self.line_count = rope.len_lines();
+        self.spans.clear();
+        self.overlays.clear();
+        if let Some(annotations) = annotations {
+            self.spans.extend(
+                annotations
+                    .spans
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !s.range.is_empty())
+                    .map(|(id, s)| (s.range.start, s.range.end, id)),
+            );
+            self.spans.sort_by_key(|s| s.0);
+            self.overlays.extend(
+                annotations
+                    .overlays
+                    .iter()
+                    .enumerate()
+                    .map(|(id, o)| (o.anchor, id)),
+            );
+            self.overlays.sort_by_key(|o| o.0);
+        }
+        self.leaves = self.spans.len().max(1).next_power_of_two();
+        self.max_end.clear();
+        self.max_end.resize(self.leaves * 2, 0);
+        for (index, span) in self.spans.iter().enumerate() {
+            self.max_end[self.leaves + index] = span.1;
+        }
+        for index in (1..self.leaves).rev() {
+            self.max_end[index] = self.max_end[index * 2].max(self.max_end[index * 2 + 1]);
+        }
+        true
+    }
+    fn span_ids(&self, range: &Range<usize>) -> Vec<usize> {
+        if self.spans.is_empty() {
+            return Vec::new();
+        }
+        let end = self.spans.partition_point(|span| span.0 < range.end);
+        let mut ids = Vec::new();
+        let mut stack = vec![(1, 0, self.leaves)];
+        while let Some((node, start, stop)) = stack.pop() {
+            if start >= end || self.max_end[node] <= range.start {
+                continue;
+            }
+            if stop - start == 1 {
+                ids.push(self.spans[start].2);
+            } else {
+                let middle = (start + stop) / 2;
+                stack.push((node * 2 + 1, middle, stop));
+                stack.push((node * 2, start, middle));
+            }
+        }
+        ids.sort_unstable();
+        ids
+    }
+    fn overlay_ids(&self, line: usize, range: &Range<usize>) -> Vec<usize> {
+        let start = self.overlays.partition_point(|o| o.0 < range.start);
+        let end = self.overlays.partition_point(|o| {
+            o.0 < range.end || line + 1 == self.line_count && o.0 == range.end
+        });
+        let mut ids = self.overlays[start..end]
+            .iter()
+            .map(|o| o.1)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+    fn line(&self, line: usize, range: Range<usize>) -> Option<Arc<Annotations>> {
+        let annotations = self.snapshot.as_ref()?;
+        let spans = self
+            .span_ids(&range)
+            .into_iter()
+            .map(|id| {
+                let mut span = annotations.spans[id].clone();
+                span.range = span.range.start.max(range.start) - range.start
+                    ..span.range.end.min(range.end) - range.start;
+                span
+            })
+            .collect::<Vec<_>>();
+        let overlays = self
+            .overlay_ids(line, &range)
+            .into_iter()
+            .map(|id| {
+                let mut overlay = annotations.overlays[id].clone();
+                overlay.anchor -= range.start;
+                overlay
+            })
+            .collect::<Vec<_>>();
+        if spans.is_empty() && overlays.is_empty() {
+            None
+        } else {
+            Some(Arc::new(Annotations {
+                document_revision: 0,
+                spans,
+                overlays,
+            }))
+        }
+    }
+    fn hover_id(&self, line: usize, range: Range<usize>, local_id: usize) -> usize {
+        let ids = self.span_ids(&range);
+        if let Some(&id) = ids.get(local_id) {
+            id
+        } else {
+            self.snapshot.as_ref().unwrap().spans.len()
+                + self.overlay_ids(line, &range)[local_id - ids.len()]
+        }
+    }
+}
+
+struct CachedLine {
+    text: String,
+    surface: Surface,
+    state: SurfaceState,
+    used: u64,
+    gpu_dirty: bool,
+}
+
+pub(crate) struct ViewportSurface(pub Surface);
+impl PartialEq for ViewportSurface {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+pub(crate) struct ViewportState {
+    cache: HashMap<usize, CachedLine>,
+    index: AnnotationIndex,
+    heights: Heights,
+    revision: Option<u64>,
+    frame: u64,
+    visible: Range<usize>,
+    fallback: SurfaceState,
+    metrics: FrameMetrics,
+    was_composing: bool,
+}
+impl Default for ViewportState {
+    fn default() -> Self {
+        Self {
+            cache: HashMap::new(),
+            index: AnnotationIndex::default(),
+            heights: Heights::new(1),
+            revision: None,
+            frame: 0,
+            visible: 0..0,
+            fallback: SurfaceState::default(),
+            metrics: FrameMetrics::default(),
+            was_composing: false,
+        }
+    }
+}
+
+impl ViewportState {
+    fn prepare_line(
+        &mut self,
+        surface: &Surface,
+        line: usize,
+        width: f32,
+        fonts: &mut TextSystem,
+    ) -> Result<(), UiError> {
+        let start = surface.rope.line_to_char(line);
+        let slice = surface.rope.line(line);
+        let text = slice.to_string();
+        let text = text.strip_suffix('\n').unwrap_or(&text).to_owned();
+        let range = start..start + slice.len_chars();
+        let annotations = self.index.line(line, range);
+        let selection = surface.selection;
+        let length = text.chars().count();
+        let clamp = |position: usize| position.saturating_sub(start).min(length);
+        let entry = self.cache.entry(line).or_insert_with(|| CachedLine {
+            text: String::new(),
+            surface: Surface {
+                rope: Rope::new(),
+                revision: 0,
+                selection: Selection::default(),
+                composition: None,
+                geometry: Rc::new(RefCell::new(Geometry::default())),
+                epoch: 0,
+                input_started: None,
+                reveal_caret: false,
+                caret_visible: false,
+                annotations: None,
+                selection_color: surface.selection_color,
+            },
+            state: SurfaceState::default(),
+            used: 0,
+            gpu_dirty: true,
+        });
+        if entry.text != text {
+            entry.surface.rope = Rope::from_str(&text);
+            entry.surface.revision += 1;
+            entry.text = text;
+        }
+        let annotations = annotations.map(|a| {
+            let mut a = (*a).clone();
+            for span in &mut a.spans {
+                span.range.end = span.range.end.min(length);
+                span.range.start = span.range.start.min(length);
+            }
+            Arc::new(a)
+        });
+        if entry.surface.annotations.as_deref() != annotations.as_deref() {
+            entry.surface.annotations = annotations;
+        }
+        entry.surface.selection = Selection {
+            anchor: clamp(selection.anchor),
+            head: clamp(selection.head),
+        };
+        entry.surface.selection_color = surface.selection_color;
+        entry.surface.caret_visible =
+            surface.caret_visible && surface.rope.char_to_line(selection.head) == line;
+        entry.surface.epoch = surface.epoch;
+        entry.used = self.frame;
+        let shaped = entry.surface.shape(&mut entry.state, width, fonts)?;
+        if shaped {
+            self.metrics.shaped_lines += 1;
+            entry.gpu_dirty = true;
+        } else {
+            self.metrics.cache_hits += 1;
+        }
+        let layout = entry.surface.layout(&entry.state);
+        self.heights.set(line, layout.size()[1].max(LINE_HEIGHT));
+        Ok(())
+    }
+    fn prepare_cpu(
+        &mut self,
+        surface: &Surface,
+        viewport: [f32; 2],
+        fonts: &mut TextSystem,
+    ) -> Result<(), UiError> {
+        self.metrics = FrameMetrics::default();
+        self.frame += 1;
+        let started = Instant::now();
+        let document_changed = self.revision != Some(surface.revision);
+        let index_changed = self.index.update(&surface.annotations, &surface.rope);
+        self.metrics.annotation_index_ms = started.elapsed().as_secs_f64() * 1000.;
+        let mut geometry = surface.geometry.borrow_mut();
+        geometry.layout = None;
+        geometry.viewport = viewport;
+        let old_line = self.heights.line_at(geometry.offset[1]);
+        let intra = geometry.offset[1] - self.heights.top(old_line);
+        if self.heights.values.len() != surface.rope.len_lines() || index_changed {
+            self.heights = Heights::new(surface.rope.len_lines());
+        }
+        if document_changed {
+            self.cache
+                .retain(|&line, _| line < surface.rope.len_lines());
+        }
+        self.revision = Some(surface.revision);
+        let width = (viewport[0] - PADDING * 2.).max(0.);
+        let started = Instant::now();
+        // Shape the caret line even when it is offscreen so document-edge and
+        // keyboard navigation can reveal exact caret geometry without a scan.
+        let caret_line = surface.rope.char_to_line(surface.selection.head);
+        self.prepare_line(surface, caret_line, width, fonts)?;
+        if surface.reveal_caret && geometry.epoch != Some(surface.epoch) {
+            let entry = &self.cache[&caret_line];
+            let local = entry
+                .surface
+                .rope
+                .char_to_byte(entry.surface.selection.head);
+            let position = entry
+                .surface
+                .layout(&entry.state)
+                .caret(rxui::astrelis::TextPosition::new(
+                    entry.state_projection(local),
+                ))
+                .unwrap();
+            geometry.caret = Some(Rect::new(
+                position.origin[0],
+                self.heights.top(caret_line) + position.origin[1],
+                1.5,
+                position.height,
+            ));
+            geometry.content_size[1] = self.heights.top(self.heights.values.len());
+            geometry.reveal();
+        }
+        let start = self
+            .heights
+            .line_at(geometry.offset[1])
+            .saturating_sub(OVERSCAN);
+        let end = (self.heights.line_at(geometry.offset[1] + viewport[1]) + OVERSCAN + 1)
+            .min(surface.rope.len_lines());
+        self.visible = start..end;
+        for line in self.visible.clone() {
+            if line != caret_line {
+                self.prepare_line(surface, line, width, fonts)?;
+            }
+        }
+        // Preserve the top source line as exact mixed-size measurements replace
+        // estimates. Explicit caret reveal takes precedence over scroll anchoring.
+        if !surface.reveal_caret || geometry.epoch == Some(surface.epoch) {
+            geometry.offset[1] =
+                self.heights.top(old_line.min(surface.rope.len_lines() - 1)) + intra;
+        }
+        if self.cache.len() > CACHE_LIMIT {
+            let mut old = self
+                .cache
+                .iter()
+                .filter(|(line, _)| !self.visible.contains(line) && **line != caret_line)
+                .map(|(&line, e)| (e.used, line))
+                .collect::<Vec<_>>();
+            old.sort_unstable();
+            for (_, line) in old.into_iter().take(self.cache.len() - CACHE_LIMIT) {
+                self.cache.remove(&line);
+            }
+        }
+        geometry.content_size = [
+            self.cache
+                .values()
+                .map(|e| {
+                    e.surface.layout(&e.state).size()[0]
+                        .max(e.surface.geometry.borrow().content_size[0])
+                })
+                .fold(viewport[0] - PADDING * 2., f32::max),
+            self.heights.top(surface.rope.len_lines()),
+        ];
+        geometry.clamp_scroll();
+        self.metrics.visible_lines = self.visible.len();
+        self.metrics.cached_lines = self.cache.len();
+        self.metrics.cached_source_bytes = self.cache.values().map(|entry| entry.text.len()).sum();
+        self.metrics.cpu_layout_ms = started.elapsed().as_secs_f64() * 1000.;
+        Ok(())
+    }
+}
+impl CachedLine {
+    fn state_projection(&self, byte: usize) -> usize {
+        self.state.project_caret(byte)
+    }
+}
+
+impl CustomElement for ViewportSurface {
+    type State = ViewportState;
+    fn prepare(
+        &self,
+        state: &mut ViewportState,
+        element: &ElementInfo<'_>,
+        cx: &mut CustomPrepare<'_>,
+    ) -> Result<(), UiError> {
+        let started = Instant::now();
+        let surface = &self.0;
+        if surface.composition.is_some() {
+            state.was_composing = true;
+            surface.geometry.borrow_mut().lines.clear();
+            surface.prepare(&mut state.fallback, element, cx)?;
+            let metrics = FrameMetrics {
+                composition_fallback: true,
+                total_prepare_ms: started.elapsed().as_secs_f64() * 1000.,
+                ..FrameMetrics::default()
+            };
+            surface.geometry.borrow_mut().metrics = metrics;
+            if std::env::var_os("VELK_PROFILE").is_some() {
+                eprintln!("Velk frame: {metrics:?}");
+            }
+            return Ok(());
+        }
+        if state.was_composing {
+            state.fallback = SurfaceState::default();
+            state.was_composing = false;
+        }
+        state.prepare_cpu(
+            surface,
+            [element.bounds.width, element.bounds.height],
+            cx.fonts,
+        )?;
+        let mut geometry = surface.geometry.borrow_mut();
+        geometry.lines.clear();
+        geometry.hover_regions.clear();
+        geometry.origin = [element.bounds.x, element.bounds.y];
+        geometry.rope = surface.rope.clone();
+        geometry.focused = element.focused;
+        let started_gpu = Instant::now();
+        for line in state.visible.clone() {
+            let entry = state.cache.get_mut(&line).unwrap();
+            let gpu_dirty = entry.gpu_dirty || entry.last_raster() != cx.raster_scale;
+            entry.surface.prepare(&mut entry.state, element, cx)?;
+            if gpu_dirty {
+                state.metrics.gpu_prepared_lines += 1;
+            }
+            entry.gpu_dirty = false;
+            let top = state.heights.top(line);
+            let start_char = surface.rope.line_to_char(line);
+            let mut local = entry.surface.geometry.borrow_mut();
+            local.offset = [0.; 2];
+            geometry.content_size[0] = geometry.content_size[0].max(local.content_size[0]);
+            for hit in &local.hover_regions {
+                let mut hit = hit.clone();
+                hit.id = state.index.hover_id(
+                    line,
+                    start_char..start_char + surface.rope.line(line).len_chars(),
+                    hit.id,
+                );
+                hit.rect.y += top;
+                geometry.hover_regions.push(hit);
+            }
+            if line == surface.rope.char_to_line(surface.selection.head) {
+                geometry.caret = local.caret.map(|mut rect| {
+                    rect.y += top;
+                    rect
+                });
+            }
+            geometry.lines.push(LineHit {
+                top,
+                start_char,
+                geometry: entry.surface.geometry.clone(),
+            });
+        }
+        state.metrics.gpu_prepare_ms = started_gpu.elapsed().as_secs_f64() * 1000.;
+        state.metrics.total_prepare_ms = started.elapsed().as_secs_f64() * 1000.;
+        geometry.epoch = Some(surface.epoch);
+        if surface.input_started != geometry.last_input {
+            state.metrics.input_to_prepare_ms = surface
+                .input_started
+                .map(|start| start.elapsed().as_secs_f64() * 1000.);
+            geometry.last_input = surface.input_started;
+        }
+        geometry.metrics = state.metrics;
+        if std::env::var_os("VELK_PROFILE").is_some() {
+            eprintln!("Velk frame: {:?}", state.metrics);
+        }
+        Ok(())
+    }
+    fn paint(
+        &self,
+        state: &ViewportState,
+        element: &ElementInfo<'_>,
+        paint: &mut PaintSession<'_, '_>,
+    ) -> Result<(), UiError> {
+        if self.0.composition.is_some() {
+            return self.0.paint(&state.fallback, element, paint);
+        }
+        let started = Instant::now();
+        let geometry = self.0.geometry.borrow();
+        for line in state.visible.clone() {
+            let entry = &state.cache[&line];
+            let top = state.heights.top(line);
+            let bottom = top + state.heights.values[line];
+            if bottom < geometry.offset[1] || top > geometry.offset[1] + geometry.viewport[1] {
+                continue;
+            }
+            let origin = [
+                element.bounds.x + PADDING - geometry.offset[0],
+                element.bounds.y + PADDING + top - geometry.offset[1],
+            ];
+            if entry.text.is_empty() {
+                for span in entry.surface.annotations.iter().flat_map(|a| &a.spans) {
+                    if span.style.full_line_background
+                        && let Some(color) = span.style.background
+                    {
+                        paint.fill_rect(
+                            Rect::new(
+                                element.bounds.x,
+                                origin[1],
+                                element.bounds.width,
+                                state.heights.values[line],
+                            ),
+                            color,
+                        )?;
+                    }
+                }
+            }
+            let source_start = self.0.rope.line_to_char(line);
+            let lf = source_start + entry.surface.rope.len_chars();
+            let selected = self.0.selection.range();
+            if line + 1 < self.0.rope.len_lines() && selected.start <= lf && selected.end > lf {
+                let position = entry
+                    .surface
+                    .layout(&entry.state)
+                    .caret(rxui::astrelis::TextPosition::new(
+                        entry.state_projection(entry.text.len()),
+                    ))
+                    .unwrap();
+                paint.fill_rect(
+                    Rect::new(
+                        origin[0] + position.origin[0],
+                        origin[1],
+                        4.,
+                        state.heights.values[line],
+                    ),
+                    self.0.selection_color,
+                )?;
+            }
+            entry
+                .surface
+                .paint_at(&entry.state, element, paint, origin)?;
+        }
+        drop(geometry);
+        let elapsed = started.elapsed().as_secs_f64() * 1000.;
+        self.0.geometry.borrow_mut().metrics.paint_record_ms = elapsed;
+        if std::env::var_os("VELK_PROFILE").is_some() {
+            eprintln!("Velk paint record: {elapsed:.6} ms");
+        }
+        Ok(())
+    }
+}
+impl CachedLine {
+    fn last_raster(&self) -> f32 {
+        self.state.raster_scale()
+    }
+}
+
+/// CPU-only probe for the benchmark feature. It runs the same line cache and
+/// projection/shaping path as the native widget, without GPU resources.
+#[cfg(feature = "performance")]
+pub struct CpuViewportProbe {
+    surface: Surface,
+    state: ViewportState,
+    fonts: TextSystem,
+}
+#[cfg(feature = "performance")]
+impl CpuViewportProbe {
+    pub fn new(rope: Rope) -> Self {
+        let mut fonts = TextSystem::new();
+        assert!(
+            !fonts.load_system_fonts().is_empty(),
+            "benchmark requires installed fonts"
+        );
+        Self {
+            surface: Surface {
+                rope,
+                revision: 0,
+                selection: Selection::default(),
+                composition: None,
+                geometry: Rc::new(RefCell::new(Geometry::default())),
+                epoch: 0,
+                input_started: None,
+                reveal_caret: false,
+                caret_visible: true,
+                annotations: None,
+                selection_color: [0.; 4],
+            },
+            state: ViewportState::default(),
+            fonts,
+        }
+    }
+    pub fn reset_cache(&mut self) {
+        self.state = ViewportState::default();
+    }
+    pub fn set_document(&mut self, rope: Rope, revision: u64) {
+        self.surface.rope = rope;
+        self.surface.revision = revision;
+    }
+    pub fn set_annotations(&mut self, annotations: Option<Arc<Annotations>>) {
+        self.surface.annotations = annotations;
+    }
+    pub fn set_caret(&mut self, position: usize) {
+        self.surface.selection = Selection {
+            anchor: position,
+            head: position,
+        };
+    }
+    pub fn prepare(&mut self, viewport: [f32; 2], scroll_y: f32) -> FrameMetrics {
+        self.surface.geometry.borrow_mut().offset[1] = scroll_y;
+        let started = Instant::now();
+        self.state
+            .prepare_cpu(&self.surface, viewport, &mut self.fonts)
+            .unwrap();
+        self.state.metrics.total_prepare_ms = started.elapsed().as_secs_f64() * 1000.;
+        self.state.metrics
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{OverlayKind, OverlayPlacement, SpanStyle, StyledRange, TextOverlay};
+    fn surface(source: &str) -> Surface {
+        Surface {
+            rope: Rope::from_str(source),
+            revision: 0,
+            selection: Selection::default(),
+            composition: None,
+            geometry: Rc::new(RefCell::new(Geometry::default())),
+            epoch: 0,
+            input_started: None,
+            reveal_caret: false,
+            caret_visible: true,
+            annotations: None,
+            selection_color: [0.; 4],
+        }
+    }
+    fn fonts() -> Option<TextSystem> {
+        let mut fonts = TextSystem::new();
+        if fonts.load_system_fonts().is_empty() {
+            None
+        } else {
+            Some(fonts)
+        }
+    }
+    #[test]
+    fn interval_queries_match_provider_order_with_document_wide_overlaps() {
+        let mut surface = surface(&"x\n".repeat(1000));
+        let mut annotations = Annotations::default();
+        annotations
+            .spans
+            .push(StyledRange::new(0..2000, SpanStyle::default()));
+        for line in (0..1000).rev() {
+            annotations.spans.push(StyledRange::new(
+                line * 2..line * 2 + 1,
+                SpanStyle::default(),
+            ));
+        }
+        surface.annotations = Some(Arc::new(annotations));
+        let mut index = AnnotationIndex::default();
+        index.update(&surface.annotations, &surface.rope);
+        for line in [0, 1, 500, 999] {
+            let range = line * 2..line * 2 + 2;
+            let expected = surface
+                .annotations
+                .as_ref()
+                .unwrap()
+                .spans
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.range.start < range.end && s.range.end > range.start)
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>();
+            assert_eq!(index.span_ids(&range), expected);
+        }
+    }
+    #[test]
+    fn eof_hints_belong_to_final_empty_line_after_lf() {
+        let mut surface = surface("x\n");
+        surface.annotations = Some(Arc::new(Annotations {
+            document_revision: 0,
+            spans: Vec::new(),
+            overlays: vec![TextOverlay {
+                anchor: 2,
+                text: "end".into(),
+                kind: OverlayKind::InlayHint,
+                placement: OverlayPlacement::Inline,
+                foreground: [1.; 4],
+                background: None,
+                hover: None,
+            }],
+        }));
+        let mut index = AnnotationIndex::default();
+        index.update(&surface.annotations, &surface.rope);
+        assert!(index.line(0, 0..2).is_none());
+        assert_eq!(index.line(1, 2..2).unwrap().overlays[0].anchor, 0);
+    }
+    #[test]
+    fn heights_find_mixed_size_lines_and_update_prefixes() {
+        let mut heights = Heights::new(10);
+        heights.set(2, 48.);
+        heights.set(5, 72.);
+        assert_eq!(heights.top(3), 96.);
+        assert_eq!(heights.top(10), 312.);
+        for line in 0..10 {
+            assert_eq!(heights.line_at(heights.top(line)), line);
+            assert_eq!(heights.line_at(heights.top(line) + 1.), line);
+        }
+        assert_eq!(heights.line_at(10000.), 9);
+        heights.set(2, 24.);
+        assert_eq!(heights.top(3), 72.);
+    }
+    #[test]
+    fn interval_index_preserves_provider_order_and_anchor_line() {
+        let mut surface = surface("one\ntwo\nthree");
+        surface.annotations = Some(Arc::new(Annotations {
+            document_revision: 0,
+            spans: vec![
+                StyledRange::new(4..7, SpanStyle::default()),
+                StyledRange::new(0..13, SpanStyle::default()),
+                StyledRange::new(8..13, SpanStyle::default()),
+            ],
+            overlays: vec![TextOverlay {
+                anchor: 4,
+                text: ": hint".into(),
+                kind: OverlayKind::InlayHint,
+                placement: OverlayPlacement::Inline,
+                foreground: [1.; 4],
+                background: None,
+                hover: None,
+            }],
+        }));
+        let mut index = AnnotationIndex::default();
+        index.update(&surface.annotations, &surface.rope);
+        let line = index.line(1, 4..8).unwrap();
+        assert_eq!(line.spans[0].range, 0..3);
+        assert_eq!(line.spans[1].range, 0..4);
+        assert_eq!(line.overlays[0].anchor, 0);
+        assert_eq!(index.hover_id(1, 4..8, 0), 0);
+        assert_eq!(index.hover_id(1, 4..8, 1), 1);
+        assert_eq!(index.hover_id(1, 4..8, 2), 3);
+    }
+    #[test]
+    fn caret_and_single_line_edits_reuse_unaffected_layouts() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut surface = surface(&"let value = 42;\n".repeat(10000));
+        let mut state = ViewportState::default();
+        state
+            .prepare_cpu(&surface, [800., 600.], &mut fonts)
+            .unwrap();
+        assert!(state.metrics.shaped_lines < 40);
+        let unchanged = state.cache[&3]
+            .surface
+            .layout(&state.cache[&3].state)
+            .clone();
+        surface.selection = Selection { anchor: 3, head: 3 };
+        state
+            .prepare_cpu(&surface, [800., 600.], &mut fonts)
+            .unwrap();
+        assert_eq!(state.metrics.shaped_lines, 0);
+        surface.rope.insert(2, "x");
+        surface.revision += 1;
+        state
+            .prepare_cpu(&surface, [800., 600.], &mut fonts)
+            .unwrap();
+        assert_eq!(state.metrics.shaped_lines, 1);
+        assert!(Arc::ptr_eq(
+            &unchanged,
+            state.cache[&3].surface.layout(&state.cache[&3].state)
+        ));
+    }
+    #[test]
+    fn equal_annotations_reuse_inline_projection_and_changed_line_only_reshapes() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut surface = surface("let x = 1;\nlet y = 2;\n");
+        let make = |color| {
+            Arc::new(Annotations {
+                document_revision: 0,
+                spans: vec![StyledRange::new(
+                    0..11,
+                    SpanStyle {
+                        foreground: Some(color),
+                        ..SpanStyle::default()
+                    },
+                )],
+                overlays: vec![TextOverlay {
+                    anchor: 5,
+                    text: ": i32".into(),
+                    kind: OverlayKind::InlayHint,
+                    placement: OverlayPlacement::Inline,
+                    foreground: [1.; 4],
+                    background: None,
+                    hover: None,
+                }],
+            })
+        };
+        surface.annotations = Some(make([1.; 4]));
+        let mut state = ViewportState::default();
+        state
+            .prepare_cpu(&surface, [800., 600.], &mut fonts)
+            .unwrap();
+        state
+            .prepare_cpu(&surface, [800., 600.], &mut fonts)
+            .unwrap();
+        assert_eq!(state.metrics.shaped_lines, 0);
+        surface.annotations = Some(make([1.; 4]));
+        state
+            .prepare_cpu(&surface, [800., 600.], &mut fonts)
+            .unwrap();
+        assert_eq!(state.metrics.shaped_lines, 0);
+        surface.annotations = Some(make([0.5; 4]));
+        state
+            .prepare_cpu(&surface, [800., 600.], &mut fonts)
+            .unwrap();
+        assert_eq!(state.metrics.shaped_lines, 1);
+    }
+    #[test]
+    fn scrolling_keeps_cache_bounded_and_document_end_reachable() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let surface = surface(&"hello\n".repeat(10000));
+        let mut state = ViewportState::default();
+        for line in (0..10000).step_by(100) {
+            surface.geometry.borrow_mut().offset[1] = line as f32 * LINE_HEIGHT;
+            state
+                .prepare_cpu(&surface, [800., 600.], &mut fonts)
+                .unwrap();
+            assert!(state.cache.len() <= CACHE_LIMIT);
+        }
+        surface.geometry.borrow_mut().offset[1] = 240000.;
+        state
+            .prepare_cpu(&surface, [800., 600.], &mut fonts)
+            .unwrap();
+        assert_eq!(state.visible.end, 10001);
+        assert!(surface.geometry.borrow().offset[1] > 239000.);
+    }
+}

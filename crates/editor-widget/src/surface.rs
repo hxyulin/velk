@@ -12,8 +12,8 @@ use rxui::astrelis::{
 use rxui::{Bounds, CustomElement, CustomPrepare, ElementInfo, UiError};
 use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
 
-const PADDING: f32 = 16.;
-const LINE_HEIGHT: f32 = 24.;
+pub(crate) const PADDING: f32 = 16.;
+pub(crate) const LINE_HEIGHT: f32 = 24.;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Composition {
@@ -24,18 +24,21 @@ pub(crate) struct Composition {
 /// The shaped snapshot used by pointer events and the IME candidate window.
 #[derive(Default)]
 pub(crate) struct Geometry {
-    layout: Option<Arc<TextLayout>>,
-    rope: Rope,
-    replacement: Option<(Range<usize>, usize)>,
-    projection: InlineProjection,
-    offset: [f32; 2],
-    viewport: [f32; 2],
-    caret: Option<Rect>,
+    pub(super) layout: Option<Arc<TextLayout>>,
+    pub(super) rope: Rope,
+    pub(super) replacement: Option<(Range<usize>, usize)>,
+    pub(super) projection: InlineProjection,
+    pub(super) offset: [f32; 2],
+    pub(super) viewport: [f32; 2],
+    pub(super) caret: Option<Rect>,
     pub epoch: Option<u64>,
     pub focused: bool,
-    origin: [f32; 2],
-    content_size: [f32; 2],
-    hover_regions: Vec<HoverRegion>,
+    pub(super) origin: [f32; 2],
+    pub(super) content_size: [f32; 2],
+    pub(super) hover_regions: Vec<HoverRegion>,
+    pub(super) lines: Vec<crate::viewport::LineHit>,
+    pub(super) metrics: crate::viewport::FrameMetrics,
+    pub(super) last_input: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,10 +49,10 @@ pub(crate) struct HoverHit {
 }
 
 #[derive(Clone)]
-struct HoverRegion {
-    id: usize,
-    rect: Rect,
-    card: HoverCard,
+pub(super) struct HoverRegion {
+    pub(super) id: usize,
+    pub(super) rect: Rect,
+    pub(super) card: HoverCard,
 }
 
 impl Geometry {
@@ -95,6 +98,22 @@ impl Geometry {
     }
 
     pub fn hit(&self, point: [f32; 2]) -> Option<usize> {
+        if !self.lines.is_empty() {
+            let y = point[1] - PADDING + self.offset[1];
+            let index = self
+                .lines
+                .partition_point(|line| line.top <= y)
+                .saturating_sub(1);
+            let line = &self.lines[index];
+            return line
+                .geometry
+                .borrow()
+                .hit([
+                    point[0] + self.offset[0],
+                    point[1] + self.offset[1] - line.top,
+                ])
+                .map(|position| line.start_char + position);
+        }
         let layout = self.layout.as_ref()?;
         let byte = layout
             .hit_test([
@@ -124,19 +143,16 @@ impl Geometry {
         self.clamp_scroll();
     }
 
-    fn clamp_scroll(&mut self) {
-        if let Some(layout) = &self.layout {
-            let size = layout.size();
-            for (axis, size) in size.into_iter().enumerate() {
-                let maximum = (size.max(self.content_size[axis]) + PADDING * 2.
-                    - self.viewport[axis])
-                    .max(0.);
-                self.offset[axis] = self.offset[axis].clamp(0., maximum);
-            }
+    pub(super) fn clamp_scroll(&mut self) {
+        let layout_size = self.layout.as_ref().map_or([0.; 2], |layout| layout.size());
+        for (axis, size) in layout_size.into_iter().enumerate() {
+            let maximum =
+                (size.max(self.content_size[axis]) + PADDING * 2. - self.viewport[axis]).max(0.);
+            self.offset[axis] = self.offset[axis].clamp(0., maximum);
         }
     }
 
-    fn reveal(&mut self) {
+    pub(super) fn reveal(&mut self) {
         if let Some(caret) = self.caret {
             for (axis, (start, length)) in [(caret.x, caret.width), (caret.y, caret.height)]
                 .into_iter()
@@ -161,6 +177,7 @@ pub(crate) struct Surface {
     pub composition: Option<Composition>,
     pub geometry: Rc<RefCell<Geometry>>,
     pub epoch: u64,
+    pub input_started: Option<std::time::Instant>,
     pub reveal_caret: bool,
     pub caret_visible: bool,
     pub annotations: Option<Arc<Annotations>>,
@@ -190,30 +207,38 @@ pub(crate) struct SurfaceState {
     annotations: Option<Arc<Annotations>>,
     decorations: DecorationCache,
     projection: InlineProjection,
+    shaped_annotations: Option<Arc<Annotations>>,
+    shaped_selection: Selection,
+    prepared_layout: Option<Arc<TextLayout>>,
 }
 
-impl CustomElement for Surface {
-    type State = SurfaceState;
+impl SurfaceState {
+    pub(super) fn project_caret(&self, byte: usize) -> usize {
+        self.projection.display_offset(byte, true)
+    }
+    pub(super) fn raster_scale(&self) -> f32 {
+        self.raster_scale
+    }
+}
 
-    fn prepare(
+impl Surface {
+    pub(super) fn shape(
         &self,
         state: &mut SurfaceState,
-        element: &ElementInfo<'_>,
-        cx: &mut CustomPrepare<'_>,
-    ) -> Result<(), UiError> {
+        width: f32,
+        fonts: &mut rxui::astrelis::TextSystem,
+    ) -> Result<bool, UiError> {
         let range = self.rope.char_to_byte(self.selection.range().start)
             ..self.rope.char_to_byte(self.selection.range().end);
-        let mut replacement = None;
-        if let Some(composition) = &self.composition {
-            replacement = Some((range.clone(), composition.text.len()));
-        }
+        let replacement = self
+            .composition
+            .as_ref()
+            .map(|c| (range.clone(), c.text.len()));
         let composition_changed = state.composition != self.composition;
-        let selection_changed = state.selection != self.selection;
-        let annotations_changed = !same_annotations(&state.annotations, &self.annotations);
         if state.revision != Some(self.revision)
             || composition_changed
-            || self.composition.is_some() && selection_changed
-            || annotations_changed
+            || self.composition.is_some() && state.shaped_selection != self.selection
+            || !same_annotations(&state.shaped_annotations, &self.annotations)
         {
             let mut text = self.rope.to_string();
             if let Some(composition) = &self.composition {
@@ -272,15 +297,52 @@ impl CustomElement for Surface {
             state.revision = Some(self.revision);
             state.composition = self.composition.clone();
         }
-        state.selection = self.selection;
-        state
-            .buffer
-            .set_width(Some((element.bounds.width - PADDING * 2.).max(0.)))?;
-        let layout = state.buffer.layout(cx.fonts)?;
+        state.shaped_selection = self.selection;
+        state.shaped_annotations = self.annotations.clone();
+        state.buffer.set_width(Some(width))?;
+        let layout = state.buffer.layout(fonts)?;
+        layout.prepare_interaction()?;
         let layout_changed = state
             .layout
             .as_ref()
             .is_none_or(|old| !Arc::ptr_eq(old, &layout));
+        state.layout = Some(layout);
+        Ok(layout_changed)
+    }
+    pub(super) fn layout<'a>(&self, state: &'a SurfaceState) -> &'a Arc<TextLayout> {
+        state.layout.as_ref().unwrap()
+    }
+}
+
+impl CustomElement for Surface {
+    type State = SurfaceState;
+
+    fn prepare(
+        &self,
+        state: &mut SurfaceState,
+        element: &ElementInfo<'_>,
+        cx: &mut CustomPrepare<'_>,
+    ) -> Result<(), UiError> {
+        let range = self.rope.char_to_byte(self.selection.range().start)
+            ..self.rope.char_to_byte(self.selection.range().end);
+        let mut replacement = None;
+        if let Some(composition) = &self.composition {
+            replacement = Some((range.clone(), composition.text.len()));
+        }
+        let composition_changed = state.composition != self.composition;
+        let selection_changed = state.selection != self.selection;
+        let annotations_changed = !same_annotations(&state.annotations, &self.annotations);
+        let mut layout_changed = self.shape(
+            state,
+            (element.bounds.width - PADDING * 2.).max(0.),
+            cx.fonts,
+        )?;
+        let layout = state.layout.as_ref().unwrap().clone();
+        layout_changed |= state
+            .prepared_layout
+            .as_ref()
+            .is_none_or(|old| !Arc::ptr_eq(old, &layout));
+        state.selection = self.selection;
         let raster_changed = state.raster_scale != cx.raster_scale;
         if layout_changed || raster_changed {
             state.prepared = Some(cx.painter.prepare_text(
@@ -358,6 +420,7 @@ impl CustomElement for Surface {
         }
         geometry.clamp_scroll();
         geometry.epoch = Some(self.epoch);
+        state.prepared_layout = Some(layout.clone());
         state.layout = Some(layout);
         Ok(())
     }
@@ -373,6 +436,18 @@ impl CustomElement for Surface {
             element.bounds.x + PADDING - geometry.offset[0],
             element.bounds.y + PADDING - geometry.offset[1],
         ];
+        self.paint_at(state, element, paint, origin)
+    }
+}
+
+impl Surface {
+    pub(super) fn paint_at(
+        &self,
+        state: &SurfaceState,
+        element: &ElementInfo<'_>,
+        paint: &mut PaintSession<'_, '_>,
+        origin: [f32; 2],
+    ) -> Result<(), UiError> {
         for background in &state.decorations.backgrounds {
             let rect = if background.full_line {
                 Rect::new(

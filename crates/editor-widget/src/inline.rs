@@ -45,27 +45,30 @@ impl InlineProjection {
     /// Source carets use right affinity: at an anchor they sit after every hint.
     /// Range endpoints use left affinity so an ending selection excludes hints.
     pub fn display_offset(&self, base: usize, after: bool) -> usize {
-        base + self
+        let count = self
             .insertions
-            .iter()
-            .take_while(|hint| hint.base_anchor < base || after && hint.base_anchor == base)
-            .map(|hint| hint.display.len())
-            .sum::<usize>()
+            .partition_point(|hint| hint.base_anchor < base || after && hint.base_anchor == base);
+        base + count.checked_sub(1).map_or(0, |index| {
+            let hint = &self.insertions[index];
+            hint.display.end - hint.base_anchor
+        })
     }
 
     /// Every pointer position inside a virtual label maps to its source anchor.
     pub fn base_offset(&self, display: usize) -> usize {
-        let mut inserted = 0;
-        for hint in &self.insertions {
-            if display < hint.display.start {
-                break;
-            }
-            if display <= hint.display.end {
-                return hint.base_anchor;
-            }
-            inserted += hint.display.len();
+        let count = self
+            .insertions
+            .partition_point(|hint| hint.display.end < display);
+        if let Some(hint) = self.insertions.get(count)
+            && display >= hint.display.start
+        {
+            return hint.base_anchor;
         }
-        display - inserted
+        display
+            - count.checked_sub(1).map_or(0, |index| {
+                let hint = &self.insertions[index];
+                hint.display.end - hint.base_anchor
+            })
     }
 
     /// Project source spans/selection while excluding all inserted hint text.
@@ -75,7 +78,13 @@ impl InlineProjection {
         }
         let mut result = Vec::new();
         let mut cursor = base.start;
-        for hint in &self.insertions {
+        let start = self
+            .insertions
+            .partition_point(|hint| hint.base_anchor <= base.start);
+        let end = self
+            .insertions
+            .partition_point(|hint| hint.base_anchor < base.end);
+        for hint in &self.insertions[start..end] {
             let anchor = hint.base_anchor;
             if anchor <= cursor || anchor >= base.end {
                 continue;

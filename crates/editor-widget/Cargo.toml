@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+performance = []
+
 [dependencies]
 ropey.workspace = true
 rxui.workspace = true
@@ -17,3 +20,8 @@ workspace = true
 [[bench]]
 name = "editing"
 harness = false
+
+[[bench]]
+name = "viewport"
+harness = false
+required-features = ["performance"]
