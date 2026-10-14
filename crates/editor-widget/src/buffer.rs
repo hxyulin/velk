@@ -1,5 +1,5 @@
 use ropey::Rope;
-use std::{collections::VecDeque, ops::Range};
+use std::{cell::RefCell, collections::VecDeque, ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
 const HISTORY_LIMIT: usize = 128;
@@ -35,6 +35,7 @@ pub struct Buffer {
     redo: Vec<Snapshot>,
     revision: u64,
     goal_column: Option<usize>,
+    boundaries: RefCell<VecDeque<(usize, Arc<Vec<usize>>)>>,
 }
 
 impl Default for Buffer {
@@ -54,6 +55,7 @@ impl Buffer {
             redo: Vec::new(),
             revision: 0,
             goal_column: None,
+            boundaries: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -206,6 +208,7 @@ impl Buffer {
             self.undo.pop_front();
         }
         self.redo.clear();
+        self.boundaries.get_mut().clear();
         self.current.text.remove(range.clone());
         self.current.text.insert(range.start, text);
         let end = range.start + text.chars().count();
@@ -222,13 +225,21 @@ impl Buffer {
     }
 
     fn changed(&mut self) {
+        self.boundaries.get_mut().clear();
         self.revision += 1;
         self.goal_column = None;
     }
 
     // Only the current logical line is materialized for segmentation, never the
     // full document. This also handles graphemes spanning Ropey's chunk edges.
-    fn line_boundaries(&self, line: usize) -> Vec<usize> {
+    fn line_boundaries(&self, line: usize) -> Arc<Vec<usize>> {
+        let mut cache = self.boundaries.borrow_mut();
+        if let Some(index) = cache.iter().position(|(cached, _)| *cached == line) {
+            let entry = cache.remove(index).unwrap();
+            let result = entry.1.clone();
+            cache.push_back(entry);
+            return result;
+        }
         let start = self.text().line_to_char(line);
         let text = self.text().line(line).to_string();
         let text = text.strip_suffix('\n').unwrap_or(&text);
@@ -238,6 +249,11 @@ impl Buffer {
             offset += grapheme.chars().count();
             result.push(offset);
         }
+        let result = Arc::new(result);
+        if cache.len() == 8 {
+            cache.pop_front();
+        }
+        cache.push_back((line, result.clone()));
         result
     }
 
