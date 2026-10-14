@@ -61,6 +61,10 @@ impl Buffer {
         &self.current.text
     }
 
+    pub(crate) fn is_grapheme_boundary(&self, position: usize) -> bool {
+        position <= self.text().len_chars() && self.snap(position) == position
+    }
+
     pub fn selection(&self) -> Selection {
         self.current.selection
     }

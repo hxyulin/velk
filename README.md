@@ -69,7 +69,7 @@ deletion is one edit. There is no typing coalescence yet.
 
 Text shaping is cached between document edits, but this first version shapes the
 whole document. It does not yet provide viewport-only line rendering, soft
-wrapping, word motions, multiple cursors, syntax highlighting, or file persistence.
+wrapping, word motions, multiple cursors, an automatic syntax provider, or file persistence.
 Vertical navigation preserves a grapheme column rather than a pixel column.
 RXUI custom text clients currently expose the editor's accessibility role and
 label, but do not publish document text or selection to assistive technology.
@@ -79,3 +79,48 @@ label, but do not publish document text or selection to assistive technology.
 Use [Conventional Commits](https://www.conventionalcommits.org/), for example
 `feat(editor): open a blank RXUI window` or
 `chore(deps): update the pinned RXUI revision`.
+
+## Rich text playground
+
+Run the editable prototype:
+
+```sh
+cargo run --locked -- --showcase
+```
+
+It demonstrates foreground and range backgrounds, a full-line debugger
+background, bold/italic and mixed font sizes, solid/dashed/wavy underlines,
+overlines, strikethroughs, delayed hover cards, and document-anchored inlay hints,
+diagnostic badges, debugger values, and ghost text. The toolbar switches editor
+appearance and toggles decorations/overlays. LSP and debugger content is mocked;
+no language server or debugger is connected.
+
+Applications can call `Editor::set_annotations(Annotations { ... })` to apply a
+snapshot for `editor.buffer().revision()`. `StyledRange` ranges and `TextOverlay`
+anchors use Ropey character offsets on grapheme boundaries, including for
+Unicode text. Later foreground/font attributes override earlier overlapping
+spans. Backgrounds and custom lines paint in span order. Colors use Astrelis's
+linear straight RGBA space. Overlays are visual content; they never enter the
+rope, selection text, clipboard, or undo history.
+
+Snapshots are rejected if their document revision is stale. Edits, undo, and redo
+clear annotations; navigation and appearance changes preserve them. In the
+prototype, use **Refresh annotations** after editing, or **Reset sample** to
+restore the showcase. A future syntax/LSP producer should recompute and submit
+an updated snapshot after document changes. `Editor::set_text` replaces the
+whole document as one undoable edit.
+
+`OverlayPlacement::LineEnd` stacks labels after the source line. `AtAnchor`
+paints at an existing caret position without reserving document layout space;
+use it for ghost completions at line ends or empty positions. True in-flow inlay
+hints, interactive diagnostic actions, automatic annotation remapping, and a
+rich-text file format are future work.
+
+Run the CPU benchmark:
+
+```sh
+cargo bench -p velk-editor-widget --bench editing
+```
+
+See [the performance report](docs/performance/editor-prototype.md) for measured
+results, cache behavior, scope, and next optimizations.

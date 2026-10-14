@@ -1,8 +1,12 @@
-use crate::Selection;
+use crate::{
+    Annotations, Color, HoverCard, LinePattern, OverlayKind, OverlayPlacement, Selection,
+    Underline,
+    annotations::{display_anchor, display_ranges},
+};
 use ropey::Rope;
 use rxui::astrelis::{
-    FontFamily, PaintSession, PreparedText, Rect, TextBuffer, TextDraw, TextLayout, TextPosition,
-    TextRasterOptions, TextStyle, TextWrap,
+    FontFamily, FontSlant, LineDraw, PaintSession, PreparedText, Rect, TextBuffer, TextDraw,
+    TextLayout, TextPosition, TextRasterOptions, TextStyle, TextWrap,
 };
 use rxui::{Bounds, CustomElement, CustomPrepare, ElementInfo, UiError};
 use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
@@ -27,9 +31,57 @@ pub(crate) struct Geometry {
     caret: Option<Rect>,
     pub epoch: Option<u64>,
     pub focused: bool,
+    origin: [f32; 2],
+    content_size: [f32; 2],
+    hover_regions: Vec<HoverRegion>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HoverHit {
+    pub id: usize,
+    pub card: HoverCard,
+    pub anchor: [f32; 2],
+}
+
+#[derive(Clone)]
+struct HoverRegion {
+    id: usize,
+    rect: Rect,
+    card: HoverCard,
 }
 
 impl Geometry {
+    pub fn hover(&self, point: [f32; 2]) -> Option<HoverHit> {
+        if point[0] < 0.
+            || point[1] < 0.
+            || point[0] >= self.viewport[0]
+            || point[1] >= self.viewport[1]
+        {
+            return None;
+        }
+        let local = [
+            point[0] - PADDING + self.offset[0],
+            point[1] - PADDING + self.offset[1],
+        ];
+        self.hover_regions
+            .iter()
+            .rev()
+            .find(|hit| {
+                local[0] >= hit.rect.x
+                    && local[0] < hit.rect.x + hit.rect.width
+                    && local[1] >= hit.rect.y
+                    && local[1] < hit.rect.y + hit.rect.height
+            })
+            .map(|hit| HoverHit {
+                id: hit.id,
+                card: hit.card.clone(),
+                anchor: [
+                    self.origin[0] + PADDING + hit.rect.x - self.offset[0],
+                    self.origin[1] + PADDING + hit.rect.y + hit.rect.height - self.offset[1],
+                ],
+            })
+    }
+
     pub fn caret_area(&self) -> Bounds {
         let caret = self.caret.unwrap_or(Rect::new(0., 0., 1., LINE_HEIGHT));
         Bounds {
@@ -73,7 +125,9 @@ impl Geometry {
         if let Some(layout) = &self.layout {
             let size = layout.size();
             for (axis, size) in size.into_iter().enumerate() {
-                let maximum = (size + PADDING * 2. - self.viewport[axis]).max(0.);
+                let maximum = (size.max(self.content_size[axis]) + PADDING * 2.
+                    - self.viewport[axis])
+                    .max(0.);
                 self.offset[axis] = self.offset[axis].clamp(0., maximum);
             }
         }
@@ -106,6 +160,8 @@ pub(crate) struct Surface {
     pub epoch: u64,
     pub reveal_caret: bool,
     pub caret_visible: bool,
+    pub annotations: Option<Arc<Annotations>>,
+    pub selection_color: Color,
 }
 
 impl PartialEq for Surface {
@@ -128,6 +184,8 @@ pub(crate) struct SurfaceState {
     caret: Option<Rect>,
     selection_rects: Vec<Rect>,
     composition_rects: Vec<Rect>,
+    annotations: Option<Arc<Annotations>>,
+    decorations: DecorationCache,
 }
 
 impl CustomElement for Surface {
@@ -145,15 +203,33 @@ impl CustomElement for Surface {
         if let Some(composition) = &self.composition {
             replacement = Some((range.clone(), composition.text.len()));
         }
+        let composition_changed = state.composition != self.composition;
+        let selection_changed = state.selection != self.selection;
+        let annotations_changed = !same_annotations(&state.annotations, &self.annotations);
         if state.revision != Some(self.revision)
-            || state.composition != self.composition
-            || self.composition.is_some() && state.selection != self.selection
+            || composition_changed
+            || self.composition.is_some() && selection_changed
+            || annotations_changed
         {
             let mut text = self.rope.to_string();
             if let Some(composition) = &self.composition {
                 text.replace_range(range.clone(), &composition.text);
             }
-            state.buffer.set_text(&text, editor_text_style())?;
+            let spans = self
+                .annotations
+                .iter()
+                .flat_map(|annotations| &annotations.spans)
+                .flat_map(|span| {
+                    let source = self.rope.char_to_byte(span.range.start)
+                        ..self.rope.char_to_byte(span.range.end);
+                    display_ranges(source, replacement.as_ref())
+                        .into_iter()
+                        .filter_map(|range| span.style.text_span(range))
+                })
+                .collect::<Vec<_>>();
+            state
+                .buffer
+                .set_rich_text(&text, editor_text_style(), spans)?;
             state.buffer.set_wrap(TextWrap::None);
             state.revision = Some(self.revision);
             state.composition = self.composition.clone();
@@ -163,12 +239,12 @@ impl CustomElement for Surface {
             .buffer
             .set_width(Some((element.bounds.width - PADDING * 2.).max(0.)))?;
         let layout = state.buffer.layout(cx.fonts)?;
-        if state
+        let layout_changed = state
             .layout
             .as_ref()
-            .is_none_or(|old| !Arc::ptr_eq(old, &layout))
-            || state.raster_scale != cx.raster_scale
-        {
+            .is_none_or(|old| !Arc::ptr_eq(old, &layout));
+        let raster_changed = state.raster_scale != cx.raster_scale;
+        if layout_changed || raster_changed {
             state.prepared = Some(cx.painter.prepare_text(
                 &layout,
                 TextRasterOptions::new().raster_scale(cx.raster_scale),
@@ -197,21 +273,33 @@ impl CustomElement for Surface {
         {
             state.caret = None;
         }
-        state.selection_rects.clear();
-        state.composition_rects.clear();
-        if let Some(composition) = &self.composition {
-            let start = boundary_before(&layout, range.start);
-            let end = boundary_after(&layout, range.start + composition.text.len());
-            state
-                .composition_rects
-                .extend(layout.selection_rects(start..end)?);
-        } else if !range.is_empty() {
-            state.selection_rects.extend(layout.selection_rects(range)?);
+        if layout_changed || selection_changed || composition_changed {
+            state.selection_rects.clear();
+            state.composition_rects.clear();
+            if let Some(composition) = &self.composition {
+                let start = boundary_before(&layout, range.start);
+                let end = boundary_after(&layout, range.start + composition.text.len());
+                state
+                    .composition_rects
+                    .extend(layout.selection_rects(start..end)?);
+            } else if !range.is_empty() {
+                state.selection_rects.extend(layout.selection_rects(range)?);
+            }
+        }
+        let decorations_changed = layout_changed || annotations_changed || raster_changed;
+        if decorations_changed {
+            state.decorations = prepare_annotations(self, &layout, replacement.as_ref(), cx)?;
+            state.annotations = self.annotations.clone();
         }
         let mut geometry = self.geometry.borrow_mut();
         let viewport = [element.bounds.width, element.bounds.height];
         let resized = geometry.viewport != viewport;
         geometry.viewport = viewport;
+        geometry.origin = [element.bounds.x, element.bounds.y];
+        geometry.content_size = state.decorations.content_size;
+        if decorations_changed {
+            geometry.hover_regions = state.decorations.hover_regions.clone();
+        }
         geometry.layout = Some(layout.clone());
         geometry.rope = self.rope.clone();
         geometry.replacement = replacement;
@@ -237,11 +325,42 @@ impl CustomElement for Surface {
             element.bounds.x + PADDING - geometry.offset[0],
             element.bounds.y + PADDING - geometry.offset[1],
         ];
+        for background in &state.decorations.backgrounds {
+            let rect = if background.full_line {
+                Rect::new(
+                    element.bounds.x,
+                    origin[1] + background.rect.y,
+                    element.bounds.width,
+                    background.rect.height,
+                )
+            } else {
+                translated(background.rect, origin)
+            };
+            if intersects(rect, element.clip_bounds) {
+                paint.fill_rect(rect, background.color)?;
+            }
+        }
         for rect in &state.selection_rects {
-            paint.fill_rect(translated(*rect, origin), [0.18, 0.40, 0.75, 0.35])?;
+            paint.fill_rect(translated(*rect, origin), self.selection_color)?;
         }
         if let Some(prepared) = &state.prepared {
             paint.draw_text(prepared, TextDraw::new(origin).color(element.color))?;
+        }
+        for line in &state.decorations.lines {
+            paint_decoration(paint, line, origin, element.clip_bounds)?;
+        }
+        for overlay in &state.decorations.overlays {
+            let rect = translated(overlay.rect, origin);
+            if !intersects(rect, element.clip_bounds) {
+                continue;
+            }
+            if let Some(color) = overlay.background {
+                paint.fill_rounded_rect(rect, 4., color)?;
+            }
+            paint.draw_text(
+                &overlay.prepared,
+                TextDraw::new([rect.x + 6., rect.y + 3.]).color(overlay.foreground),
+            )?;
         }
         for rect in &state.composition_rects {
             paint.fill_rect(
@@ -353,5 +472,306 @@ mod tests {
         assert!(geometry.caret_area().y + geometry.caret_area().height <= 100.);
         geometry.scroll([1000., -10000.]);
         assert_eq!(geometry.offset, [0., 0.]);
+    }
+}
+
+#[derive(Default)]
+struct DecorationCache {
+    backgrounds: Vec<Background>,
+    lines: Vec<DecorationLine>,
+    overlays: Vec<PreparedOverlay>,
+    hover_regions: Vec<HoverRegion>,
+    content_size: [f32; 2],
+}
+struct Background {
+    rect: Rect,
+    color: Color,
+    full_line: bool,
+}
+struct DecorationLine {
+    rect: Rect,
+    underline: Underline,
+    overline: bool,
+}
+struct PreparedOverlay {
+    rect: Rect,
+    prepared: PreparedText,
+    foreground: Color,
+    background: Option<Color>,
+}
+
+fn same_annotations(a: &Option<Arc<Annotations>>, b: &Option<Arc<Annotations>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn prepare_annotations(
+    surface: &Surface,
+    layout: &TextLayout,
+    replacement: Option<&(std::ops::Range<usize>, usize)>,
+    cx: &mut CustomPrepare<'_>,
+) -> Result<DecorationCache, UiError> {
+    let mut cache = DecorationCache {
+        content_size: layout.size(),
+        ..DecorationCache::default()
+    };
+    let Some(annotations) = &surface.annotations else {
+        return Ok(cache);
+    };
+    for (id, span) in annotations.spans.iter().enumerate() {
+        let source =
+            surface.rope.char_to_byte(span.range.start)..surface.rope.char_to_byte(span.range.end);
+        for range in display_ranges(source, replacement) {
+            let range = boundary_before(layout, range.start)..boundary_after(layout, range.end);
+            if let Some(color) = span.style.background
+                && span.style.full_line_background
+            {
+                // Include blank and newline-only lines, which have no selection ink.
+                let start = layout
+                    .caret(TextPosition::new(range.start))
+                    .map_or(0, |c| c.line_index);
+                let end = layout
+                    .caret(TextPosition::new(range.end))
+                    .map_or(start, |c| c.line_index);
+                for (index, line) in layout.lines().iter().enumerate().take(end + 1).skip(start) {
+                    if index == end && range.end == line.source.start && index > start {
+                        continue;
+                    }
+                    cache.backgrounds.push(Background {
+                        rect: Rect::new(0., line.top, line.width, line.height),
+                        color,
+                        full_line: true,
+                    });
+                }
+            }
+            for rect in layout.selection_rects(range)? {
+                if let Some(color) = span.style.background
+                    && !span.style.full_line_background
+                {
+                    cache.backgrounds.push(Background {
+                        rect,
+                        color,
+                        full_line: false,
+                    });
+                }
+                if let Some(underline) = span.style.underline {
+                    cache.lines.push(DecorationLine {
+                        rect,
+                        underline,
+                        overline: false,
+                    });
+                }
+                if let Some(color) = span.style.overline {
+                    cache.lines.push(DecorationLine {
+                        rect,
+                        underline: Underline {
+                            color,
+                            pattern: LinePattern::Solid,
+                        },
+                        overline: true,
+                    });
+                }
+                if let Some(card) = &span.hover {
+                    cache.hover_regions.push(HoverRegion {
+                        id,
+                        rect,
+                        card: card.clone(),
+                    });
+                }
+            }
+        }
+    }
+    let mut line_ends = layout
+        .lines()
+        .iter()
+        .map(|line| line.left + line.width)
+        .collect::<Vec<_>>();
+    for (index, overlay) in annotations.overlays.iter().enumerate() {
+        let Some(byte) = display_anchor(surface.rope.char_to_byte(overlay.anchor), replacement)
+        else {
+            continue;
+        };
+        let Some(caret) = layout.caret(TextPosition::new(boundary_after(layout, byte))) else {
+            continue;
+        };
+        let line = &layout.lines()[caret.line_index];
+        let mut buffer = TextBuffer::new();
+        let style = editor_text_style().font_size(12.).line_height(18.).slant(
+            if overlay.kind == OverlayKind::GhostText {
+                FontSlant::Italic
+            } else {
+                FontSlant::Normal
+            },
+        );
+        buffer.set_text(&overlay.text, style)?;
+        buffer.set_wrap(TextWrap::None);
+        buffer.set_width(Some(4096.))?;
+        let text = buffer.layout(cx.fonts)?;
+        let size = text.size();
+        let x = match overlay.placement {
+            OverlayPlacement::LineEnd => line_ends[caret.line_index] + 16.,
+            OverlayPlacement::AtAnchor => caret.origin[0],
+        };
+        let rect = Rect::new(
+            x,
+            line.top + (line.height - size[1] - 6.).max(0.) / 2.,
+            size[0] + 12.,
+            size[1] + 6.,
+        );
+        line_ends[caret.line_index] = line_ends[caret.line_index].max(rect.x + rect.width);
+        cache.content_size[0] = cache.content_size[0].max(rect.x + rect.width);
+        cache.content_size[1] = cache.content_size[1].max(rect.y + rect.height);
+        let prepared = cx.painter.prepare_text(
+            &text,
+            TextRasterOptions::new().raster_scale(cx.raster_scale),
+        )?;
+        cache.overlays.push(PreparedOverlay {
+            rect,
+            prepared,
+            foreground: overlay.foreground,
+            background: overlay.background,
+        });
+        if let Some(card) = &overlay.hover {
+            cache.hover_regions.push(HoverRegion {
+                id: annotations.spans.len() + index,
+                rect,
+                card: card.clone(),
+            });
+        }
+    }
+    Ok(cache)
+}
+
+fn intersects(rect: Rect, clip: Bounds) -> bool {
+    rect.x < clip.x + clip.width
+        && rect.x + rect.width > clip.x
+        && rect.y < clip.y + clip.height
+        && rect.y + rect.height > clip.y
+}
+
+fn paint_decoration(
+    paint: &mut PaintSession<'_, '_>,
+    line: &DecorationLine,
+    origin: [f32; 2],
+    clip: Bounds,
+) -> Result<(), UiError> {
+    let rect = translated(line.rect, origin);
+    if !intersects(rect, clip) {
+        return Ok(());
+    }
+    let y = if line.overline {
+        rect.y + 2.
+    } else {
+        rect.y + rect.height - 3.
+    };
+    let left = rect.x.max(clip.x);
+    let right = (rect.x + rect.width).min(clip.x + clip.width);
+    let color = line.underline.color;
+    match line.underline.pattern {
+        LinePattern::Solid => {
+            paint.fill_rect(Rect::new(left, y, (right - left).max(0.), 1.), color)?
+        }
+        LinePattern::Dashed => {
+            let mut x = rect.x + ((left - rect.x) / 6.).floor() * 6.;
+            while x < right {
+                let begin = x.max(left);
+                let end = (x + 3.).min(right);
+                if begin < end {
+                    paint.fill_rect(Rect::new(begin, y, end - begin, 1.), color)?;
+                }
+                x += 6.;
+            }
+        }
+        LinePattern::Wavy => {
+            // Generate only visible wave segments; a long decorated line cannot
+            // allocate or issue draws for millions of offscreen pixels.
+            let mut x = rect.x + ((left - rect.x) / 8.).floor() * 8.;
+            let mut draws = Vec::new();
+            while x < right {
+                draws.push(LineDraw::new([x, y], [x + 4., y + 2.], color));
+                draws.push(LineDraw::new([x + 4., y + 2.], [x + 8., y], color));
+                x += 8.;
+            }
+            paint.draw_lines(&draws)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod rich_tests {
+    use super::*;
+    use crate::{SpanStyle, annotations::display_ranges};
+    use rxui::astrelis::TextSystem;
+
+    #[test]
+    fn rich_layout_reuses_cached_snapshot_and_changes_mixed_size_geometry() {
+        let mut fonts = TextSystem::new();
+        if fonts.load_system_fonts().is_empty() {
+            return;
+        }
+        let mut buffer = TextBuffer::new();
+        buffer.set_width(Some(640.)).unwrap();
+        buffer.set_wrap(TextWrap::None);
+        let text = "large café\nsmall";
+        let span = SpanStyle {
+            font_size: Some(32.),
+            italic: Some(true),
+            weight: Some(700),
+            foreground: Some([0.2, 0.6, 0.9, 1.]),
+            strikethrough: Some(true),
+            ..SpanStyle::default()
+        }
+        .text_span(0..5)
+        .unwrap();
+        buffer
+            .set_rich_text(text, editor_text_style(), vec![span])
+            .unwrap();
+        let layout = buffer.layout(&mut fonts).unwrap();
+        assert!(layout.lines()[0].height >= 48.);
+        assert!(layout.lines()[1].height < layout.lines()[0].height);
+        assert!(!layout.decorations().is_empty());
+        let caret = layout.caret(TextPosition::new(5)).unwrap();
+        assert_eq!(
+            layout
+                .hit_test([caret.origin[0], caret.origin[1] + caret.height / 2.])
+                .unwrap()
+                .byte_offset,
+            5
+        );
+        let cached = buffer.layout(&mut fonts).unwrap();
+        assert!(Arc::ptr_eq(&layout, &cached));
+        assert!(layout.selection_rects(0..text.len()).unwrap().count() >= 2);
+        // A composition replacement can be projected without styling its text.
+        assert_eq!(display_ranges(0..10, Some(&(6..10, 3))), vec![0..6]);
+    }
+
+    #[test]
+    fn hover_uses_real_ink_regions_with_scroll_and_parent_offsets() {
+        let geometry = Geometry {
+            viewport: [200., 100.],
+            origin: [10., 80.],
+            offset: [30., 100.],
+            hover_regions: vec![HoverRegion {
+                id: 7,
+                rect: Rect::new(50., 120., 40., 24.),
+                card: HoverCard {
+                    title: "type".into(),
+                    body: "i32".into(),
+                },
+            }],
+            ..Geometry::default()
+        };
+        let hit = geometry.hover([40., 40.]).unwrap();
+        assert_eq!(hit.id, 7);
+        assert_eq!(hit.anchor, [46., 140.]);
+        assert!(
+            geometry.hover([100., 40.]).is_none(),
+            "nearest text position must not invent a hover outside its actual range"
+        );
+        assert!(geometry.hover([40., -10.]).is_none());
     }
 }

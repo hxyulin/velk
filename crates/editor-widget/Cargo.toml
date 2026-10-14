@@ -13,3 +13,7 @@ unicode-segmentation.workspace = true
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "editing"
+harness = false

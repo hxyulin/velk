@@ -1,11 +1,18 @@
 //! Reusable rope-backed text editing state and an RXUI editor view.
+mod annotations;
+mod blink;
 mod buffer;
 mod surface;
 
+pub use annotations::{
+    AnnotationError, Annotations, Color, EditorAppearance, HoverCard, LinePattern, OverlayKind,
+    OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
+};
 pub use buffer::{Buffer, Selection};
 use rxui::{Bounds, prelude::*, standard_commands as commands};
 use std::{cell::RefCell, rc::Rc};
-use surface::{Composition, Geometry, Surface};
+use std::{sync::Arc, time::Duration};
+use surface::{Composition, Geometry, HoverHit, Surface};
 
 /// An editor view. Create a separate entity per window; document state can be
 /// accessed through `buffer()` and programmatic inserts through `insert()`.
@@ -16,6 +23,11 @@ pub struct Editor {
     geometry: Rc<RefCell<Geometry>>,
     epoch: u64,
     reveal_caret: bool,
+    annotations: Option<Arc<Annotations>>,
+    appearance: EditorAppearance,
+    hovered: Option<HoverHit>,
+    hover_task: Option<Task>,
+    tooltip_visible: bool,
 }
 
 impl Editor {
@@ -30,6 +42,69 @@ impl Editor {
         &self.buffer
     }
 
+    pub fn set_annotations(&mut self, annotations: Annotations) -> Result<(), AnnotationError> {
+        annotations.validate(&self.buffer)?;
+        self.annotations = Some(Arc::new(annotations));
+        self.hide_hover();
+        self.epoch += 1;
+        self.reveal_caret = false;
+        Ok(())
+    }
+
+    pub fn annotations(&self) -> Option<&Annotations> {
+        self.annotations.as_deref()
+    }
+
+    pub fn clear_annotations(&mut self) {
+        self.annotations = None;
+        self.hide_hover();
+        self.epoch += 1;
+        self.reveal_caret = false;
+    }
+
+    pub fn set_appearance(&mut self, appearance: EditorAppearance) -> Result<(), AnnotationError> {
+        appearance.validate()?;
+        self.appearance = appearance;
+        self.epoch += 1;
+        self.reveal_caret = false;
+        Ok(())
+    }
+
+    fn hide_hover(&mut self) {
+        self.hover_task = None;
+        self.hovered = None;
+        self.tooltip_visible = false;
+    }
+
+    fn hover(&mut self, point: [f32; 2], cx: &mut Context<'_, Self>) {
+        let target = self.geometry.borrow().hover(point);
+        if self.hovered.as_ref().map(|h| h.id) == target.as_ref().map(|h| h.id) {
+            cx.unchanged();
+            return;
+        }
+        self.hide_hover();
+        if let Some(target) = target {
+            let id = target.id;
+            self.hovered = Some(target);
+            self.hover_task = cx
+                .try_spawn(
+                    rxui::sleep(Duration::from_millis(350)),
+                    move |this, result, _| {
+                        if result.is_ok() && this.hovered.as_ref().is_some_and(|hit| hit.id == id) {
+                            this.tooltip_visible = true;
+                        }
+                    },
+                )
+                .ok();
+        }
+    }
+
+    /// Replace the entire document as one undoable edit.
+    pub fn set_text(&mut self, text: &str) {
+        self.buffer.select_all();
+        self.insert(text);
+    }
+
     pub fn insert(&mut self, text: &str) {
         self.composition = None;
         self.buffer.insert(text);
@@ -37,19 +112,32 @@ impl Editor {
     }
 
     fn edited(&mut self) {
+        if self
+            .annotations
+            .as_ref()
+            .is_some_and(|a| a.document_revision != self.buffer.revision())
+        {
+            self.annotations = None;
+        }
+        self.hide_hover();
         self.epoch += 1;
         self.reveal_caret = true;
     }
 
-    fn key(&mut self, event: &KeyInput, _: &mut Context<'_, Self>) {
+    fn key(&mut self, event: &KeyInput, cx: &mut Context<'_, Self>) {
         let key = &event.event;
         if !key.pressed || self.composition.is_some() {
             return;
         }
+        let had_hover = self.hovered.is_some();
+        self.hide_hover();
         let extend = key.modifiers.shift;
         // Leave unsupported modifier chords untouched. Word movement will be
         // added in a later editor increment.
         if key.modifiers.alt || key.modifiers.control && !key.modifiers.primary() {
+            if !had_hover {
+                cx.unchanged();
+            }
             return;
         }
         let handled = match &key.key {
@@ -124,6 +212,8 @@ impl Editor {
         if handled {
             event.prevent_default();
             self.edited();
+        } else if !had_hover {
+            cx.unchanged();
         }
     }
 
@@ -154,14 +244,15 @@ impl Editor {
 
 impl View for Editor {
     fn view(&self, cx: &mut ViewContext<'_, Self>) -> impl IntoElement {
-        // Preparation supplies measured caret geometry. One follow-up frame
-        // publishes the new IME candidate rectangle after an edit/resize/scroll.
-        // A focused caret also blinks; an unfocused editor stays on-demand.
+        // One follow-up frame publishes measured IME/overlay geometry. Caret
+        // blinking is timer-driven rather than a continuous animation loop.
         let geometry = self.geometry.borrow();
-        if geometry.epoch != Some(self.epoch) || geometry.focused {
+        if geometry.epoch != Some(self.epoch) {
             cx.request_animation_frame();
         }
-        let caret_visible = cx.frame_time().as_millis() % 1000 < 600;
+        let blink_geometry = self.geometry.clone();
+        let blink = cx.use_state(move |cx| blink::Blink::new(blink_geometry, cx));
+        let caret_visible = !blink.read(cx).hidden || geometry.epoch != Some(self.epoch);
         drop(geometry);
         let copy = cx
             .command(commands::Copy, |this, _, cx| {
@@ -215,13 +306,15 @@ impl View for Editor {
             epoch: self.epoch,
             reveal_caret: self.reveal_caret,
             caret_visible,
+            annotations: self.annotations.clone(),
+            selection_color: self.appearance.selection,
         })
         .key("editor-surface")
         .fill_width()
         .fill_height()
         .clip()
-        .background(ThemeColor::Surface)
-        .color(ThemeColor::Text)
+        .background(self.appearance.background)
+        .color(self.appearance.foreground)
         .cursor(Cursor::Text)
         .text_input_client(true)
         .accessibility_role(SemanticRole::MultilineTextInput)
@@ -229,7 +322,20 @@ impl View for Editor {
         .ime_cursor_area(self.caret_area())
         .on_key_down(cx.listener(Self::key))
         .on_pointer_down(cx.listener(|this, event, _| this.pointer(event, false)))
-        .on_pointer_move(cx.listener(|this, event, _| this.pointer(event, true)))
+        .on_pointer_move(cx.listener(|this, event: &PointerInput, cx| {
+            if event.buttons.contains(PointerButton::Primary) {
+                this.pointer(event, true);
+            } else {
+                this.hover(event.local_position, cx);
+            }
+        }))
+        .on_hover(cx.listener(|this, event: &HoverEvent, cx| {
+            if !event.hovered {
+                this.hide_hover();
+            } else {
+                cx.unchanged();
+            }
+        }))
         .on_pointer_up(cx.listener(|_, event: &PointerInput, _| event.release_pointer()))
         .on_text_insert(cx.listener(|this, event: &TextInsertInput, _| this.insert(&event.text)))
         .on_ime(cx.listener(|this, event: &ImeInput, _| {
@@ -243,6 +349,7 @@ impl View for Editor {
             this.edited();
         }))
         .on_wheel(cx.listener(|this, event: &WheelInput, _| {
+            this.hide_hover();
             this.geometry.borrow_mut().scroll(event.delta);
             this.epoch += 1;
             this.reveal_caret = false;
@@ -257,6 +364,35 @@ impl View for Editor {
         // on_text_insert with TextInsertSource::Paste.
         // A container root keeps native input and preparation on the same
         // path as RXUI's built-in editor examples.
-        column().fill_width().fill_height().child(surface)
+        let mut root = column().fill_width().fill_height().child(surface);
+        if self.tooltip_visible
+            && let Some(hit) = &self.hovered
+        {
+            root = root.child(
+                popover(
+                    hit.anchor,
+                    column()
+                        .gap(6.)
+                        .child(
+                            label(hit.card.title.clone())
+                                .font_size(14.)
+                                .color(ThemeColor::Text),
+                        )
+                        .child(
+                            label(hit.card.body.clone())
+                                .font_size(12.)
+                                .color(ThemeColor::TextMuted),
+                        ),
+                )
+                .key("editor-hover")
+                .width(360.)
+                .padding(12.)
+                .autofocus(false)
+                .on_dismiss(cx.listener(|this, _: &DismissEvent, _| this.hide_hover()))
+                .into_element()
+                .pointer_events(PointerEvents::None),
+            );
+        }
+        root
     }
 }
