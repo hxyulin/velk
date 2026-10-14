@@ -1,5 +1,6 @@
-use rxui::{AppContext, Entity, prelude::*};
+use rxui::{AppContext, Entity, Task, prelude::*};
 use std::ops::Range;
+use std::time::Duration;
 use velk_editor_widget::{
     Annotations, Buffer, Color, Editor, EditorAppearance, HoverCard, LinePattern, OverlayKind,
     OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
@@ -12,13 +13,15 @@ pub struct Showcase {
     light: bool,
     decorations: bool,
     overlays: bool,
+    inline: bool,
+    refresh_task: Option<Task>,
 }
 
 impl Showcase {
     pub fn new(cx: &mut AppContext<'_>) -> Self {
         let editor = cx.new(|_| {
             let mut editor = Editor::new(SAMPLE);
-            configure(&mut editor, false, true, true);
+            configure(&mut editor, false, true, true, true);
             editor
         });
         Self {
@@ -26,19 +29,32 @@ impl Showcase {
             light: false,
             decorations: true,
             overlays: true,
+            inline: true,
+            refresh_task: None,
         }
     }
 
-    fn refresh(&self, cx: &mut Context<'_, Self>) {
+    fn refresh(&mut self, cx: &mut Context<'_, Self>) {
         self.editor.update(cx, |editor, _| {
-            configure(editor, self.light, self.decorations, self.overlays)
+            configure(
+                editor,
+                self.light,
+                self.decorations,
+                self.overlays,
+                self.inline,
+            )
         });
+        // The pinned native host can prepare input/accessibility before painting
+        // and consume the dirty view. One deferred update publishes the refresh
+        // after input dispatch; subsequent clicks cancel the previous task.
+        self.refresh_task = cx
+            .try_spawn(rxui::sleep(Duration::from_millis(16)), |_, _, _| {})
+            .ok();
     }
 }
 
 impl View for Showcase {
     fn view(&self, cx: &mut ViewContext<'_, Self>) -> impl IntoElement {
-        let active = self.editor.read(cx).annotations().is_some();
         column().fill_width().fill_height().background(ThemeColor::Surface)
             .child(column().padding(16.).gap(8.)
                 .child(label("Rich text playground").font_size(22.))
@@ -56,12 +72,11 @@ impl View for Showcase {
                     .child(button(if self.overlays { "Overlays: on" } else { "Overlays: off" }).on_click(cx.listener(|this, _, cx| {
                         this.overlays = !this.overlays; this.refresh(cx);
                     })))
+                    .child(button(if self.inline { "Inlays: inline" } else { "Inlays: line end" }).on_click(cx.listener(|this, _, cx| {
+                        this.inline = !this.inline; this.refresh(cx);
+                    })))
                     .child(button("Refresh annotations").on_click(cx.listener(|this, _, cx| this.refresh(cx)))))
-                .child(label(if active {
-                    "Hover styled words and badges. Mock LSP hints and debugger values stay outside the document."
-                } else {
-                    "The document changed. Refresh annotations to recompute the prototype decorations."
-                }).font_size(12.).color(ThemeColor::TextMuted)))
+                .child(label("Hover styles and hints. Edits clear annotations; Refresh annotations restores them.").font_size(12.).color(ThemeColor::TextMuted)))
             .child(self.editor.clone().into_element().flex_grow(1.).min_height(0.).fill_width())
     }
 }
@@ -73,7 +88,7 @@ fn find(document: &Buffer, needle: &str) -> Option<Range<usize>> {
     })
 }
 
-fn configure(editor: &mut Editor, light: bool, decorations: bool, overlays: bool) {
+fn configure(editor: &mut Editor, light: bool, decorations: bool, overlays: bool, inline: bool) {
     editor
         .set_appearance(if light {
             EditorAppearance::light()
@@ -288,7 +303,13 @@ fn configure(editor: &mut Editor, light: bool, decorations: bool, overlays: bool
                     anchor: range.end,
                     text: text.into(),
                     kind,
-                    placement: OverlayPlacement::LineEnd,
+                    placement: if inline
+                        && matches!(kind, OverlayKind::InlayHint | OverlayKind::DebugValue)
+                    {
+                        OverlayPlacement::Inline
+                    } else {
+                        OverlayPlacement::LineEnd
+                    },
                     foreground,
                     background,
                     hover: Some(HoverCard {
@@ -299,7 +320,7 @@ fn configure(editor: &mut Editor, light: bool, decorations: bool, overlays: bool
             }
         };
         add(
-            "    let count = 42;",
+            "let count",
             ": i32",
             OverlayKind::InlayHint,
             sky,
@@ -308,22 +329,31 @@ fn configure(editor: &mut Editor, light: bool, decorations: bool, overlays: bool
             "The inferred type is i32. This badge is not part of the buffer and is not copied.",
         );
         add(
-            "    let count = 42;",
-            "count = 42",
+            "= 42",
+            "value: 42",
             OverlayKind::DebugValue,
             mint,
             Some([0.04, 0.55, 0.20, 0.16]),
             "Debugger value",
-            "A mock runtime value anchored to the source line. Multiple overlays stack after the line.",
+            "A mock runtime value next to its expression. Inline placement reserves space without changing source text.",
         );
         add(
-            "    let message = format!",
+            "let message",
             ": String",
             OverlayKind::InlayHint,
             sky,
             Some([0.10, 0.35, 0.70, 0.15]),
             "Mock type information",
             "The expression produces an owned String.",
+        );
+        add(
+            "unknown_call(",
+            "message:",
+            OverlayKind::InlayHint,
+            sky,
+            Some([0.10, 0.35, 0.70, 0.15]),
+            "Mock parameter name hint",
+            "The parameter name is displayed before the argument. Selecting or copying the call excludes the hint.",
         );
         add(
             "    unknown_call(message)",
@@ -383,17 +413,69 @@ mod tests {
     }
 
     #[test]
+    fn child_editor_updates_remain_independent_of_toolbar_refreshes() {
+        let mut runtime = Runtime::new();
+        let showcase = runtime.update(|cx| cx.new(|cx| Showcase::new(cx)));
+        let editor = runtime.update(|cx| showcase.read(cx).editor.clone());
+        let mut ui = Ui::new(&mut runtime, showcase.clone()).unwrap();
+        ui.prepare(&mut runtime, [1280., 900.], &mut Measure)
+            .unwrap();
+        runtime.update(|cx| {
+            editor.update(cx, |editor, _| {
+                editor.set_appearance(EditorAppearance::light()).unwrap()
+            })
+        });
+        ui.prepare(&mut runtime, [1280., 900.], &mut Measure)
+            .unwrap();
+        let surface = ui
+            .elements()
+            .find(|e| e.key == Some(&Key::from("editor-surface")))
+            .unwrap();
+        assert_eq!(
+            surface.background,
+            Some(EditorAppearance::light().background)
+        );
+        runtime.update(|cx| {
+            showcase.update(cx, |this, cx| {
+                this.inline = false;
+                this.refresh(cx);
+            })
+        });
+        ui.prepare(&mut runtime, [1280., 900.], &mut Measure)
+            .unwrap();
+        let surface = ui
+            .elements()
+            .find(|e| e.key == Some(&Key::from("editor-surface")))
+            .unwrap();
+        assert_eq!(
+            surface.background,
+            Some(EditorAppearance::dark().background)
+        );
+        runtime.update(|cx| {
+            assert!(
+                editor
+                    .read(cx)
+                    .annotations()
+                    .unwrap()
+                    .overlays
+                    .iter()
+                    .all(|o| o.placement != OverlayPlacement::Inline)
+            )
+        });
+    }
+
+    #[test]
     fn showcase_ranges_remain_valid_for_both_appearances() {
         let mut editor = Editor::new(SAMPLE);
         for light in [false, true] {
-            configure(&mut editor, light, true, true);
+            configure(&mut editor, light, true, true, true);
             let annotations = editor.annotations().unwrap();
             assert!(annotations.spans.len() > 20);
-            assert_eq!(annotations.overlays.len(), 5);
+            assert_eq!(annotations.overlays.len(), 6);
             assert!(annotations.validate(editor.buffer()).is_ok());
         }
         editor.set_text("different content");
-        configure(&mut editor, false, true, true);
+        configure(&mut editor, false, true, true, true);
         assert!(
             editor
                 .annotations()

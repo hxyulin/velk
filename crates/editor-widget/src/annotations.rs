@@ -80,12 +80,15 @@ pub enum OverlayKind {
 /// Overlays never change document text or caret positions. LineEnd places badges
 /// after the source line and stacks multiple badges horizontally. AtAnchor paints
 /// at the caret position; use it for ghost completions at an empty/end-of-line
-/// position, as it intentionally does not reserve space in source text.
+/// position, as it intentionally does not reserve space in source text. Inline
+/// reserves space at its anchor and shifts following glyphs; its virtual text
+/// still never enters document edits, selections, clipboard, or undo history.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OverlayPlacement {
     #[default]
     LineEnd,
     AtAnchor,
+    Inline,
 }
 
 #[derive(Clone, Debug, PartialEq)]

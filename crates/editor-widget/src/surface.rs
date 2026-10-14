@@ -1,3 +1,4 @@
+use crate::inline::InlineProjection;
 use crate::{
     Annotations, Color, HoverCard, LinePattern, OverlayKind, OverlayPlacement, Selection,
     Underline,
@@ -26,6 +27,7 @@ pub(crate) struct Geometry {
     layout: Option<Arc<TextLayout>>,
     rope: Rope,
     replacement: Option<(Range<usize>, usize)>,
+    projection: InlineProjection,
     offset: [f32; 2],
     viewport: [f32; 2],
     caret: Option<Rect>,
@@ -100,6 +102,7 @@ impl Geometry {
                 point[1] - PADDING + self.offset[1],
             ])?
             .byte_offset;
+        let byte = self.projection.base_offset(byte);
         // Map the transient preedit display back into the unchanged document.
         let byte = match &self.replacement {
             Some((range, length)) if byte >= range.start => {
@@ -186,6 +189,7 @@ pub(crate) struct SurfaceState {
     composition_rects: Vec<Rect>,
     annotations: Option<Arc<Annotations>>,
     decorations: DecorationCache,
+    projection: InlineProjection,
 }
 
 impl CustomElement for Surface {
@@ -215,21 +219,55 @@ impl CustomElement for Surface {
             if let Some(composition) = &self.composition {
                 text.replace_range(range.clone(), &composition.text);
             }
-            let spans = self
+            let hints = self
                 .annotations
                 .iter()
-                .flat_map(|annotations| &annotations.spans)
+                .flat_map(|a| a.overlays.iter().enumerate())
+                .filter(|(_, overlay)| overlay.placement == OverlayPlacement::Inline)
+                .filter_map(|(index, overlay)| {
+                    display_anchor(self.rope.char_to_byte(overlay.anchor), replacement.as_ref())
+                        .map(|anchor| (anchor, index, overlay.text.as_str()))
+                })
+                .collect::<Vec<_>>();
+            let (text, projection) = if hints.is_empty() {
+                (text, InlineProjection::default())
+            } else {
+                InlineProjection::build(&text, hints)
+            };
+            let mut spans = self
+                .annotations
+                .iter()
+                .flat_map(|a| &a.spans)
                 .flat_map(|span| {
                     let source = self.rope.char_to_byte(span.range.start)
                         ..self.rope.char_to_byte(span.range.end);
                     display_ranges(source, replacement.as_ref())
                         .into_iter()
+                        .flat_map(|range| projection.ranges(range))
                         .filter_map(|range| span.style.text_span(range))
                 })
                 .collect::<Vec<_>>();
+            if let Some(annotations) = &self.annotations {
+                for hint in &projection.insertions {
+                    let overlay = &annotations.overlays[hint.overlay_index];
+                    spans.push(
+                        rxui::astrelis::TextSpan::new(hint.display.clone())
+                            .font_size(12.)
+                            .line_height(LINE_HEIGHT)
+                            .weight(400)
+                            .slant(if overlay.kind == OverlayKind::GhostText {
+                                FontSlant::Italic
+                            } else {
+                                FontSlant::Normal
+                            })
+                            .color(overlay.foreground),
+                    );
+                }
+            }
             state
                 .buffer
                 .set_rich_text(&text, editor_text_style(), spans)?;
+            state.projection = projection;
             state.buffer.set_wrap(TextWrap::None);
             state.revision = Some(self.revision);
             state.composition = self.composition.clone();
@@ -261,7 +299,8 @@ impl CustomElement for Surface {
             None => self.rope.char_to_byte(self.selection.head),
         };
         // IME cursor byte offsets need not themselves be grapheme boundaries.
-        let caret_byte = boundary_before(&layout, caret_byte);
+        let caret_byte =
+            boundary_before(&layout, state.projection.display_offset(caret_byte, true));
         state.caret = layout
             .caret(TextPosition::new(caret_byte))
             .map(|caret| Rect::new(caret.origin[0], caret.origin[1], 1.5, caret.height));
@@ -273,22 +312,30 @@ impl CustomElement for Surface {
         {
             state.caret = None;
         }
-        if layout_changed || selection_changed || composition_changed {
+        if layout_changed || selection_changed || composition_changed || annotations_changed {
             state.selection_rects.clear();
             state.composition_rects.clear();
             if let Some(composition) = &self.composition {
-                let start = boundary_before(&layout, range.start);
-                let end = boundary_after(&layout, range.start + composition.text.len());
-                state
-                    .composition_rects
-                    .extend(layout.selection_rects(start..end)?);
+                let base_range = range.start..range.start + composition.text.len();
+                for projected in state.projection.ranges(base_range) {
+                    let start = boundary_before(&layout, projected.start);
+                    let end = boundary_after(&layout, projected.end);
+                    state
+                        .composition_rects
+                        .extend(layout.selection_rects(start..end)?);
+                }
             } else if !range.is_empty() {
-                state.selection_rects.extend(layout.selection_rects(range)?);
+                for projected in state.projection.ranges(range) {
+                    state
+                        .selection_rects
+                        .extend(layout.selection_rects(projected)?);
+                }
             }
         }
         let decorations_changed = layout_changed || annotations_changed || raster_changed;
         if decorations_changed {
-            state.decorations = prepare_annotations(self, &layout, replacement.as_ref(), cx)?;
+            state.decorations =
+                prepare_annotations(self, &layout, replacement.as_ref(), &state.projection, cx)?;
             state.annotations = self.annotations.clone();
         }
         let mut geometry = self.geometry.borrow_mut();
@@ -299,6 +346,7 @@ impl CustomElement for Surface {
         geometry.content_size = state.decorations.content_size;
         if decorations_changed {
             geometry.hover_regions = state.decorations.hover_regions.clone();
+            geometry.projection = state.projection.clone();
         }
         geometry.layout = Some(layout.clone());
         geometry.rope = self.rope.clone();
@@ -512,6 +560,7 @@ fn prepare_annotations(
     surface: &Surface,
     layout: &TextLayout,
     replacement: Option<&(std::ops::Range<usize>, usize)>,
+    projection: &InlineProjection,
     cx: &mut CustomPrepare<'_>,
 ) -> Result<DecorationCache, UiError> {
     let mut cache = DecorationCache {
@@ -522,9 +571,13 @@ fn prepare_annotations(
         return Ok(cache);
     };
     for (id, span) in annotations.spans.iter().enumerate() {
+        let mut background_lines = std::collections::HashSet::new();
         let source =
             surface.rope.char_to_byte(span.range.start)..surface.rope.char_to_byte(span.range.end);
-        for range in display_ranges(source, replacement) {
+        for range in display_ranges(source, replacement)
+            .into_iter()
+            .flat_map(|range| projection.ranges(range))
+        {
             let range = boundary_before(layout, range.start)..boundary_after(layout, range.end);
             if let Some(color) = span.style.background
                 && span.style.full_line_background
@@ -538,6 +591,9 @@ fn prepare_annotations(
                     .map_or(start, |c| c.line_index);
                 for (index, line) in layout.lines().iter().enumerate().take(end + 1).skip(start) {
                     if index == end && range.end == line.source.start && index > start {
+                        continue;
+                    }
+                    if !background_lines.insert(index) {
                         continue;
                     }
                     cache.backgrounds.push(Background {
@@ -590,11 +646,39 @@ fn prepare_annotations(
         .map(|line| line.left + line.width)
         .collect::<Vec<_>>();
     for (index, overlay) in annotations.overlays.iter().enumerate() {
+        if overlay.placement == OverlayPlacement::Inline {
+            if let Some(hint) = projection
+                .insertions
+                .iter()
+                .find(|h| h.overlay_index == index)
+            {
+                for rect in layout.selection_rects(hint.display.clone())? {
+                    if let Some(color) = overlay.background {
+                        cache.backgrounds.push(Background {
+                            rect,
+                            color,
+                            full_line: false,
+                        });
+                    }
+                    if let Some(card) = &overlay.hover {
+                        cache.hover_regions.push(HoverRegion {
+                            id: annotations.spans.len() + index,
+                            rect,
+                            card: card.clone(),
+                        });
+                    }
+                }
+            }
+            continue;
+        }
         let Some(byte) = display_anchor(surface.rope.char_to_byte(overlay.anchor), replacement)
         else {
             continue;
         };
-        let Some(caret) = layout.caret(TextPosition::new(boundary_after(layout, byte))) else {
+        let Some(caret) = layout.caret(TextPosition::new(boundary_after(
+            layout,
+            projection.display_offset(byte, true),
+        ))) else {
             continue;
         };
         let line = &layout.lines()[caret.line_index];
@@ -614,6 +698,9 @@ fn prepare_annotations(
         let x = match overlay.placement {
             OverlayPlacement::LineEnd => line_ends[caret.line_index] + 16.,
             OverlayPlacement::AtAnchor => caret.origin[0],
+            OverlayPlacement::Inline => {
+                unreachable!("inline text is already in the projected layout")
+            }
         };
         let rect = Rect::new(
             x,
@@ -773,5 +860,135 @@ mod rich_tests {
             "nearest text position must not invent a hover outside its actual range"
         );
         assert!(geometry.hover([40., -10.]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+    use rxui::astrelis::{TextSpan, TextSystem};
+
+    fn layout_with_hint(
+        base: &str,
+        anchor: usize,
+        label: &str,
+    ) -> Option<(Arc<TextLayout>, InlineProjection, Arc<TextLayout>)> {
+        let mut fonts = TextSystem::new();
+        if fonts.load_system_fonts().is_empty() {
+            return None;
+        }
+        let mut buffer = TextBuffer::new();
+        buffer.set_width(Some(640.)).unwrap();
+        buffer.set_wrap(TextWrap::None);
+        buffer.set_text(base, editor_text_style()).unwrap();
+        let original = buffer.layout(&mut fonts).unwrap();
+        let (text, projection) = InlineProjection::build(base, vec![(anchor, 0, label)]);
+        buffer
+            .set_rich_text(
+                &text,
+                editor_text_style(),
+                vec![
+                    TextSpan::new(projection.insertions[0].display.clone())
+                        .font_size(12.)
+                        .line_height(LINE_HEIGHT),
+                ],
+            )
+            .unwrap();
+        let layout = buffer.layout(&mut fonts).unwrap();
+        Some((layout, projection, original))
+    }
+
+    #[test]
+    fn inline_layout_shifts_following_source_and_hit_testing_maps_to_document() {
+        let source = "let count = 42;";
+        let Some((layout, projection, original)) = layout_with_hint(source, 9, ": i32") else {
+            return;
+        };
+        assert!(layout.size()[0] > original.size()[0]);
+        let geometry = Geometry {
+            layout: Some(layout.clone()),
+            rope: Rope::from_str(source),
+            projection: projection.clone(),
+            viewport: [640., 480.],
+            ..Geometry::default()
+        };
+        let hint = layout
+            .selection_rects(projection.insertions[0].display.clone())
+            .unwrap()
+            .next()
+            .unwrap();
+        assert_eq!(
+            geometry.hit([
+                PADDING + hint.x + hint.width / 2.,
+                PADDING + hint.y + hint.height / 2.
+            ]),
+            Some(9)
+        );
+        for byte in [0, 8, 9, 10, source.len()] {
+            let caret = layout
+                .caret(TextPosition::new(projection.display_offset(byte, true)))
+                .unwrap();
+            assert_eq!(
+                geometry.hit([
+                    PADDING + caret.origin[0],
+                    PADDING + caret.origin[1] + caret.height / 2.
+                ]),
+                Some(byte)
+            );
+        }
+        let selection = projection
+            .ranges(0..source.len())
+            .into_iter()
+            .flat_map(|r| layout.selection_rects(r).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            selection
+                .iter()
+                .all(|r| r.x + r.width <= hint.x + 0.01 || r.x >= hint.x + hint.width - 0.01)
+        );
+    }
+
+    #[test]
+    fn inline_mapping_composes_with_ime_replacement_and_unicode() {
+        let source = "é count = 世界;";
+        let base = "你 count = 世界;";
+        // IME replaces source é (two bytes) with 你 (three bytes). The hint is
+        // after count, shifted by that one-byte difference in the display base.
+        let anchor = "你 count".len();
+        let Some((layout, projection, _)) = layout_with_hint(base, anchor, ": 类型") else {
+            return;
+        };
+        let geometry = Geometry {
+            layout: Some(layout.clone()),
+            rope: Rope::from_str(source),
+            projection: projection.clone(),
+            replacement: Some((0..2, 3)),
+            viewport: [640., 480.],
+            ..Geometry::default()
+        };
+        let hint = layout
+            .selection_rects(projection.insertions[0].display.clone())
+            .unwrap()
+            .next()
+            .unwrap();
+        assert_eq!(
+            geometry.hit([
+                PADDING + hint.x + hint.width / 2.,
+                PADDING + hint.y + hint.height / 2.
+            ]),
+            Some("é count".chars().count())
+        );
+        let caret = layout
+            .caret(TextPosition::new(
+                projection.display_offset(base.len(), true),
+            ))
+            .unwrap();
+        assert_eq!(
+            geometry.hit([
+                PADDING + caret.origin[0],
+                PADDING + caret.origin[1] + caret.height / 2.
+            ]),
+            Some(source.chars().count())
+        );
     }
 }

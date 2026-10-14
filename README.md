@@ -112,9 +112,19 @@ whole document as one undoable edit.
 
 `OverlayPlacement::LineEnd` stacks labels after the source line. `AtAnchor`
 paints at an existing caret position without reserving document layout space;
-use it for ghost completions at line ends or empty positions. True in-flow inlay
-hints, interactive diagnostic actions, automatic annotation remapping, and a
-rich-text file format are future work.
+use it for ghost completions at line ends or empty positions. `Inline` reserves
+shaped space at an anchor and moves the following source text. The playground
+starts with inline type hints beside variables, a parameter-name hint before an
+argument, and a debugger value beside a literal. **Inlays: inline / line end**
+switches those hints between the two placements.
+
+Inline labels live only in a projected display string. Carets retain source
+character offsets and sit after hints at their anchor; clicking a label maps to
+that anchor. Selection highlighting, source styles, copied text, and edits skip
+the virtual label. This projection composes with IME replacement and supports
+multiple labels at one anchor. Labels are currently single-line text; arbitrary
+embedded widgets, soft-wrapped inlays, interactive diagnostic actions, automatic
+annotation remapping, and a rich-text file format are future work.
 
 Run the CPU benchmark:
 

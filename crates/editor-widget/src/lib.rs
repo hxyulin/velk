@@ -2,6 +2,7 @@
 mod annotations;
 mod blink;
 mod buffer;
+mod inline;
 mod surface;
 
 pub use annotations::{
@@ -71,6 +72,10 @@ impl Editor {
     }
 
     fn hide_hover(&mut self) {
+        if self.hovered.is_some() || self.tooltip_visible {
+            self.epoch += 1;
+            self.reveal_caret = false;
+        }
         self.hover_task = None;
         self.hovered = None;
         self.tooltip_visible = false;
@@ -86,12 +91,16 @@ impl Editor {
         if let Some(target) = target {
             let id = target.id;
             self.hovered = Some(target);
+            self.epoch += 1;
+            self.reveal_caret = false;
             self.hover_task = cx
                 .try_spawn(
                     rxui::sleep(Duration::from_millis(350)),
                     move |this, result, _| {
                         if result.is_ok() && this.hovered.as_ref().is_some_and(|hit| hit.id == id) {
                             this.tooltip_visible = true;
+                            this.epoch += 1;
+                            this.reveal_caret = false;
                         }
                     },
                 )

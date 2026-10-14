@@ -53,6 +53,9 @@ Excluded: GPU upload, glyph rasterization, render-pass recording, drawing,
 window presentation, annotation validation/projection, custom decoration
 geometry, overlay text preparation, hover card layout, and input dispatch.
 The rich benchmark measures Astrelis rich text, not the full widget pipeline.
+Inline hints now introduce a display-only string projection and additional style
+spans. The recorded benchmark does not measure that projection or the full
+inline-hint pipeline.
 
 ## Cache behavior and idle work
 
