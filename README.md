@@ -67,9 +67,11 @@ horizontal and vertical wheel scrolling, and scrolling to reveal the caret.
 Undo history retains up to 128 edits; each native text insertion, paste, or
 deletion is one edit. There is no typing coalescence yet.
 
-Text shaping is cached between document edits, but this first version shapes the
-whole document. It does not yet provide viewport-only line rendering, soft
-wrapping, word motions, multiple cursors, an automatic syntax provider, or file persistence.
+Text shaping and GPU text resources are cached per logical line. The renderer
+prepares the viewport plus a small overscan region, retaining unaffected layouts
+on ordinary edits. Active IME composition currently uses the full-document path.
+Soft wrapping, word motions, multiple cursors, an automatic syntax provider, and
+file persistence remain future work.
 Vertical navigation preserves a grapheme column rather than a pixel column.
 RXUI custom text clients currently expose the editor's accessibility role and
 label, but do not publish document text or selection to assistive technology.
@@ -126,11 +128,17 @@ multiple labels at one anchor. Labels are currently single-line text; arbitrary
 embedded widgets, soft-wrapped inlays, interactive diagnostic actions, automatic
 annotation remapping, and a rich-text file format are future work.
 
-Run the CPU benchmark:
+Run the CPU benchmarks and the native 100,000-line stress fixture:
 
 ```sh
-cargo bench -p velk-editor-widget --bench editing
+cargo bench -p velk-editor-widget --bench editing --locked
+cargo bench -p velk-editor-widget --bench viewport --features performance --locked
+cargo run --release --locked -- --stress
 ```
+
+Set `VELK_PROFILE=1` to log preparation counters/timings and draw-recording time.
+Applications can inspect `Editor::frame_metrics()`. Our target is a 120 Hz
+frame budget (8.33 ms); these measurements do not establish presentation cadence.
 
 See [the performance report](docs/performance/editor-prototype.md) for measured
 results, cache behavior, scope, and next optimizations.
