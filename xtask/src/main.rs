@@ -4,6 +4,7 @@ use std::{
     process::{Command, ExitCode},
 };
 use velk_plugin_host::{MANIFEST, Manifest, PluginSpec};
+mod lsp_smoke;
 const PLUGIN: &str = "velk-plugin-markdown";
 const ID: &str = "velk.markdown";
 fn main() -> ExitCode {
@@ -53,7 +54,7 @@ fn build(root: &Path, release: bool, editor: bool) -> Result<(), String> {
     let mut command = cargo();
     command
         .current_dir(root)
-        .args(["build", "--locked", "-p", PLUGIN]);
+        .args(["build", "--locked", "-p", PLUGIN, "-p", "velk-plugin-lsp"]);
     if editor {
         command.args(["-p", "velk-editor"]);
     }
@@ -134,6 +135,13 @@ fn run() -> Result<(), String> {
     if args.first().is_some_and(|s| s == "--") {
         args.remove(0);
     }
+    if action == "__test-lsp" && args.len() == 3 {
+        return lsp_smoke::child(
+            Path::new(&args[0]),
+            Path::new(&args[1]),
+            Path::new(&args[2]),
+        );
+    }
     if action == "help" {
         println!(
             "cargo xtask build [--release]\ncargo xtask plugins [--release]\ncargo xtask run [--release] -- <file>\ncargo xtask test-plugins [--release]"
@@ -155,7 +163,8 @@ fn run() -> Result<(), String> {
     build(&root, release, action != "plugins")?;
     let directory = output.join("plugins");
     let spec = stage(&output, &directory)?;
-    publish(&directory, vec![spec])?;
+    let lsp = stage_plugin(&output, &directory, "velk.lsp", "velk_plugin_lsp")?;
+    publish(&directory, vec![spec, lsp])?;
     println!("Built plugins: {}", directory.display());
     if action == "run" {
         checked(
@@ -264,6 +273,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     assert!(!last_copy.exists());
     assert_eq!(manager.plugins().count(), 0);
     markdown_smoke(output)?;
+    lsp_smoke::run(root, output)?;
     println!(
         "Native plugin smoke passed: load, no automatic replacement, explicit unload/load of restaged code, repeated cleanup, retained host data, rejected artifacts, malformed manifest."
     );

@@ -3105,6 +3105,23 @@ dependencies = [
  "tempfile",
  "velk-markup",
  "velk-plugin-api",
+ "velk-plugin-sdk",
+ "velk-semantic",
+]
+
+[[package]]
+name = "velk-plugin-lsp"
+version = "0.1.0"
+dependencies = [
+ "lsp-types",
+ "ropey",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+ "velk-plugin-sdk",
+ "velk-semantic",
 ]
 
 [[package]]
@@ -3119,8 +3136,10 @@ dependencies = [
 name = "velk-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "ropey",
  "velk-markup",
  "velk-plugin-api",
+ "velk-semantic",
 ]
 
 [[package]]
@@ -3128,12 +3147,9 @@ name = "velk-semantic"
 version = "0.1.0"
 dependencies = [
  "async-channel",
- "lsp-types",
  "ropey",
- "serde_json",
  "tempfile",
  "tokio",
- "url",
 ]
 
 [[package]]
@@ -3947,9 +3963,12 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "pollster",
+ "ropey",
  "serde_json",
  "tempfile",
+ "tokio",
  "velk-plugin-host",
+ "velk-semantic",
 ]
 
 [[package]]

@@ -1,10 +1,6 @@
 //! Semantic services independent of UI widgets, rendering, and wire protocols.
 //! One service currently owns one open document. Backends run on a dedicated
-//! thread/reactor; input and result queues are bounded and UI methods never wait.
-#[cfg(feature = "lsp")]
-pub mod lsp;
-#[cfg(any(feature = "lsp", test))]
-mod text;
+//! thread/reactor or an external provider; queues are bounded and UI methods never wait.
 
 use async_channel::{Receiver, Sender};
 use ropey::Rope;
@@ -101,7 +97,27 @@ pub struct Session {
     events: EventSink,
 }
 impl Session {
-    /// Prioritize the latest source snapshot before position-sensitive requests.
+    /// Whether the frontend has closed or requested shutdown.
+    pub fn is_cancelled(&self) -> bool {
+        self.stop.is_closed()
+    }
+    /// Nonblocking drain used by an externally scheduled provider. Source
+    /// snapshots take priority over position-sensitive requests.
+    pub fn try_next(&self) -> Option<Input> {
+        if self.is_cancelled() {
+            return None;
+        }
+        if let Ok(document) = self.documents.try_recv() {
+            return Some(Input::Document(document));
+        }
+        if let Ok(saved) = self.saves.try_recv() {
+            return Some(Input::Saved(saved));
+        }
+        self.hovers
+            .try_recv()
+            .ok()
+            .map(|hover| hover.map_or(Input::CancelHover, Input::Hover))
+    }
     pub async fn next(&self) -> Option<Input> {
         loop {
             if self.stop.is_closed() {
@@ -133,6 +149,7 @@ impl Session {
 /// status or hover results. Sending never waits for a UI consumer.
 #[derive(Clone)]
 pub struct EventSink {
+    observer: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     status: Sender<Event>,
     status_pending: Receiver<Event>,
     diagnostics: Sender<Event>,
@@ -142,7 +159,20 @@ pub struct EventSink {
     wake: Sender<()>,
 }
 impl EventSink {
+    /// Discard results from a retired provider before attaching a new generation.
+    pub fn clear(&self) {
+        while self.status_pending.try_recv().is_ok() {}
+        while self.diagnostics_pending.try_recv().is_ok() {}
+        while self.hover_pending.try_recv().is_ok() {}
+    }
+    pub fn close(&self) {
+        self.wake.close();
+    }
     pub fn publish(&self, event: Event) {
+        if let Some(observer) = &self.observer {
+            observer(event);
+            return;
+        }
         match event {
             Event::Status(_) => latest(&self.status, &self.status_pending, event),
             Event::Diagnostics { .. } => {
@@ -188,6 +218,8 @@ pub struct Service {
     wake: Sender<()>,
     stop: Sender<()>,
     pub events: Events,
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    worker: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 impl Service {
     /// Starting the backend, executable discovery, and process creation happen on
@@ -198,39 +230,23 @@ impl Service {
 
     /// Object-safe entry point for selecting a provider at runtime.
     pub fn start_boxed(backend: Box<dyn Backend>) -> io::Result<Arc<Self>> {
-        let (documents, documents_pending) = async_channel::bounded(1);
-        let (hovers, hovers_pending) = async_channel::bounded(1);
-        let (saves, saves_pending) = async_channel::bounded(1);
-        let (wake, input_wake) = async_channel::bounded(1);
-        let (stop, stopped) = async_channel::bounded(1);
-        let (status, status_pending) = async_channel::bounded(1);
-        let (diagnostics, diagnostics_pending) = async_channel::bounded(1);
-        let (hover, hover_pending) = async_channel::bounded(1);
-        let (event_wake, event_pending) = async_channel::bounded(1);
-        let events = Events {
-            status: status_pending.clone(),
-            diagnostics: diagnostics_pending.clone(),
-            hover: hover_pending.clone(),
-            wake: event_pending,
-        };
-        let sink = EventSink {
-            status,
-            status_pending,
-            diagnostics,
-            diagnostics_pending,
-            hover,
-            hover_pending,
-            wake: event_wake,
-        };
-        let session = Session {
-            documents: documents_pending.clone(),
-            hovers: hovers_pending.clone(),
-            saves: saves_pending.clone(),
-            wake: input_wake,
-            stop: stopped,
-            events: sink.clone(),
-        };
-        std::thread::Builder::new()
+        Self::start_observed_boxed(backend, None)
+    }
+    /// Execute a backend on its own reactor and synchronously forward owned events.
+    /// Shutdown/join guarantees no observer calls remain in flight afterward.
+    pub fn start_observed(
+        backend: Box<dyn Backend>,
+        observer: impl Fn(Event) + Send + Sync + 'static,
+    ) -> io::Result<Arc<Self>> {
+        Self::start_observed_boxed(backend, Some(Arc::new(observer)))
+    }
+    fn start_observed_boxed(
+        backend: Box<dyn Backend>,
+        observer: Option<Arc<dyn Fn(Event) + Send + Sync>>,
+    ) -> io::Result<Arc<Self>> {
+        let (service, session) = Self::channels(None, observer);
+        let sink = session.events();
+        let worker = std::thread::Builder::new()
             .name("velk-semantic".into())
             .spawn(move || {
                 sink.publish(Event::Status(Status::Starting));
@@ -249,7 +265,52 @@ impl Service {
                 // Receiver clones do not retain the service or keep it alive.
                 sink.wake.close();
             })?;
-        Ok(Arc::new(Self {
+        *service.worker.lock().unwrap() = Some(worker);
+        Ok(service)
+    }
+    /// Queue-only frontend. The owner drains Session after each notification;
+    /// no extra thread/runtime is created for an external native provider.
+    pub fn external(notify: impl Fn() + Send + Sync + 'static) -> (Arc<Self>, Session) {
+        Self::channels(Some(Arc::new(notify)), None)
+    }
+    fn channels(
+        notify: Option<Arc<dyn Fn() + Send + Sync>>,
+        observer: Option<Arc<dyn Fn(Event) + Send + Sync>>,
+    ) -> (Arc<Self>, Session) {
+        let (documents, documents_pending) = async_channel::bounded(1);
+        let (hovers, hovers_pending) = async_channel::bounded(1);
+        let (saves, saves_pending) = async_channel::bounded(1);
+        let (wake, input_wake) = async_channel::bounded(1);
+        let (stop, stopped) = async_channel::bounded(1);
+        let (status, status_pending) = async_channel::bounded(1);
+        let (diagnostics, diagnostics_pending) = async_channel::bounded(1);
+        let (hover, hover_pending) = async_channel::bounded(1);
+        let (event_wake, event_pending) = async_channel::bounded(1);
+        let events = Events {
+            status: status_pending.clone(),
+            diagnostics: diagnostics_pending.clone(),
+            hover: hover_pending.clone(),
+            wake: event_pending,
+        };
+        let sink = EventSink {
+            observer,
+            status,
+            status_pending,
+            diagnostics,
+            diagnostics_pending,
+            hover,
+            hover_pending,
+            wake: event_wake,
+        };
+        let session = Session {
+            documents: documents_pending.clone(),
+            hovers: hovers_pending.clone(),
+            saves: saves_pending.clone(),
+            wake: input_wake,
+            stop: stopped,
+            events: sink.clone(),
+        };
+        let service = Arc::new(Self {
             documents,
             documents_pending,
             hovers,
@@ -259,27 +320,55 @@ impl Service {
             wake,
             stop,
             events,
-        }))
+            notify,
+            worker: std::sync::Mutex::new(None),
+        });
+        (service, session)
+    }
+    /// Must run away from the UI. Cancels the backend and joins its reactor,
+    /// including runtime teardown, before observer storage or code can be freed.
+    pub fn shutdown_and_join(&self) -> Result<(), String> {
+        self.shutdown();
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .map_err(|_| "semantic join lock poisoned")?
+            .take()
+        {
+            worker
+                .join()
+                .map_err(|_| "semantic worker panicked".to_string())?;
+        }
+        Ok(())
+    }
+    fn signal(&self) {
+        let _ = self.wake.try_send(());
+        if let Some(notify) = &self.notify {
+            notify();
+        }
     }
     pub fn update(&self, document: DocumentSnapshot) {
         latest(&self.documents, &self.documents_pending, document);
-        let _ = self.wake.try_send(());
+        self.signal();
     }
     pub fn hover(&self, request: HoverRequest) {
         latest(&self.hovers, &self.hovers_pending, Some(request));
-        let _ = self.wake.try_send(());
+        self.signal();
     }
     pub fn cancel_hover(&self) {
         latest(&self.hovers, &self.hovers_pending, None);
-        let _ = self.wake.try_send(());
+        self.signal();
     }
     pub fn saved(&self, document: DocumentSnapshot) {
         latest(&self.saves, &self.saves_pending, document);
-        let _ = self.wake.try_send(());
+        self.signal();
     }
     pub fn shutdown(&self) {
         self.stop.close();
         self.wake.close();
+        if let Some(notify) = &self.notify {
+            notify();
+        }
     }
 }
 impl Drop for Service {
@@ -297,6 +386,65 @@ fn latest<T>(sender: &Sender<T>, pending: &Receiver<T>, value: T) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn observed_backend_join_waits_for_final_callbacks_and_reactor_exit() {
+        use std::sync::{Mutex, mpsc};
+        use std::time::Duration;
+        struct Gated {
+            entered: mpsc::SyncSender<()>,
+            release: mpsc::Receiver<()>,
+        }
+        impl Backend for Gated {
+            fn run(self: Box<Self>, session: Session) -> BackendFuture {
+                Box::pin(async move {
+                    session.cancelled().await;
+                    self.entered.send(()).unwrap();
+                    self.release.recv().unwrap();
+                    session.events().publish(Event::Diagnostics {
+                        revision: 5,
+                        diagnostics: vec![],
+                    });
+                    Ok(())
+                })
+            }
+        }
+        let (entered, entry) = mpsc::sync_channel(1);
+        let (release, resume) = mpsc::sync_channel(1);
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let observer = output.clone();
+        let service = Service::start_observed(
+            Box::new(Gated {
+                entered,
+                release: resume,
+            }),
+            move |e| observer.lock().unwrap().push(e),
+        )
+        .unwrap();
+        service.shutdown();
+        entry.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (joined, done) = mpsc::sync_channel(1);
+        let owner = service.clone();
+        let thread = std::thread::spawn(move || {
+            owner.shutdown_and_join().unwrap();
+            joined.send(()).unwrap();
+        });
+        assert!(
+            done.try_recv().is_err(),
+            "join cannot complete while the backend is running"
+        );
+        release.send(()).unwrap();
+        done.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread.join().unwrap();
+        let events = output.lock().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                Event::Status(Status::Starting),
+                Event::Diagnostics { revision: 5, .. },
+                Event::Status(Status::Stopped)
+            ]
+        ));
+    }
     struct InProcess;
     impl Backend for InProcess {
         fn run(self: Box<Self>, session: Session) -> BackendFuture {

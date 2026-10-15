@@ -1,10 +1,11 @@
 #![allow(unsafe_code)]
 use crate::{Plugin, api::*};
+pub mod semantic;
 use std::{
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
 };
-fn guard(f: impl FnOnce() -> i32) -> i32 {
+pub(super) fn guard(f: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(PANICKED)
 }
 fn fixed<const N: usize>(s: &str) -> [u8; N] {
@@ -30,11 +31,15 @@ pub unsafe fn entry<P: Plugin>(abi: u32, output: *mut PluginApi, size: usize) ->
         let api = PluginApi {
             abi_version: ABI_VERSION,
             struct_size: size as u32,
+            flags: if P::RESIDENT_CODE { RESIDENT_CODE } else { 0 },
             id: fixed(P::ID),
             version: fixed(P::VERSION),
             create: Some(create::<P>),
             destroy: Some(destroy::<P>),
             describe: Some(describe::<P>),
+            semantic_create: P::SEMANTIC.then_some(semantic::create::<P>),
+            semantic_input: P::SEMANTIC.then_some(semantic::input),
+            semantic_destroy: P::SEMANTIC.then_some(semantic::destroy),
             render_markdown: if P::MARKDOWN {
                 Some(render_markdown::<P>)
             } else {

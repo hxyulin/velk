@@ -10,7 +10,7 @@ pub fn start() -> Option<velk_plugin_host::Runtime> {
         }
     };
     // SAFETY: plugins here are explicitly trusted local native code. v1
-    // plugins must not retain host borrows or run background work across unload.
+    // plugins obey borrowed-call and semantic join-before-release lifetimes.
     match unsafe { velk_plugin_host::Runtime::start(directory) } {
         Ok(runtime) => Some(runtime),
         Err(error) => {

@@ -167,6 +167,11 @@ impl Document {
             }
             for plugin in &state.loaded {
                 let id = plugin.id.clone();
+                let description = if plugin.resident_code {
+                    format!("{} · Code retained until exit", plugin.description)
+                } else {
+                    plugin.description.clone()
+                };
                 entries = entries.child(
                     column()
                         .gap(3.)
@@ -183,7 +188,7 @@ impl Document {
                                     }),
                                 )),
                         )
-                        .child(label(plugin.description.clone()).font_size(12.)),
+                        .child(label(description).font_size(12.)),
                 );
             }
         } else {

@@ -1,4 +1,5 @@
-//! Native plugins with host-scheduled async requests. No plugin-owned futures or dependency resolver.
+//! Native plugins with host-scheduled async requests and scoped semantic sessions.
+//! No Rust future crosses the ABI; dependency resolution remains deferred.
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Component, Path, PathBuf},
@@ -79,14 +80,38 @@ enum Request {
         source: String,
         reply: async_channel::Sender<Result<velk_markup::Document, String>>,
     },
+    OpenSemantic {
+        id: u64,
+        session: velk_semantic::Session,
+    },
+    WakeSemantic,
     Stop,
 }
 /// Safe command endpoint. Lifecycle work is serialized on a sleeping worker.
 #[derive(Clone)]
 pub struct Client {
     sender: mpsc::SyncSender<Request>,
+    next_session: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Client {
+    /// Queue-only frontend: no reactor/thread or native call on the UI.
+    /// Open documents remain attached to this host endpoint across provider unload/load.
+    pub fn semantic_service(&self) -> Result<std::sync::Arc<velk_semantic::Service>, String> {
+        let id = self
+            .next_session
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let sender = self.sender.clone();
+        let (service, session) = velk_semantic::Service::external(move || {
+            // If full, the worker already has work to process; it drains every
+            // session after each request, so no document wake can be lost.
+            let _ = sender.try_send(Request::WakeSemantic);
+        });
+        self.sender
+            .try_send(Request::OpenSemantic { id, session })
+            .map_err(|e| format!("plugin queue unavailable: {e}"))?;
+        Ok(service)
+    }
+
     pub fn load(&self) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
         self.request(Operation::Load)
     }
@@ -150,11 +175,21 @@ impl Runtime {
                 while let Ok(request) = receive.recv() {
                     let (operation, reply) = match request {
                         Request::Stop => break,
+                        Request::OpenSemantic { id, session } => {
+                            manager.open_semantics(id, session);
+                            manager.drive_semantics();
+                            continue;
+                        }
+                        Request::WakeSemantic => {
+                            manager.drive_semantics();
+                            continue;
+                        }
                         Request::Render { source, reply } => {
                             if !reply.is_closed() {
                                 let result = manager.render_markdown(&source);
                                 let _ = reply.try_send(result);
                             }
+                            manager.drive_semantics();
                             continue;
                         }
                         Request::Lifecycle { operation, reply } => (operation, reply),
@@ -179,6 +214,7 @@ impl Runtime {
                             }
                         }
                     }
+                    manager.drive_semantics();
                     let result = events.map(|events| Report {
                         loaded: manager.plugins().count(),
                         plugins: manager.plugins().cloned().collect(),
@@ -189,7 +225,10 @@ impl Runtime {
             })
             .map_err(|e| e.to_string())?;
         Ok(Self {
-            client: Client { sender },
+            client: Client {
+                sender,
+                next_session: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            },
             worker: Some(worker),
         })
     }

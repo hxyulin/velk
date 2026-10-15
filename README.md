@@ -86,9 +86,11 @@ cargo xtask plugins --release
 ```
 
 This only builds/stages the bundled plugins. Editor recompilation is unnecessary.
-The bundled `velk.markdown` plugin renders hover documentation. LSP and Rust
-support are still built in. Without the Markdown plugin, hover displays literal
-provider text.
+The bundled `velk.markdown` plugin renders hover documentation. `velk.lsp` owns
+language-server transport, protocol handling, configuration, and the persistent
+rust-analyzer session for Rust files. Unloading LSP clears diagnostics and semantic
+hover; loading it reattaches the latest unsaved document. Rust Tree-sitter syntax
+highlighting stays built in. Without Markdown, hover displays literal provider text.
 
 The staging tool publishes immutable, content-addressed libraries and atomically
 replaces `plugins.json`. The loader verifies BLAKE3 digests, ABI/layout, metadata,
@@ -105,7 +107,8 @@ C entry point, catches unwinding panics inside lifecycle wrappers, and copies
 results into host-owned buffers. The experimental ABI contains fixed metadata,
 opaque instances, and function pointers; it does not exchange Rust containers or
 trait objects. Its contracts are not frozen. Distribution, dependency resolution,
-inter-plugin services, and plugin-owned asynchronous work are deliberately deferred.
+and generic inter-plugin services are deferred. The semantic capability is the
+first explicitly scoped asynchronous plugin service.
 
 Markdown requests are asynchronous to the editor. The host uses a bounded queue
 (16 pending operations) and executes the synchronous C function on its plugin
@@ -127,12 +130,43 @@ layout is experimental: rebuild/stage bundled plugins with `cargo xtask build`
 after SDK changes. Layout size checks reject incompatible function tables.
 Versioned compatibility will be introduced when the plugin API becomes public.
 
-These are trusted in-process native plugins. The v1 contract requires serialized,
-returning calls, no retained host pointers, no background threads/tasks/callbacks,
-and no unload-sensitive thread-local destructors. Safe author-facing methods do
-not enforce those restrictions on arbitrary Rust code. A reported destructor
-failure leaves the library mapped, blocks reactivation of that ID, and requires
-restart. A hung or aborting native plugin cannot be recovered by this loader;
+Semantic providers have a separate ownership model. The host creates an opaque
+session and retains its thread-safe event sink until the plugin's session destroy
+returns. The SDK runs each backend on one Tokio reactor, with typed C input views
+and event callbacks; no Rust future, trait object, Rope, or allocator ownership
+crosses the library boundary. Document snapshots are coalesced before marshaling
+on the host worker; the UI only clones the Rope. Document text is bounded at
+64 MiB, event output at 4 MiB/65,536 diagnostics. Unix paths preserve native bytes.
+Unload cancels/joins every session before destroying the plugin instance. Callback
+results are copied into host-owned data, and old queued results are cleared before
+reattachment. Host semantic endpoints survive unload and replay the latest source
+snapshot when the provider returns. No polling loop or extra host reactor/thread
+is added for these endpoints.
+
+`velk.lsp` requests **resident code**: Tokio's Unix process support installs global
+signal hooks which can outlive a reactor. Logical unload still closes/reaps the
+server, joins the reactor, destroys sessions/instances, and drops their data, but
+that library image/private copy stays mapped until process exit. Reloading the
+same digest reuses its image; each different build retains another image. The
+modal identifies this with “Code retained until exit”. Markdown retains ordinary
+library release behavior. Fully reclaimable LSP code would require moving process
+and reactor ownership into a host service or an unregisterable transport.
+
+LSP defaults to `rust-analyzer` on PATH (`VELK_RUST_ANALYZER` overrides it).
+`VELK_LSP_CONFIG=/path/to/config.json` optionally selects a server privately in the
+plugin, using `executable`, `arguments`, `root`, `initialization_options`, and
+`configuration`. The current editor still routes only Rust documents to semantics.
+One session owns one document/server; multi-document sharing is future work.
+
+These are trusted in-process native plugins. Lifecycle/input calls are serialized;
+only the explicit semantic sink/context may be retained through a session. All
+session producers and callbacks must finish before successful session destruction.
+Other borrowed pointers cannot escape their calls, and no unload-sensitive TLS
+may outlive the owning threads. Safe author-facing methods do not enforce those
+restrictions on arbitrary Rust code. A reported destructor failure leaves code
+(and any potentially live callback storage) retained, blocks reactivation of that
+ID, and requires restart. A hung or aborting native plugin cannot be recovered by
+this loader;
 logical deactivation and actual OS unmapping are distinct. The editor/SDK/loader
 use `deny(unsafe_code)` with narrowly allowed FFI modules and generated exports;
 the rest of the workspace continues to forbid unsafe code.
@@ -148,7 +182,11 @@ active instance, explicitly unloads/loads a restaged artifact, and checks repeat
 lifecycle cleanup, host-owned data, missing/corrupt libraries, digest mismatches,
 and malformed manifests. It additionally tests native styled Markdown output,
 async requests, fallback/reactivation, and result ownership after unload. Worker
-tests cover queued and active cancellation and unload ordering. Build commands
+tests cover queued and active cancellation and unload ordering. The LSP DSO smoke
+uses a deterministic Python peer to check async diagnostics/hover, cancellation,
+saves, unload during initialization and held requests, process reaping, latest
+snapshot reattachment, resident image reuse, and independent Markdown operation.
+Build commands
 target the local native platform; cross-compilation and distribution are not part
 of this tooling yet.
 
@@ -157,10 +195,11 @@ of this tooling yet.
 - `crates/editor`: the `velk-editor` package and `velk` application binary.
 - `crates/editor-widget`: reusable RXUI editor view and UI-independent rope buffer.
 - `crates/syntax`: in-process Tree-sitter parsing, Rust grammar, and background worker.
-- `crates/semantic`: transport-independent semantic services and the optional LSP backend.
+- `crates/semantic`: transport-independent semantic models, queues, and backend lifecycle.
 - `crates/markup`: UI-independent styled documents and host-facing async renderer contract.
 - `crates/plugin-api`, `crates/plugin-sdk`, `crates/plugin-host`: experimental native ABI, author SDK, and lifecycle worker.
 - `plugins/markdown`: native CommonMark provider; owns the `pulldown-cmark` dependency.
+- `plugins/lsp`: stateful native LSP provider; owns protocol types, JSON-RPC, URIs, and language-server processes.
 - `xtask`: local editor/plugin build and staging commands.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 
@@ -241,8 +280,7 @@ excluding uncommitted text and the replaced selection.
 
 The pinned RXUI host already supplies shared pools with two async and two blocking
 workers. Async result delivery reuses that executor; the persistent syntax CPU
-worker is separate. Syntax delivery requires no second runtime. The separate semantic service
-uses Tokio for asynchronous language-server I/O. Input handling, immediate Rope edits, viewport layout and GPU work
+worker is separate. Syntax delivery requires no second runtime. The LSP plugin owns its separate Tokio reactor for asynchronous language-server I/O. Input handling, immediate Rope edits, viewport layout and GPU work
 remain UI responsibilities. File loading currently finishes before the native
 event loop starts; an in-window asynchronous loading flow is not implemented.
 The syntax tree remains on the worker for future structural features; resolved

@@ -1,8 +1,9 @@
 # Semantic services
 
 Velk's semantic boundary is `velk-semantic`, independent of RXUI, widgets,
-Tree-sitter, and LSP wire types. Its built-in LSP backend is optional through the
-`lsp` Cargo feature; the app currently enables it for Rust documents.
+Tree-sitter, and LSP wire types. LSP implementation and dependencies live in the
+loadable `plugins/lsp` library; the editor routes Rust documents to a neutral
+plugin-host endpoint. There is no built-in LSP fallback.
 
 ## Public boundary
 
@@ -11,8 +12,11 @@ Tree-sitter, and LSP wire types. Its built-in LSP backend is optional through th
 - `Backend`: an implementation consumes a `Session` and returns a background
   future. It can own an in-process engine, an LSP connection, or another protocol.
   `Service::start_boxed` accepts a dynamically selected backend.
-- `Service`: starts a named worker thread and a current-thread Tokio reactor.
-  `update`, `hover`, `cancel_hover`, `saved`, and `shutdown` never wait for results.
+- `Service`: `external` creates queue-only frontends for the plugin host without
+  another thread/reactor. `start_boxed`/`start_observed` execute a local backend on
+  one named worker with a current-thread Tokio reactor. `shutdown_and_join` is the
+  worker-only quiescence barrier. `update`, `hover`, `cancel_hover`, `saved`, and
+  ordinary `shutdown` never wait for results.
 - `Event`: status/capabilities, versioned diagnostics, hover results, and request
   failures. Ranges are Unicode scalar offsets. Hover results retain request
   identity, document revision, and requested position.
@@ -32,10 +36,28 @@ and request-identity check before presentation. An in-process test backend
 exercises the same API with no LSP types.
 
 Source editing and immediate Tree-sitter highlighting never wait for semantics.
-The RXUI executor delivers semantic events to the document entity; the semantic
-Tokio reactor and process pipes stay on their separate worker thread. This adds
-Tokio for actual asynchronous process I/O without replacing RXUI's executor or
-moving UI-owned font/GPU preparation into it.
+The RXUI executor delivers semantic events to the document entity. The host's
+existing plugin worker drains coalesced snapshots after each command/wake; no
+polling timer or second host semantic reactor is required. Native session input
+copies typed borrowed data into plugin-owned queues, and the plugin reactor owns
+protocol I/O. No future, Rust container, trait object, or shared allocator crosses
+the C ABI. Unload cancels/joins session reactors before dropping host callback
+storage or the plugin instance. Native results are copied before callbacks return.
+
+The frontend endpoint survives provider unload. Status becomes stopped and the
+UI clears semantic decorations; source edits still update the cached latest
+snapshot. Reload attaches a new session and replays that snapshot. Pending old
+results are cleared at generation changes. Markdown is an independent capability:
+unloading LSP leaves its renderer available, and unloading Markdown leaves LSP
+working with literal Markdown presentation.
+
+Tokio's process-global Unix signal hooks require `velk.lsp` to request resident
+code. Successful logical unload reaps servers and joins/destroys sessions and
+instances, but retains one code image/private copy per digest for process life;
+reloading the same build reuses it. The modal labels this explicitly. Different
+builds retain different images until exit. Failed teardown instead quarantines
+code and callback storage, blocks reactivation, and requires restart. Arbitrary
+plugin hangs/aborts remain outside the cooperative loader's recovery guarantees.
 
 ## LSP adapter
 
@@ -81,13 +103,16 @@ stay within its supported integer range, including shutdown.
 
 ## Rust and presentation
 
-Opening `.rs` enables a persistent rust-analyzer backend. The app discovers the
+Opening `.rs` creates an endpoint which uses the loaded LSP plugin. Its default
+backend is persistent rust-analyzer. The plugin discovers the
 nearest ancestor Cargo manifest on the worker; an explicit `LspBackend::root`
 can override it. The binary defaults to `rust-analyzer` on PATH and can be
 replaced with `VELK_RUST_ANALYZER=/absolute/path/to/rust-analyzer`. Initialization
 options and workspace configuration are separate configurable JSON objects in
-the LSP adapter. Other executables/backends can be wired without changing widget
-or buffer types; the app does not yet have user-configurable language routing.
+the LSP adapter. `VELK_LSP_CONFIG=/path/to/config.json` can set `executable`,
+`arguments`, `root`, `initialization_options`, and `configuration` privately in the
+plugin; the file is limited to 1 MiB. The editor has no user-configurable language
+routing yet, and one session still owns one document/server.
 
 `checkOnSave` is initially disabled. Native analyzer diagnostics still arrive,
 but compiler/check diagnostics are not equivalent to running `cargo check`.
@@ -164,8 +189,15 @@ unchanged.
 ```sh
 cargo test --workspace --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test -p velk-semantic --no-default-features --locked
+cargo test -p velk-semantic --locked
+cargo xtask test-plugins
 ```
+
+The actual native-library smoke additionally verifies unload during a held hover
+and stalled initialization, server process reaping before the unload reply, host
+results surviving unload, latest-document reattachment, resident image reuse,
+and independent Markdown rendering. Unit tests check typed ABI record validation,
+Unicode/non-UTF-8 Unix paths, joining final callbacks, and failed-session teardown.
 
 Scripted LSP tests use `python3` and only its standard library. They check UTF-16
 incremental updates and coalescing, configuration requests, refused workspace
@@ -180,7 +212,7 @@ shaped grapheme hit testing across Unicode and bidirectional runs.
 A separate optional test requires rust-analyzer and rust-src:
 
 ```sh
-cargo test -p velk-semantic --features lsp --test lsp --locked \
+cargo test -p velk-plugin-lsp --test lsp --locked \
   real_rust_analyzer_hover_uses_unsaved_document -- --ignored --nocapture
 ```
 

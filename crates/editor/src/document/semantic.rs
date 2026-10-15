@@ -25,7 +25,7 @@ impl Document {
     pub fn enable_semantics(&mut self, service: Arc<Service>, cx: &mut Context<'_, Self>) {
         self.enable_semantics_with_renderer(service, self.markup_renderer(), cx);
     }
-    /// Host extension point: a future plugin can supply Markdown interpretation
+    /// Host extension point: a plugin can supply Markdown interpretation
     /// without knowing about LSP transport or owning the popup's input lifetime.
     pub fn enable_semantics_with_renderer(
         &mut self,

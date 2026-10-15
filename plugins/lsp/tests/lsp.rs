@@ -1,7 +1,7 @@
-#![cfg(feature = "lsp")]
 use ropey::Rope;
 use std::{path::Path, time::Duration};
-use velk_semantic::{DocumentSnapshot, Event, HoverRequest, Service, Status, lsp::LspBackend};
+use velk_plugin_lsp::lsp::LspBackend;
+use velk_semantic::{DocumentSnapshot, Event, HoverRequest, Service, Status};
 
 fn backend(log: &Path, mode: &str) -> LspBackend {
     LspBackend {

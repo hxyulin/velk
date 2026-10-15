@@ -90,14 +90,16 @@ fn run() -> Result<(), Error> {
             let editor = cx.new(|_| editor);
             let rust = Language::for_path(&path) == Some(Language::Rust);
             let root = cx.new(|cx| document::Document::new(editor, file, path, cx));
-            if let Some(client) = plugin_client {
+            if let Some(client) = plugin_client.clone() {
                 root.update(cx, |this, cx| this.enable_plugins(client, cx));
             }
             if rust {
                 root.update(cx, |this, cx| {
-                    match velk_semantic::Service::start(
-                        velk_semantic::lsp::LspBackend::rust_analyzer(),
-                    ) {
+                    match plugin_client
+                        .as_ref()
+                        .ok_or_else(|| "plugin worker unavailable".to_string())
+                        .and_then(velk_plugin_host::Client::semantic_service)
+                    {
                         Ok(service) => this.enable_semantics(service, cx),
                         Err(error) => eprintln!("velk: cannot start semantic service: {error}"),
                     }

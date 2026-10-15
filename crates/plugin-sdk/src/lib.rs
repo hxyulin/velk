@@ -1,10 +1,18 @@
 //! Safe author-facing lifecycle. Raw ABI operations are confined to `ffi`.
 pub use velk_markup as markup;
 pub use velk_plugin_api as api;
+pub use velk_semantic as semantic;
 pub trait Plugin: Default + 'static {
     const ID: &'static str;
     const VERSION: &'static str;
     const MARKDOWN: bool = false;
+    const SEMANTIC: bool = false;
+    const RESIDENT_CODE: bool = false;
+    /// Each returned backend owns one independent session. The SDK cancels and
+    /// joins its reactor before native session destruction returns.
+    fn semantic_backend(&mut self) -> Box<dyn semantic::Backend> {
+        panic!("plugin does not provide semantics")
+    }
     fn describe(&mut self) -> String;
     /// Executed on a host worker; implementations retain no input or callbacks.
     fn render_markdown(&mut self, source: &str) -> markup::Document {

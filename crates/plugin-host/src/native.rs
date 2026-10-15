@@ -1,11 +1,13 @@
 #![allow(unsafe_code)]
 use crate::{Event, PluginSpec, read_manifest};
+mod semantic;
 use libloading::Library;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
     path::PathBuf,
     ptr::NonNull,
+    sync::Arc,
 };
 use velk_plugin_api::*;
 
@@ -14,10 +16,18 @@ pub struct PluginInfo {
     pub id: String,
     pub version: String,
     pub generation: u64,
-    /// Private on-disk copy for this generation; removed after successful teardown.
+    /// Private loaded copy. Ordinary code is removed after teardown; resident
+    /// builds retain their copy and reuse it across logical generations.
     pub loaded_path: PathBuf,
     /// Host-owned copy; remains valid after the library is unloaded.
     pub description: String,
+    /// Logical unload releases sessions/instances, while this build stays mapped.
+    pub resident_code: bool,
+}
+struct Code {
+    library: Library,
+    path: PathBuf,
+    _copy: tempfile::TempDir,
 }
 struct Generation {
     info: PluginInfo,
@@ -25,8 +35,7 @@ struct Generation {
     instance: NonNull<c_void>,
     destroyed: bool,
     // Explicit drop order: instance, library, then its on-disk copy.
-    library: Option<Library>,
-    _copy: tempfile::TempDir,
+    library: Option<Arc<Code>>,
 }
 impl Generation {
     /// Caller guarantees the plugin ABI and unload contract.
@@ -34,6 +43,7 @@ impl Generation {
         directory: &std::path::Path,
         spec: PluginSpec,
         generation: u64,
+        cached: Option<Arc<Code>>,
     ) -> Result<Self, String> {
         let source = directory.join(&spec.library);
         let copy = tempfile::Builder::new()
@@ -50,11 +60,19 @@ impl Generation {
             return Err("library digest mismatch".into());
         }
         // SAFETY: caller explicitly trusts libraries selected by this manifest.
-        let library = unsafe { Library::new(&path) }.map_err(|e| e.to_string())?;
+        let code = match cached {
+            Some(code) => code,
+            None => Arc::new(Code {
+                library: unsafe { Library::new(&path) }.map_err(|e| e.to_string())?,
+                path,
+                _copy: copy,
+            }),
+        };
         let mut output = std::mem::MaybeUninit::<PluginApi>::uninit();
         // SAFETY: entry symbol/type and successful initialization are required by v1.
         let api = unsafe {
-            let entry = library
+            let entry = code
+                .library
                 .get::<Entry>(ENTRY_SYMBOL)
                 .map_err(|e| e.to_string())?;
             let status = entry(
@@ -72,12 +90,21 @@ impl Generation {
         {
             return Err("incompatible plugin API layout".into());
         }
+        if api.flags & !RESIDENT_CODE != 0 {
+            return Err("unknown plugin lifetime flags".into());
+        }
         let id = metadata(&api.id)?;
         let version = metadata(&api.version)?;
         if id != spec.id {
             return Err(format!("expected {}, library reports {id}", spec.id));
         }
         let create = api.create.ok_or("missing create function")?;
+        let semantic_count = usize::from(api.semantic_create.is_some())
+            + usize::from(api.semantic_input.is_some())
+            + usize::from(api.semantic_destroy.is_some());
+        if semantic_count != 0 && semantic_count != 3 {
+            return Err("incomplete semantic session interface".into());
+        }
         if api.destroy.is_none() || api.describe.is_none() {
             return Err("missing lifecycle function".into());
         }
@@ -93,14 +120,14 @@ impl Generation {
                 id,
                 version,
                 generation,
-                loaded_path: path,
+                loaded_path: code.path.clone(),
                 description: String::new(),
+                resident_code: api.flags & RESIDENT_CODE != 0,
             },
             api,
             instance,
             destroyed: false,
-            library: Some(library),
-            _copy: copy,
+            library: Some(code),
         };
         loaded.info.description = loaded.describe()?;
         Ok(loaded)
@@ -266,12 +293,14 @@ fn metadata(bytes: &[u8]) -> Result<String, String> {
     String::from_utf8(bytes[..end].to_vec()).map_err(|e| e.to_string())
 }
 /// Serial, worker-owned lifecycle manager. It exposes no raw function pointers or
-/// plugin-owned values, so all v1 calls complete before replacement/destruction.
+/// plugin-owned values. Session producers are joined before instance destruction.
 pub struct Manager {
     directory: PathBuf,
     plugins: BTreeMap<String, Generation>,
     next_generation: u64,
     blocked: BTreeSet<String>,
+    sessions: BTreeMap<u64, semantic::DocumentSession>,
+    resident_code: BTreeMap<String, Arc<Code>>,
 }
 impl Manager {
     pub fn new(directory: PathBuf) -> Self {
@@ -280,10 +309,15 @@ impl Manager {
             plugins: BTreeMap::new(),
             next_generation: 1,
             blocked: BTreeSet::new(),
+            sessions: BTreeMap::new(),
+            resident_code: BTreeMap::new(),
         }
     }
     pub fn plugins(&self) -> impl Iterator<Item = &PluginInfo> {
-        self.plugins.values().map(|p| &p.info)
+        self.plugins
+            .values()
+            .filter(|p| !p.destroyed)
+            .map(|p| &p.info)
     }
     pub fn describe(&mut self, id: &str) -> Result<String, String> {
         self.plugins
@@ -298,7 +332,7 @@ impl Manager {
         let count = self
             .plugins
             .values()
-            .filter(|p| p.api.render_markdown.is_some())
+            .filter(|p| !p.destroyed && p.api.render_markdown.is_some())
             .count();
         if count > 1 {
             return Err(
@@ -309,7 +343,7 @@ impl Manager {
         match self
             .plugins
             .values_mut()
-            .find(|p| p.api.render_markdown.is_some())
+            .find(|p| !p.destroyed && p.api.render_markdown.is_some())
         {
             Some(provider) => provider.render_markdown(source),
             None => Ok(velk_markup::Document::plain(source)),
@@ -319,7 +353,7 @@ impl Manager {
     /// even when a newer build is staged. Unload explicitly before replacing one.
     /// # Safety
     /// All libraries selected by the directory must implement the trusted v1 ABI,
-    /// including its no-background-work/no-retained-borrows unload contract.
+    /// including its join-before-release semantic session contract.
     pub unsafe fn load(&mut self) -> Result<Vec<Event>, String> {
         if !self.directory.join(crate::MANIFEST).exists() {
             return Ok(vec![]);
@@ -327,9 +361,6 @@ impl Manager {
         let manifest = read_manifest(&self.directory)?;
         let mut events = Vec::new();
         for spec in manifest.plugins {
-            if self.plugins.contains_key(&spec.id) {
-                continue;
-            }
             let id = spec.id.clone();
             if self.blocked.contains(&id) {
                 events.push(Event::Rejected {
@@ -338,11 +369,26 @@ impl Manager {
                 });
                 continue;
             }
+            if self.plugins.contains_key(&id) {
+                continue;
+            }
             let generation = self.next_generation;
             self.next_generation += 1;
             // SAFETY: inherited from load's caller.
-            match unsafe { Generation::load(&self.directory, spec, generation) } {
+            let digest = spec.digest.clone();
+            let cached = self.resident_code.get(&digest).cloned();
+            match unsafe { Generation::load(&self.directory, spec, generation, cached) } {
                 Ok(candidate) => {
+                    if candidate.api.flags & RESIDENT_CODE != 0 {
+                        self.resident_code.entry(digest).or_insert_with(|| {
+                            let code = candidate.library.as_ref().unwrap().clone();
+                            // Process-wide hooks can still call this code after all
+                            // instances/runtimes are gone. One permanent lease per
+                            // build, reused across ordinary unload/load cycles.
+                            std::mem::forget(code.clone());
+                            code
+                        });
+                    }
                     events.push(Event::Loaded(candidate.info.clone()));
                     self.plugins.insert(id, candidate);
                 }
@@ -352,8 +398,9 @@ impl Manager {
         Ok(events)
     }
     pub fn unload(&mut self, id: &str) -> Option<Event> {
+        let sessions_retired = self.retire_semantics(id);
         let mut plugin = self.plugins.remove(id)?;
-        if plugin.retire() {
+        if sessions_retired && plugin.retire() {
             Some(Event::Removed(id.to_owned()))
         } else {
             self.blocked.insert(id.to_owned());
@@ -392,22 +439,26 @@ mod tests {
                     generation: 1,
                     loaded_path: copy.path().into(),
                     description: String::new(),
+                    resident_code: false,
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,
                     struct_size: std::mem::size_of::<PluginApi>() as u32,
+                    flags: 0,
                     id: [0; 64],
                     version: [0; 32],
                     create: None,
                     destroy: Some(fails_to_destroy),
                     describe: None,
                     render_markdown: None,
+                    semantic_create: None,
+                    semantic_input: None,
+                    semantic_destroy: None,
                 },
                 // This local test destructor never dereferences the opaque instance.
                 instance: NonNull::dangling(),
                 destroyed: false,
                 library: None,
-                _copy: copy,
             },
         );
         assert!(matches!(
@@ -502,23 +553,33 @@ pub(super) mod test_provider {
                     generation: 1,
                     loaded_path: copy.path().into(),
                     description: String::new(),
+                    resident_code: false,
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,
                     struct_size: std::mem::size_of::<PluginApi>() as u32,
+                    flags: 0,
                     id: [0; 64],
                     version: [0; 32],
                     create: None,
                     destroy: Some(destroy),
                     describe: None,
                     render_markdown: Some(render),
+                    semantic_create: None,
+                    semantic_input: None,
+                    semantic_destroy: None,
                 },
                 instance: NonNull::new(Box::into_raw(Box::new(control)).cast()).unwrap(),
                 destroyed: false,
                 library: None,
-                _copy: copy,
             },
         );
         manager
+    }
+}
+
+impl Drop for Manager {
+    fn drop(&mut self) {
+        self.unload_all();
     }
 }
