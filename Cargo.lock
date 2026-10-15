@@ -226,7 +226,6 @@ dependencies = [
 [[package]]
 name = "astrelis"
 version = "0.4.0-dev.0"
-source = "git+https://github.com/hxyulin/astrelis?rev=d8ac1d1b5fd0c57d5ae0811abb3a004f6e3f6923#d8ac1d1b5fd0c57d5ae0811abb3a004f6e3f6923"
 dependencies = [
  "bymsdfgen-core",
  "bytemuck",
@@ -241,7 +240,6 @@ dependencies = [
 [[package]]
 name = "astrelis-winit"
 version = "0.4.0-dev.0"
-source = "git+https://github.com/hxyulin/astrelis?rev=d8ac1d1b5fd0c57d5ae0811abb3a004f6e3f6923#d8ac1d1b5fd0c57d5ae0811abb3a004f6e3f6923"
 dependencies = [
  "astrelis",
  "pollster",

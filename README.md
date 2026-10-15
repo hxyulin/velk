@@ -37,6 +37,12 @@ with its `native` feature enabled. Keep `Cargo.lock` committed to preserve the
 resolved dependency graph. To update RXUI, change the workspace dependency's
 `rev`, refresh the lockfile, and run the workspace checks.
 
+Rendering experiments currently require the patched sibling checkout
+`../astrelis` (branch `perf/editor-text`, commit `9c60dfd`). The workspace patches
+both Astrelis crates to that checkout while keeping RXUI pinned. See the
+[local Astrelis performance report](docs/performance/astrelis-local.md) for the
+backend revision, measurements, and reproducibility details.
+
 ## Editor widget
 
 `velk-editor-widget` uses Ropey 1.6.1 for document storage and bounded undo/redo

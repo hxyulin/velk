@@ -7,7 +7,7 @@ use crate::{
 use ropey::Rope;
 use rxui::astrelis::{
     FontFamily, FontSlant, LineDraw, PaintSession, PreparedText, Rect, TextBuffer, TextDraw,
-    TextLayout, TextPosition, TextRasterOptions, TextStyle, TextWrap,
+    TextLayout, TextPosition, TextRasterOptions, TextShaping, TextStyle, TextWrap,
 };
 use rxui::{Bounds, CustomElement, CustomPrepare, ElementInfo, UiError};
 use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
@@ -289,6 +289,15 @@ impl Surface {
                     );
                 }
             }
+            let shaping = if self.composition.is_none()
+                && spans.is_empty()
+                && text.bytes().all(|byte| (b' '..=b'~').contains(&byte))
+            {
+                TextShaping::Basic
+            } else {
+                TextShaping::Advanced
+            };
+            state.buffer.set_shaping(shaping);
             state
                 .buffer
                 .set_rich_text(&text, editor_text_style(), spans)?;
@@ -300,7 +309,23 @@ impl Surface {
         state.shaped_selection = self.selection;
         state.shaped_annotations = self.annotations.clone();
         state.buffer.set_width(Some(width))?;
-        let layout = state.buffer.layout(fonts)?;
+        let mut layout = state.buffer.layout(fonts)?;
+        if state.buffer.shaping() == TextShaping::Basic
+            && state
+                .layout
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(old, &layout))
+            && (!layout.missing_glyphs().is_empty()
+                || layout.fonts().iter().any(|font| {
+                    fonts
+                        .font_info(font.id())
+                        .is_none_or(|info| !info.monospaced)
+                }))
+        {
+            // A missing or substituted preferred face needs the general path.
+            state.buffer.set_shaping(TextShaping::Advanced);
+            layout = state.buffer.layout(fonts)?;
+        }
         layout.prepare_interaction()?;
         let layout_changed = state
             .layout
@@ -574,6 +599,77 @@ mod tests {
             assert!(layout.hit_test(caret.origin).is_some());
             assert!(layout.selection_rects(0..text.len()).is_ok());
         }
+    }
+
+    #[test]
+    fn ascii_fast_path_preserves_monospace_geometry_and_unicode_falls_back() {
+        let mut fonts = TextSystem::new();
+        if fonts.load_system_fonts().is_empty() {
+            return;
+        }
+        let text: String = (b' '..=b'~').map(char::from).collect();
+        let mut surface = Surface {
+            rope: Rope::from_str(&text),
+            revision: 0,
+            selection: Selection::default(),
+            composition: None,
+            geometry: Rc::new(RefCell::new(Geometry::default())),
+            epoch: 0,
+            input_started: None,
+            reveal_caret: false,
+            caret_visible: true,
+            annotations: None,
+            selection_color: [0.; 4],
+        };
+        let mut state = SurfaceState::default();
+        surface.shape(&mut state, 640., &mut fonts).unwrap();
+        assert_eq!(state.buffer.shaping(), TextShaping::Basic);
+        let basic = state.layout.as_ref().unwrap().clone();
+        let mut reference = TextBuffer::new();
+        reference.set_text(&text, editor_text_style()).unwrap();
+        reference.set_wrap(TextWrap::None);
+        reference.set_width(Some(640.)).unwrap();
+        let advanced = reference.layout(&mut fonts).unwrap();
+        assert_eq!(basic.glyphs().len(), advanced.glyphs().len());
+        for (a, b) in basic.glyphs().iter().zip(advanced.glyphs()) {
+            assert_eq!(a.glyph_id, b.glyph_id);
+            assert_eq!(a.cluster, b.cluster);
+            assert!((a.advance - b.advance).abs() < 0.001);
+            for axis in 0..2 {
+                assert!((a.position[axis] - b.position[axis]).abs() < 0.01);
+            }
+        }
+        for byte in 0..=text.len() {
+            let a = basic.caret(TextPosition::new(byte)).unwrap();
+            let b = advanced.caret(TextPosition::new(byte)).unwrap();
+            assert!((a.origin[0] - b.origin[0]).abs() < 0.01);
+            assert_eq!(
+                basic.hit_test([a.origin[0], 12.]),
+                advanced.hit_test([a.origin[0], 12.])
+            );
+        }
+        for text in ["café", "世界", "👩‍💻", "a\tb", "a\nb"] {
+            surface.rope = Rope::from_str(text);
+            surface.revision += 1;
+            surface.shape(&mut state, 640., &mut fonts).unwrap();
+            assert_eq!(state.buffer.shaping(), TextShaping::Advanced);
+            assert!(
+                state
+                    .layout
+                    .as_ref()
+                    .unwrap()
+                    .caret(TextPosition::new(text.len()))
+                    .is_some()
+            );
+        }
+        surface.rope = Rope::from_str("hello");
+        surface.revision += 1;
+        surface.composition = Some(Composition {
+            text: "x".into(),
+            cursor: None,
+        });
+        surface.shape(&mut state, 640., &mut fonts).unwrap();
+        assert_eq!(state.buffer.shaping(), TextShaping::Advanced);
     }
 
     #[test]

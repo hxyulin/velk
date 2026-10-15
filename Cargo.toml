@@ -20,3 +20,8 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+# Local rendering experiments, based on RXUI's pinned Astrelis revision.
+[patch."https://github.com/hxyulin/astrelis"]
+astrelis = { path = "../astrelis/crates/astrelis" }
+astrelis-winit = { path = "../astrelis/crates/astrelis-winit" }

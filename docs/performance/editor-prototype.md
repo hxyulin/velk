@@ -188,3 +188,5 @@ window presentation, annotation validation/projection, custom decoration
 geometry, overlay text preparation, hover card layout, and input dispatch.
 The rich benchmark measures Astrelis rich text, not the full widget pipeline.
 These historical timings do not include inline hints or the viewport renderer.
+
+A subsequent local backend pass is recorded in [the Astrelis report](astrelis-local.md).
