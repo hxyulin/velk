@@ -16,7 +16,7 @@ pub use annotations::{
     OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
 };
 pub use buffer::{Buffer, Selection};
-use rxui::{Bounds, prelude::*, standard_commands as commands};
+use rxui::{prelude::*, standard_commands as commands};
 use std::{cell::RefCell, rc::Rc};
 use std::{
     sync::Arc,
@@ -267,25 +267,15 @@ impl Editor {
             event.capture_pointer();
         }
     }
-
-    fn caret_area(&self) -> Bounds {
-        self.geometry.borrow().caret_area()
-    }
 }
 
 impl View for Editor {
     fn view(&self, cx: &mut ViewContext<'_, Self>) -> impl IntoElement {
-        // One follow-up frame publishes measured IME/overlay geometry. Caret
-        // blinking is timer-driven rather than a continuous animation loop.
-        let geometry = self.geometry.borrow();
-        if geometry.epoch != Some(self.epoch) {
-            cx.request_animation_frame();
-        }
         let blink_geometry = self.geometry.clone();
         let caret_epoch = self.caret_epoch;
         let blink = cx.use_state(move |cx| blink::Blink::new(blink_geometry, caret_epoch, cx));
         let caret_visible = blink.read(cx).visible(caret_epoch);
-        drop(geometry);
+        let ime_geometry = self.geometry.clone();
         let copy = cx
             .command(commands::Copy, |this, _, cx| {
                 if let Err(error) = cx.write_clipboard_text(this.buffer.selected_text()) {
@@ -357,7 +347,7 @@ impl View for Editor {
         .text_input_client(true)
         .accessibility_role(SemanticRole::MultilineTextInput)
         .accessibility_label("Text editor")
-        .ime_cursor_area(self.caret_area())
+        .ime_cursor_area_with(move || Some(ime_geometry.borrow().caret_area()))
         .on_key_down(cx.listener(Self::key))
         .on_pointer_down(cx.listener(|this, event, _| this.pointer(event, false)))
         .on_pointer_move(cx.listener(|this, event: &PointerInput, cx| {
@@ -434,5 +424,132 @@ impl View for Editor {
             );
         }
         root
+    }
+}
+
+#[cfg(test)]
+mod responsiveness_tests {
+    use super::*;
+    use rxui::{KeyEvent, Modifiers, TestUi, TextInputEvent, astrelis::GraphicsContext};
+    use std::time::Duration;
+
+    fn draw_and_check(test: &mut TestUi<Editor>, frame: u64) -> rxui::Bounds {
+        test.runtime().begin_frame(Duration::from_millis(frame * 8));
+        test.render().unwrap();
+        let expected = test.read(|editor| {
+            let geometry = editor.geometry.borrow();
+            assert_eq!(geometry.epoch, Some(editor.epoch));
+            let mut area = geometry.caret_area();
+            area.x += geometry.origin[0];
+            area.y += geometry.origin[1];
+            area
+        });
+        let (runtime, ui, painter) = test.parts();
+        assert_eq!(ui.ime_cursor_area(painter).unwrap(), Some(expected));
+        assert!(
+            !runtime.animation_frame_requested(),
+            "caret geometry requires no follow-up frame"
+        );
+        expected
+    }
+
+    #[test]
+    fn ime_tracks_the_painted_caret_in_one_frame_after_navigation_resize_and_composition() {
+        let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
+        let mut test =
+            TestUi::new(&graphics, [640, 240], Editor::new(&"x".repeat(10_000))).unwrap();
+        test.painter_mut().fonts_mut().load_system_fonts();
+        let id = test.element("editor-surface").unwrap().unwrap().id;
+        test.parts().1.focus(id);
+        let start = draw_and_check(&mut test, 0);
+        for (frame, key) in [(1, KeyboardKey::End), (2, KeyboardKey::ArrowLeft)] {
+            test.key(KeyEvent {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            })
+            .unwrap();
+            let caret = draw_and_check(&mut test, frame);
+            assert!(caret.x > start.x);
+            assert!(caret.x + caret.width <= 640.);
+        }
+        test.resize([320, 160]);
+        let caret = draw_and_check(&mut test, 3);
+        assert!(caret.x + caret.width <= 320.);
+        test.text_input(TextInputEvent::Preedit {
+            text: "かんじ".into(),
+            cursor: Some((0, 9)),
+        })
+        .unwrap();
+        draw_and_check(&mut test, 4);
+        assert_eq!(test.read(|e| e.buffer.text().len_chars()), 10_000);
+        test.text_input(TextInputEvent::Commit("漢字".into()))
+            .unwrap();
+        draw_and_check(&mut test, 5);
+        assert_eq!(test.read(|e| e.buffer.text().len_chars()), 10_002);
+        test.text_input(TextInputEvent::Preedit {
+            text: "あ".into(),
+            cursor: None,
+        })
+        .unwrap();
+        draw_and_check(&mut test, 6);
+        test.text_input(TextInputEvent::CancelComposition).unwrap();
+        draw_and_check(&mut test, 7);
+        assert_eq!(test.read(|e| e.buffer.text().len_chars()), 10_002);
+    }
+
+    #[test]
+    fn ime_line_hit_mapping_and_multiline_fallback_restore_without_changing_source() {
+        let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
+        let source = "aébc 👩‍💻 def\n".repeat(1000);
+        let mut test = TestUi::new(&graphics, [640, 240], Editor::new(&source)).unwrap();
+        test.painter_mut().fonts_mut().load_system_fonts();
+        let id = test.element("editor-surface").unwrap().unwrap().id;
+        test.parts().1.focus(id);
+        let entity = test.entity().clone();
+        let start = test.read(|e| e.buffer.text().line_to_char(500) + 1);
+        test.runtime().update(|cx| {
+            entity.update(cx, |e, _| {
+                e.buffer.set_caret(start, false);
+                e.buffer.set_caret(start + 2, true);
+                e.edited();
+            })
+        });
+        test.text_input(TextInputEvent::Preedit {
+            text: "かんじ".into(),
+            cursor: Some((0, 3)),
+        })
+        .unwrap();
+        let caret = draw_and_check(&mut test, 0);
+        test.read(|e| {
+            let geometry = e.geometry.borrow();
+            assert!(!geometry.metrics.composition_fallback);
+            assert!(geometry.metrics.cached_source_bytes < 2000);
+            assert_eq!(
+                geometry.hit([caret.x - 1., caret.y + caret.height / 2.]),
+                Some(start)
+            );
+        });
+        test.text_input(TextInputEvent::CancelComposition).unwrap();
+        draw_and_check(&mut test, 1);
+        test.runtime().update(|cx| {
+            entity.update(cx, |e, _| {
+                e.buffer.set_caret(start, false);
+                e.buffer.set_caret(start + 30, true);
+                e.edited();
+            })
+        });
+        test.text_input(TextInputEvent::Preedit {
+            text: "漢字".into(),
+            cursor: Some((0, 6)),
+        })
+        .unwrap();
+        draw_and_check(&mut test, 2);
+        assert!(test.read(|e| e.frame_metrics().composition_fallback));
+        test.text_input(TextInputEvent::CancelComposition).unwrap();
+        draw_and_check(&mut test, 3);
+        assert!(!test.read(|e| e.frame_metrics().composition_fallback));
+        assert_eq!(test.read(|e| e.buffer.text().to_string()), source);
     }
 }

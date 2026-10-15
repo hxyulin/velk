@@ -1,5 +1,9 @@
 # Rich horizontal windows and native scheduling investigation
 
+Follow-up: [input responsiveness and IME preparation](responsiveness.md) implements
+same-frame measured IME publication and line-local composition, with native and
+offscreen interaction benchmarks. Dependency pins below describe this earlier pass.
+
 2026-10-15. This follows the fixed-grid pass in Velk `5fd98a8`. RXUI remains pinned
 to `093d05d9a2fa5491c3cebe26be46b8720b4c6158`. Astrelis changes are published on
 [`perf/editor-text`](https://github.com/hxyulin/astrelis/tree/perf/editor-text):

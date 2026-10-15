@@ -245,6 +245,24 @@ impl SurfaceState {
 }
 
 impl Surface {
+    pub(super) fn candidate_caret(&self, state: &SurfaceState) -> Option<Rect> {
+        let byte = match &self.composition {
+            Some(composition) => {
+                self.rope.char_to_byte(self.selection.range().start)
+                    + composition
+                        .cursor
+                        .map_or(composition.text.len(), |(_, end)| end)
+            }
+            None => self.rope.char_to_byte(self.selection.head),
+        };
+        let layout = self.layout(state);
+        // IME cursor byte offsets need not themselves be grapheme boundaries.
+        let byte = boundary_before(layout, state.projection.display_offset(byte, true));
+        layout
+            .caret(TextPosition::new(byte))
+            .map(|caret| Rect::new(caret.origin[0], caret.origin[1], 1.5, caret.height))
+    }
+
     pub(super) fn shape(
         &self,
         state: &mut SurfaceState,
@@ -402,21 +420,7 @@ impl CustomElement for Surface {
             )?);
             state.raster_scale = cx.raster_scale;
         }
-        let caret_byte = match &self.composition {
-            Some(composition) => {
-                range.start
-                    + composition
-                        .cursor
-                        .map_or(composition.text.len(), |(_, end)| end)
-            }
-            None => self.rope.char_to_byte(self.selection.head),
-        };
-        // IME cursor byte offsets need not themselves be grapheme boundaries.
-        let caret_byte =
-            boundary_before(&layout, state.projection.display_offset(caret_byte, true));
-        state.caret = layout
-            .caret(TextPosition::new(caret_byte))
-            .map(|caret| Rect::new(caret.origin[0], caret.origin[1], 1.5, caret.height));
+        state.caret = self.candidate_caret(state);
         let candidate_caret = state.caret;
         if self
             .composition

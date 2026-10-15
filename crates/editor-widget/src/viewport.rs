@@ -12,6 +12,20 @@ use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, ti
 const CACHE_LIMIT: usize = 256;
 const OVERSCAN: usize = 4;
 
+// Keep ordinary IME updates in the logical-line cache. A replacement spanning
+// source lines or containing hard line breaks retains the full-document path.
+fn composition_line(surface: &Surface) -> Option<usize> {
+    let composition = surface.composition.as_ref()?;
+    let range = surface.selection.range();
+    let line = surface.rope.char_to_line(range.start);
+    (surface.rope.char_to_line(range.end) == line && !composition.text.contains(['\n', '\r']))
+        .then_some(line)
+}
+
+fn composition_fallback(surface: &Surface) -> bool {
+    surface.composition.is_some() && composition_line(surface).is_none()
+}
+
 /// CPU/GPU preparation diagnostics for the most recently prepared frame.
 /// GPU preparation is CPU submission/resource work, not GPU execution time.
 #[derive(Clone, Copy, Debug, Default)]
@@ -374,6 +388,9 @@ impl ViewportState {
             - usize::from(slice.get_char(slice.len_chars().saturating_sub(1)) == Some('\n'));
         let range = start..start + slice.len_chars();
         let selection = surface.selection;
+        let composition = (composition_line(surface) == Some(line))
+            .then(|| surface.composition.clone())
+            .flatten();
         let entry = self.cache.entry(line).or_insert_with(|| CachedLine {
             text: String::new(),
             surface: Surface {
@@ -451,11 +468,14 @@ impl ViewportState {
         }
         let window = self
             .cell
-            .filter(|_| entry.grid_eligible && entry.metric_safe && length > 1024)
+            .filter(|_| {
+                composition.is_none() && entry.grid_eligible && entry.metric_safe && length > 1024
+            })
             .map(|cell| HorizontalWindow::new(length, cell, offset, width));
         let rich_window = entry
             .rich
             .as_ref()
+            .filter(|_| composition.is_none())
             .map(|index| index.window(length, offset, width));
         let columns = rich_window
             .as_ref()
@@ -523,6 +543,7 @@ impl ViewportState {
             anchor: clamp(selection.anchor),
             head: clamp(selection.head),
         };
+        entry.surface.composition = composition;
         entry.surface.selection_color = surface.selection_color;
         entry.surface.caret_visible = surface.caret_visible
             && surface.rope.char_to_line(selection.head) == line
@@ -558,6 +579,7 @@ impl ViewportState {
         self.metrics.annotation_index_ms = started.elapsed().as_secs_f64() * 1000.;
         let mut geometry = surface.geometry.borrow_mut();
         geometry.layout = None;
+        let viewport_changed = geometry.viewport != viewport;
         geometry.viewport = viewport;
         let old_line = self.heights.line_at(geometry.offset[1]);
         let intra = geometry.offset[1] - self.heights.top(old_line);
@@ -604,7 +626,9 @@ impl ViewportState {
         // keyboard navigation can reveal exact caret geometry without a scan.
         let caret_line = surface.rope.char_to_line(surface.selection.head);
         self.prepare_line(surface, caret_line, width, geometry.offset[0], fonts)?;
-        if surface.reveal_caret && geometry.epoch != Some(surface.epoch) {
+        let reveal =
+            surface.reveal_caret && (geometry.epoch != Some(surface.epoch) || viewport_changed);
+        if reveal {
             let entry = &self.cache[&caret_line];
             geometry.caret =
                 Some(entry.document_caret(surface.selection.head, self.heights.top(caret_line)));
@@ -630,7 +654,7 @@ impl ViewportState {
         }
         // Preserve the top source line as exact mixed-size measurements replace
         // estimates. Explicit caret reveal takes precedence over scroll anchoring.
-        if !surface.reveal_caret || geometry.epoch == Some(surface.epoch) {
+        if !reveal {
             geometry.offset[1] =
                 self.heights.top(old_line.min(surface.rope.len_lines() - 1)) + intra;
         }
@@ -692,7 +716,9 @@ impl CachedLine {
         )
     }
     fn width(&self) -> f32 {
-        if let Some(rich) = &self.rich {
+        if self.surface.composition.is_some() {
+            self.state.content_width()
+        } else if let Some(rich) = &self.rich {
             rich.width
         } else {
             self.window
@@ -708,7 +734,10 @@ impl CachedLine {
             .unwrap_or(0..self.full_len)
     }
     fn document_caret(&self, head: usize, top: f32) -> Rect {
-        if let Some(rich) = &self.rich {
+        if self.surface.composition.is_some() {
+            let caret = self.surface.candidate_caret(&self.state).unwrap();
+            Rect::new(caret.x, top + caret.y, caret.width, caret.height)
+        } else if let Some(rich) = &self.rich {
             Rect::new(
                 rich.caret(head.saturating_sub(self.source_start).min(self.full_len)),
                 top,
@@ -749,7 +778,7 @@ impl CustomElement for ViewportSurface {
     ) -> Result<(), UiError> {
         let started = Instant::now();
         let surface = &self.0;
-        if surface.composition.is_some() {
+        if composition_fallback(surface) {
             state.was_composing = true;
             surface.geometry.borrow_mut().lines.clear();
             surface.prepare(&mut state.fallback, element, cx)?;
@@ -812,7 +841,10 @@ impl CustomElement for ViewportSurface {
                 },
                 left: entry.left(),
                 grid: entry.window.as_ref().map(|w| (w.cell, w.full_len)),
-                rich: entry.rich.clone(),
+                rich: entry
+                    .rich
+                    .clone()
+                    .filter(|_| entry.surface.composition.is_none()),
                 geometry: entry.surface.geometry.clone(),
             });
         }
@@ -837,7 +869,7 @@ impl CustomElement for ViewportSurface {
         element: &ElementInfo<'_>,
         paint: &mut PaintSession<'_, '_>,
     ) -> Result<(), UiError> {
-        if self.0.composition.is_some() {
+        if composition_fallback(&self.0) {
             return self.0.paint(&state.fallback, element, paint);
         }
         let started = Instant::now();
@@ -1006,6 +1038,88 @@ mod tests {
         } else {
             Some(fonts)
         }
+    }
+    #[test]
+    fn line_composition_matches_full_layout_and_keeps_other_lines_cached() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let source = "aébc 👩‍💻 def\n".repeat(1000);
+        let mut full = surface(&source);
+        let start = full.rope.line_to_char(500);
+        full.selection = Selection {
+            anchor: start + 3,
+            head: start + 1,
+        };
+        full.composition = Some(crate::surface::Composition {
+            text: "かんじ".into(),
+            cursor: Some((0, 9)),
+        });
+        full.reveal_caret = true;
+        let mut annotations = Annotations::default();
+        annotations.overlays.push(TextOverlay {
+            anchor: start + 1,
+            text: "hint".into(),
+            kind: OverlayKind::InlayHint,
+            placement: OverlayPlacement::Inline,
+            foreground: [1.; 4],
+            background: None,
+            hover: None,
+        });
+        full.annotations = Some(Arc::new(annotations));
+        assert_eq!(composition_line(&full), Some(500));
+        let mut reference = SurfaceState::default();
+        full.shape(&mut reference, 608., &mut fonts).unwrap();
+        let reference_caret = full.candidate_caret(&reference).unwrap();
+        let mut state = ViewportState::default();
+        state.prepare_cpu(&full, [640., 240.], &mut fonts).unwrap();
+        let entry = &state.cache[&500];
+        let caret = entry.document_caret(full.selection.head, state.heights.top(500));
+        assert!((caret.x - reference_caret.x).abs() < 0.01);
+        assert!((caret.y - reference_caret.y).abs() < 0.01);
+        assert_eq!(entry.surface.selection, Selection { anchor: 3, head: 1 });
+        assert_eq!(entry.surface.rope.to_string(), "aébc 👩‍💻 def");
+        assert!(state.metrics.cached_source_bytes < 2000);
+        assert!(state.metrics.shaped_lines < 30);
+        let other = state.visible.clone().find(|&line| line != 500).unwrap();
+        let layout = state.cache[&other]
+            .surface
+            .layout(&state.cache[&other].state)
+            .clone();
+        full.composition.as_mut().unwrap().text = "にほん".into();
+        full.epoch += 1;
+        state.prepare_cpu(&full, [640., 240.], &mut fonts).unwrap();
+        assert_eq!(state.metrics.shaped_lines, 1);
+        assert!(Arc::ptr_eq(
+            &layout,
+            state.cache[&other]
+                .surface
+                .layout(&state.cache[&other].state)
+        ));
+        assert_eq!(full.rope.to_string(), source);
+        full.composition = None;
+        full.epoch += 1;
+        state.prepare_cpu(&full, [640., 240.], &mut fonts).unwrap();
+        assert!(state.cache[&500].surface.composition.is_none());
+    }
+
+    #[test]
+    fn multiline_ime_replacements_keep_the_full_document_fallback() {
+        let mut full = surface("first\nsecond\n");
+        full.composition = Some(crate::surface::Composition {
+            text: "あ".into(),
+            cursor: None,
+        });
+        full.selection = Selection { anchor: 0, head: 7 };
+        assert!(composition_fallback(&full));
+        full.selection = Selection { anchor: 2, head: 2 };
+        assert!(!composition_fallback(&full));
+        for text in ["a\nb", "a\rb", "a\r\nb"] {
+            full.composition.as_mut().unwrap().text = text.into();
+            assert!(composition_fallback(&full));
+        }
+        full.composition = None;
+        assert!(!composition_fallback(&full));
     }
     #[test]
     fn shrinking_a_line_rewindows_after_the_horizontal_scroll_clamp() {

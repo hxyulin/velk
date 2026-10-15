@@ -28,3 +28,7 @@ harness = false
 name = "viewport"
 harness = false
 required-features = ["performance"]
+
+[[bench]]
+name = "responsiveness"
+harness = false

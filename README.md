@@ -32,13 +32,13 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 - `crates/editor-widget`: reusable RXUI editor view and UI-independent rope buffer.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 
-RXUI is pinned to commit `093d05d9a2fa5491c3cebe26be46b8720b4c6158`
+RXUI is pinned to commit `fc331afca247579cde12a480ed01c687abb1ff5d`
 with its `native` feature enabled. Keep `Cargo.lock` committed to preserve the
 resolved dependency graph. To update RXUI, change the workspace dependency's
 `rev`, refresh the lockfile, and run the workspace checks.
 
 Rendering experiments currently require the patched sibling checkout
-`../astrelis` (branch `perf/editor-text`, commit `b66648b`). The workspace patches
+`../astrelis` (branch `perf/editor-text`, commit `4801b66`). The workspace patches
 both Astrelis crates to that checkout while keeping RXUI pinned. See the
 [local Astrelis performance report](docs/performance/astrelis-local.md) for the
 backend revision, measurements, and reproducibility details.
@@ -139,6 +139,7 @@ Run the CPU benchmarks and the native 100,000-line stress fixture:
 ```sh
 cargo bench -p velk-editor-widget --bench editing --locked
 cargo bench -p velk-editor-widget --bench viewport --features performance --locked
+cargo bench -p velk-editor-widget --bench responsiveness --locked
 cargo run --release --locked -- --stress
 cargo run --release --locked -- --long-lines
 cargo run --release --locked -- --rich-long-lines
@@ -158,3 +159,13 @@ placements keep the full-line renderer. See the [rich-window and native timing r
 for current eligibility, results, and remaining scheduling limits; the
 [fixed-grid report](docs/performance/horizontal-virtualization.md) records the first pass.
 Set `ASTRELIS_PROFILE=1` to add native CPU frame-stage timings to `VELK_PROFILE=1`.
+
+Custom IME geometry is now published after preparation in the same frame, so
+navigation, typing and composition no longer request a second submission just
+to update the candidate rectangle. Single-line IME replacements use the line
+cache; replacements spanning source lines retain the full-document fallback.
+The composing logical line uses full shaping, including on long ASCII lines.
+See [the responsiveness report](docs/performance/responsiveness.md) for controlled
+submission timings, native event latency, limits and reproduction commands.
+Set `VELK_BENCH_GPU_WAIT=1` on the responsiveness benchmark to additionally wait
+for offscreen GPU completion; this does not measure display presentation.
