@@ -32,16 +32,17 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 - `crates/editor-widget`: reusable RXUI editor view and UI-independent rope buffer.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 
-RXUI is pinned to commit `fc331afca247579cde12a480ed01c687abb1ff5d`
+RXUI is pinned to commit `96e1f4a833785edbce5885945a8bf8ba0a9e75f7`
 with its `native` feature enabled. Keep `Cargo.lock` committed to preserve the
 resolved dependency graph. To update RXUI, change the workspace dependency's
 `rev`, refresh the lockfile, and run the workspace checks.
 
-Rendering experiments currently require the patched sibling checkout
-`../astrelis` (branch `perf/editor-text`, commit `4801b66`). The workspace patches
-both Astrelis crates to that checkout while keeping RXUI pinned. See the
-[local Astrelis performance report](docs/performance/astrelis-local.md) for the
-backend revision, measurements, and reproducibility details.
+RXUI pins both Astrelis crates to commit
+`4801b66d77d00726c12b318a709544488970c7c5`, which includes the editor text and
+native profiling improvements. All three crates resolve from Git revisions;
+no sibling RXUI or Astrelis checkout or local Cargo patch is required. The
+[Astrelis performance report](docs/performance/astrelis-local.md) records the
+earlier experiments and their measurement revisions.
 
 ## Editor widget
 

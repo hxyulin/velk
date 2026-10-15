@@ -1,5 +1,10 @@
 # Local Astrelis text preparation optimizations
 
+This is a historical experiment report. The improvements are now integrated into
+Astrelis `main` at `4801b66`, and current Velk builds use RXUI's pinned Git backend
+without a local path override. See [the current dependency setup](../../README.md#workspace).
+The revisions and local paths below describe the measurement setup at the time.
+
 Measured on 2026-10-15. RXUI remains pinned to `093d05d9a2fa5491c3cebe26be46b8720b4c6158`.
 Astrelis was cloned into `~/dev/projects/astrelis` and checked out from RXUI's pinned
 `d8ac1d1b5fd0c57d5ae0811abb3a004f6e3f6923`, on branch `perf/editor-text`.

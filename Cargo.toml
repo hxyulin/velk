@@ -13,15 +13,10 @@ publish = false
 velk-editor-widget = { path = "crates/editor-widget" }
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 unicode-segmentation = "1.13.3"
-rxui = { git = "https://github.com/hxyulin/rxui", rev = "fc331afca247579cde12a480ed01c687abb1ff5d", features = ["native"] }
+rxui = { git = "https://github.com/hxyulin/rxui", rev = "96e1f4a833785edbce5885945a8bf8ba0a9e75f7", features = ["native"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
-
-# Local rendering experiments, based on RXUI's pinned Astrelis revision.
-[patch."https://github.com/hxyulin/astrelis"]
-astrelis = { path = "../astrelis/crates/astrelis" }
-astrelis-winit = { path = "../astrelis/crates/astrelis-winit" }
