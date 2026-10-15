@@ -3108,13 +3108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "velk-plugin-lifecycle-demo"
-version = "0.1.0"
-dependencies = [
- "velk-plugin-sdk",
-]
-
-[[package]]
 name = "velk-plugin-markdown"
 version = "0.1.0"
 dependencies = [

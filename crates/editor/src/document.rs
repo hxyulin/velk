@@ -220,7 +220,7 @@ impl View for Document {
             .label("Close plugins")
             .enabled(self.plugin_menu_open)
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
-        let plugin_menu = self.plugin_menu(cx);
+        let plugin_menu = self.plugin_menu(cx, toggle_plugins.clone(), close_plugins.clone());
         let status = self.status.as_deref().unwrap_or(if self.dirty {
             "Unsaved changes"
         } else {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/editor", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/lifecycle-demo", "plugins/markdown", "xtask"]
+members = ["crates/editor", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/markdown", "xtask"]
 default-members = ["crates/editor"]
 resolver = "3"
 

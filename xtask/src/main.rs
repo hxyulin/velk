@@ -4,8 +4,8 @@ use std::{
     process::{Command, ExitCode},
 };
 use velk_plugin_host::{MANIFEST, Manifest, PluginSpec};
-const PLUGIN: &str = "velk-plugin-lifecycle-demo";
-const ID: &str = "velk.lifecycle-demo";
+const PLUGIN: &str = "velk-plugin-markdown";
+const ID: &str = "velk.markdown";
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -49,24 +49,16 @@ fn paths(release: bool) -> Result<(PathBuf, PathBuf), String> {
     .join(if release { "release" } else { "debug" });
     Ok((root, output))
 }
-fn build(root: &Path, release: bool, editor: bool, message: Option<&str>) -> Result<(), String> {
+fn build(root: &Path, release: bool, editor: bool) -> Result<(), String> {
     let mut command = cargo();
-    command.current_dir(root).args([
-        "build",
-        "--locked",
-        "-p",
-        PLUGIN,
-        "-p",
-        "velk-plugin-markdown",
-    ]);
+    command
+        .current_dir(root)
+        .args(["build", "--locked", "-p", PLUGIN]);
     if editor {
         command.args(["-p", "velk-editor"]);
     }
     if release {
         command.arg("--release");
-    }
-    if let Some(message) = message {
-        command.env("VELK_PLUGIN_DEMO_MESSAGE", message);
     }
     checked(&mut command)
 }
@@ -78,7 +70,7 @@ fn library_name(stem: &str) -> String {
     )
 }
 fn stage(output: &Path, directory: &Path) -> Result<PluginSpec, String> {
-    stage_plugin(output, directory, ID, "velk_plugin_lifecycle_demo")
+    stage_plugin(output, directory, ID, "velk_plugin_markdown")
 }
 fn stage_plugin(
     output: &Path,
@@ -160,11 +152,10 @@ fn run() -> Result<(), String> {
     if action == "test-plugins" {
         return smoke(&root, &output, release);
     }
-    build(&root, release, action != "plugins", None)?;
+    build(&root, release, action != "plugins")?;
     let directory = output.join("plugins");
     let spec = stage(&output, &directory)?;
-    let markdown = stage_plugin(&output, &directory, "velk.markdown", "velk_plugin_markdown")?;
-    publish(&directory, vec![spec, markdown])?;
+    publish(&directory, vec![spec])?;
     println!("Built plugins: {}", directory.display());
     if action == "run" {
         checked(
@@ -181,32 +172,41 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     let directory = directory.path();
     let mut manager = Manager::new(directory.into());
-    build(root, release, false, Some("generation one"))?;
+    build(root, release, false)?;
     let first = stage(output, directory)?;
     publish(directory, vec![first.clone()])?;
     // SAFETY: these artifacts were built locally from the bundled SDK plugin.
     let events = unsafe { manager.load()? };
     assert!(matches!(events.as_slice(), [Event::Loaded(_)]));
-    assert_eq!(manager.describe(ID)?, "generation one");
+    assert_eq!(manager.describe(ID)?, "CommonMark documentation renderer");
     let generation = manager.plugins().next().unwrap().generation;
     let old_copy = manager.plugins().next().unwrap().loaded_path.clone();
     assert!(old_copy.exists());
     let owned = manager.plugins().next().unwrap().description.clone();
-    build(root, release, false, Some("generation two"))?;
-    let second = stage(output, directory)?;
-    assert_ne!(first.digest, second.digest);
+    // Restage the real Markdown plugin at another immutable path. Loading
+    // must leave the active generation alone until explicitly unloaded.
+    let second = PluginSpec {
+        library: PathBuf::from("restaged").join(library_name("velk_plugin_markdown")),
+        ..first.clone()
+    };
+    std::fs::create_dir_all(directory.join("restaged")).map_err(|e| e.to_string())?;
+    std::fs::copy(
+        directory.join(&first.library),
+        directory.join(&second.library),
+    )
+    .map_err(|e| e.to_string())?;
     publish(directory, vec![second.clone()])?;
     // Building/staging does not replace an active instance.
     assert!(unsafe { manager.load()? }.is_empty());
-    assert_eq!(manager.describe(ID)?, "generation one");
+    assert_eq!(manager.describe(ID)?, "CommonMark documentation renderer");
     assert!(manager.unload(ID).is_some());
     assert!(!old_copy.exists());
-    assert_eq!(owned, "generation one");
+    assert_eq!(owned, "CommonMark documentation renderer");
     assert!(matches!(
         unsafe { manager.load()? }.as_slice(),
         [Event::Loaded(_)]
     ));
-    assert_eq!(manager.describe(ID)?, "generation two");
+    assert_eq!(manager.describe(ID)?, "CommonMark documentation renderer");
     assert!(manager.plugins().next().unwrap().generation > generation);
     // Repeated explicit unload/load cycles must retire their disk copies.
     for _ in 0..12 {
@@ -257,18 +257,15 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     ));
     std::fs::write(directory.join(MANIFEST), b"incomplete JSON").map_err(|e| e.to_string())?;
     assert!(unsafe { manager.load() }.is_err());
-    assert_eq!(manager.describe(ID)?, "generation two");
+    assert_eq!(manager.describe(ID)?, "CommonMark documentation renderer");
     // Unload works independently of whether the manifest is missing or broken.
     let last_copy = manager.plugins().next().unwrap().loaded_path.clone();
     assert_eq!(manager.unload_all().len(), 1);
     assert!(!last_copy.exists());
     assert_eq!(manager.plugins().count(), 0);
-    // Restore ordinary build output so running the app after this test doesn't
-    // accidentally use a test message. Smoke artifacts lived in a temp directory.
-    build(root, release, false, None)?;
     markdown_smoke(output)?;
     println!(
-        "Native plugin smoke passed: load, no automatic replacement, explicit unload/load of rebuilt code, repeated cleanup, retained host data, rejected artifacts, malformed manifest."
+        "Native plugin smoke passed: load, no automatic replacement, explicit unload/load of restaged code, repeated cleanup, retained host data, rejected artifacts, malformed manifest."
     );
     Ok(())
 }

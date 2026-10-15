@@ -1,4 +1,4 @@
-use super::{ClosePlugins, Document, LoadPlugins, UnloadPlugins};
+use super::{Document, LoadPlugins, UnloadPlugins};
 use rxui::{Element, prelude::*};
 use velk_plugin_host::{Client, Event};
 enum Operation {
@@ -113,7 +113,12 @@ impl Document {
             let _ = self.editor_focus.focus(cx);
         }
     }
-    pub(super) fn plugin_menu(&self, cx: &mut ViewContext<'_, Self>) -> Option<Element> {
+    pub(super) fn plugin_menu(
+        &self,
+        cx: &mut ViewContext<'_, Self>,
+        toggle: rxui::CommandAction<super::TogglePlugins>,
+        close: rxui::CommandAction<super::ClosePlugins>,
+    ) -> Option<Element> {
         if !self.plugin_menu_open {
             return None;
         }
@@ -127,15 +132,14 @@ impl Document {
             .enabled(
                 !self.plugins_busy() && self.plugins.as_ref().is_some_and(|s| !s.loaded.is_empty()),
             );
-        let close = cx
-            .command(ClosePlugins, |this, _, cx| this.set_plugin_menu(false, cx))
-            .label("Close (F2 / Esc)");
+        let close = close.label("Close (F2 / Esc)");
         let menu = column()
-            .key("plugin-menu")
+            .on_command(toggle)
+            .on_command(close.clone())
             .on_command(load.clone())
             .on_command(unload.clone())
             .fill_width()
-            .max_height(280.)
+            .max_height(360.)
             .flex_shrink(0.)
             .padding(10.)
             .gap(6.)
@@ -185,17 +189,27 @@ impl Document {
         } else {
             entries = entries.child(label("Plugin worker unavailable."));
         }
-        Some(menu.child(entries))
+        Some(
+            modal(menu.child(entries))
+                .key("plugin-menu")
+                .width(560.)
+                .accessibility_label("Plugins")
+                .on_dismiss(cx.listener(|this, _: &DismissEvent, cx| {
+                    this.set_plugin_menu(false, cx);
+                }))
+                .into_element(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::ClosePlugins;
     use rxui::{KeyEvent, Runtime, Ui};
 
     #[test]
-    fn plugin_panel_toggles_with_f2_and_closes_from_button_focus_without_editing() {
+    fn plugin_modal_preserves_editor_layout_contains_focus_and_restores_editing() {
         struct Measure;
         impl rxui::TextMeasure for Measure {
             fn measure(
@@ -224,6 +238,7 @@ mod tests {
             .find(|e| e.key == Some(&rxui::Key::from("editor-surface")))
             .unwrap()
             .id;
+        let source_bounds = ui.elements().find(|e| e.id == source).unwrap().bounds;
         assert!(ui.focus(source));
         for spelling in ["F2", "Named(F2)"] {
             for open in [true, false, true] {
@@ -239,6 +254,15 @@ mod tests {
                 .unwrap();
                 prepare(&mut ui, &mut runtime);
                 assert_eq!(
+                    ui.elements().find(|e| e.id == source).unwrap().bounds,
+                    source_bounds,
+                    "opening or closing the modal must not resize the editor"
+                );
+                if open {
+                    assert!(!ui.focus(source), "modal must block focus on the editor");
+                    assert_ne!(ui.focused_element(), Some(source));
+                }
+                assert_eq!(
                     ui.elements()
                         .any(|e| e.key == Some(&rxui::Key::from("plugin-menu"))),
                     open
@@ -251,7 +275,8 @@ mod tests {
                 .find(|e| e.key == Some(&rxui::Key::from("plugin-menu-close")))
                 .unwrap()
                 .id;
-            assert!(ui.focus(close));
+            ui.focus(close);
+            assert_eq!(ui.focused_element(), Some(close));
             assert_eq!(
                 ui.dispatch_command::<ClosePlugins>(&mut runtime).unwrap(),
                 rxui::CommandStatus::Handled

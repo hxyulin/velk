@@ -68,8 +68,10 @@ directory (`CARGO_TARGET_DIR` included) and stages native artifacts into
 executable; `VELK_PLUGIN_DIR=/absolute/path` overrides that directory.
 
 Plugins listed in `plugins.json` load asynchronously at startup. Press **F2** to
-open or close the basic plugin panel; **Escape** also closes it. The panel lists
-loaded plugin IDs, versions, generations, and descriptions, with **Load from disk**,
+open or close the plugin modal; **Escape**, an outside click, or its Close button
+also closes it. The modal leaves the editor layout unchanged, contains keyboard
+focus, and restores editor focus on close. It lists loaded plugin IDs, versions,
+generations, and descriptions, with **Load from disk**,
 **Unload all**, and individual **Unload** buttons. Loading leaves active IDs alone.
 Controls are disabled while a lifecycle operation is pending; errors remain visible.
 The previous load/unload keyboard chords have been removed.
@@ -84,14 +86,9 @@ cargo xtask plugins --release
 ```
 
 This only builds/stages the bundled plugins. Editor recompilation is unnecessary.
-The bundled `velk.markdown` plugin renders hover documentation; `velk.lifecycle-demo`
-remains a small lifecycle proof. LSP and Rust support are still built in. Without
-the Markdown plugin, hover displays literal provider text. To make a changed demo
-implementation easy to observe during development:
-
-```sh
-VELK_PLUGIN_DEMO_MESSAGE="Second implementation" cargo xtask plugins --release
-```
+The bundled `velk.markdown` plugin renders hover documentation. LSP and Rust
+support are still built in. Without the Markdown plugin, hover displays literal
+provider text.
 
 The staging tool publishes immutable, content-addressed libraries and atomically
 replaces `plugins.json`. The loader verifies BLAKE3 digests, ABI/layout, metadata,
@@ -146,14 +143,14 @@ Exercise actual native libraries without starting the UI:
 cargo xtask test-plugins
 ```
 
-This compiles two implementations, verifies that staging does not replace an
-active instance, explicitly unloads/loads the new implementation, checks repeated
+This builds the Markdown plugin, verifies that restaging does not replace an
+active instance, explicitly unloads/loads a restaged artifact, and checks repeated
 lifecycle cleanup, host-owned data, missing/corrupt libraries, digest mismatches,
 and malformed manifests. It additionally tests native styled Markdown output,
 async requests, fallback/reactivation, and result ownership after unload. Worker
-tests cover queued and active cancellation and unload ordering. It restores the ordinary demo build afterward. Build
-commands target the local native platform; cross-compilation and distribution are
-not part of this tooling yet.
+tests cover queued and active cancellation and unload ordering. Build commands
+target the local native platform; cross-compilation and distribution are not part
+of this tooling yet.
 
 ## Workspace
 
@@ -163,7 +160,6 @@ not part of this tooling yet.
 - `crates/semantic`: transport-independent semantic services and the optional LSP backend.
 - `crates/markup`: UI-independent styled documents and host-facing async renderer contract.
 - `crates/plugin-api`, `crates/plugin-sdk`, `crates/plugin-host`: experimental native ABI, author SDK, and lifecycle worker.
-- `plugins/lifecycle-demo`: bundled native plugin used to prove the loading workflow.
 - `plugins/markdown`: native CommonMark provider; owns the `pulldown-cmark` dependency.
 - `xtask`: local editor/plugin build and staging commands.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
