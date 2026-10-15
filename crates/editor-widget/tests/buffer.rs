@@ -1,3 +1,4 @@
+use unicode_segmentation::UnicodeSegmentation;
 use velk_editor_widget::{Buffer, Selection};
 
 #[test]
@@ -151,4 +152,59 @@ fn history_is_bounded_and_rope_snapshots_remain_unchanged() {
     }
     assert_eq!(b.text().len_chars(), 8 + 22);
     assert_eq!(snapshot.to_string(), "original");
+}
+
+#[test]
+fn edits_at_scalar_offsets_match_contiguous_grapheme_reference() {
+    fn boundaries(text: &str) -> Vec<usize> {
+        let mut result = vec![0];
+        for grapheme in text.graphemes(true) {
+            result.push(result.last().unwrap() + grapheme.chars().count());
+        }
+        result
+    }
+    fn replace(source: &str, range: std::ops::Range<usize>, insert: &str) -> (String, usize) {
+        let mut characters = source.chars().collect::<Vec<_>>();
+        characters.splice(range.clone(), insert.chars());
+        let text = characters.iter().collect::<String>();
+        let end = range.start + insert.chars().count();
+        let boundaries = boundaries(&text);
+        let head = boundaries[boundaries.partition_point(|&p| p < end)];
+        (text, head)
+    }
+
+    for core in ["é👩🏽‍💻🇭🇰🇯क्‍क", "\u{600}a\n\u{301}b", "각\n\n"]
+    {
+        let source = format!("{}{core}{}", "x".repeat(1009), "y".repeat(1700));
+        let original_boundaries = boundaries(&source);
+        for position in 1007..1011 + core.chars().count() {
+            let start = original_boundaries[original_boundaries
+                .partition_point(|&p| p <= position)
+                .saturating_sub(1)];
+            for insert in ["é", "\u{301}", "\u{200d}💻", "क्‍क", "\n"] {
+                let mut buffer = Buffer::new(&source);
+                buffer.set_caret(position, false);
+                assert_eq!(buffer.selection().head, start);
+                let (inserted, head) = replace(&source, start..start, insert);
+                buffer.insert(insert);
+                assert_eq!(buffer.text().to_string(), inserted);
+                assert_eq!(buffer.selection(), Selection { anchor: head, head });
+                let edges = boundaries(&inserted);
+                let previous = edges[edges.partition_point(|&p| p < head).saturating_sub(1)];
+                let (deleted, new_head) = replace(&inserted, previous..head, "");
+                buffer.backspace();
+                assert_eq!(buffer.text().to_string(), deleted);
+                assert_eq!(buffer.selection().head, new_head);
+                buffer.undo();
+                assert_eq!(buffer.text().to_string(), inserted);
+                assert_eq!(buffer.selection().head, head);
+                buffer.undo();
+                assert_eq!(buffer.text().to_string(), source);
+                assert_eq!(buffer.selection().head, start);
+                buffer.redo();
+                assert_eq!(buffer.text().to_string(), inserted);
+                assert_eq!(buffer.selection().head, head);
+            }
+        }
+    }
 }

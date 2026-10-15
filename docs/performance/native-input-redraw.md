@@ -3,6 +3,8 @@
 2026-10-15, Apple M3 Pro, macOS 27.0.1, Rust 1.99.0, release builds.
 Velk `c0a682d`, RXUI `fc331af`, Astrelis `4801b66` plus the archived experiment
 patch. This follows [composition windows](composition-windows.md).
+The [grapheme-query follow-up](grapheme-cursors.md) implements the application-side
+optimization identified here and measures the resulting native edit latency.
 
 ## Result
 

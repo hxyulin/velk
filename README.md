@@ -173,6 +173,9 @@ The [native redraw experiment](docs/performance/native-input-redraw.md) compares
 rendering after input callbacks with the normal scheduler. It retains the normal
 policy after finding burst acquisition pressure, and adds the
 `long_line_unicode_typing` benchmark for remaining application-side input cost.
+The [grapheme-query follow-up](docs/performance/grapheme-cursors.md) replaces
+whole-line point-query segmentation with chunk-aware cursors and records paired
+offscreen/native edit latency improvements. Up/Down retains its line-column cache.
 See [the responsiveness report](docs/performance/responsiveness.md) for controlled
 submission timings, native event latency, limits and reproduction commands.
 Set `VELK_BENCH_GPU_WAIT=1` on the responsiveness benchmark to additionally wait

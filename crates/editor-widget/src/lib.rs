@@ -3,6 +3,7 @@ mod annotations;
 mod blink;
 mod buffer;
 mod composition;
+mod graphemes;
 mod horizontal;
 mod inline;
 mod surface;

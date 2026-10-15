@@ -2,6 +2,8 @@ use ropey::Rope;
 use std::{cell::RefCell, collections::VecDeque, ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::graphemes;
+
 const HISTORY_LIMIT: usize = 128;
 
 /// A directed selection, in Unicode scalar (Ropey character) offsets.
@@ -64,7 +66,7 @@ impl Buffer {
     }
 
     pub(crate) fn is_grapheme_boundary(&self, position: usize) -> bool {
-        position <= self.text().len_chars() && self.snap(position) == position
+        position <= self.text().len_chars() && graphemes::is_boundary(self.text(), position)
     }
 
     pub fn selection(&self) -> Selection {
@@ -168,15 +170,11 @@ impl Buffer {
 
     pub fn line_edge(&mut self, end: bool, extend: bool) {
         let line = self.text().char_to_line(self.selection().head);
-        let boundaries = self.line_boundaries(line);
-        self.set_caret(
-            if end {
-                *boundaries.last().unwrap()
-            } else {
-                boundaries[0]
-            },
-            extend,
-        );
+        let start = self.text().line_to_char(line);
+        let content = self.text().line(line);
+        let length = content.len_chars();
+        let newline = usize::from(length > 0 && content.char(length - 1) == '\n');
+        self.set_caret(if end { start + length - newline } else { start }, extend);
     }
 
     pub fn document_edge(&mut self, end: bool, extend: bool) {
@@ -208,20 +206,26 @@ impl Buffer {
             self.undo.pop_front();
         }
         self.redo.clear();
-        self.boundaries.get_mut().clear();
+        // Cache entries use absolute character offsets and logical line numbers.
+        // Entries before the first changed line keep both their contents and
+        // offsets; the edited line and all later entries must be discarded.
+        let first_line = self.text().char_to_line(range.start);
+        self.boundaries
+            .get_mut()
+            .retain(|(line, _)| *line < first_line);
         self.current.text.remove(range.clone());
         self.current.text.insert(range.start, text);
         let end = range.start + text.chars().count();
         // Insertions can join neighboring combining marks/ZWJ sequences. Advance
         // to the end of that grapheme rather than leaving a caret inside it.
-        let snapped = self.snap(end);
-        let head = if snapped == end {
+        let head = if graphemes::is_boundary(self.text(), end) {
             end
         } else {
-            self.next(snapped)
+            self.next(end)
         };
         self.current.selection = Selection { anchor: head, head };
-        self.changed();
+        self.revision += 1;
+        self.goal_column = None;
     }
 
     fn changed(&mut self) {
@@ -230,8 +234,8 @@ impl Buffer {
         self.goal_column = None;
     }
 
-    // Only the current logical line is materialized for segmentation, never the
-    // full document. This also handles graphemes spanning Ropey's chunk edges.
+    // Up/Down needs grapheme-column indexing. Only those operations materialize
+    // logical lines; point queries use borrowed Rope chunks instead.
     fn line_boundaries(&self, line: usize) -> Arc<Vec<usize>> {
         let mut cache = self.boundaries.borrow_mut();
         if let Some(index) = cache.iter().position(|(cached, _)| *cached == line) {
@@ -258,32 +262,49 @@ impl Buffer {
     }
 
     fn snap(&self, position: usize) -> usize {
-        let boundaries = self.line_boundaries(self.text().char_to_line(position));
-        boundaries[boundaries
-            .partition_point(|&p| p <= position)
-            .saturating_sub(1)]
+        if graphemes::is_boundary(self.text(), position) {
+            position
+        } else {
+            self.previous(position)
+        }
     }
 
     fn previous(&self, position: usize) -> usize {
-        let line = self.text().char_to_line(position);
-        if position == self.text().line_to_char(line) {
-            return position.saturating_sub(1);
-        }
-        let boundaries = self.line_boundaries(line);
-        boundaries[boundaries
-            .partition_point(|&p| p < position)
-            .saturating_sub(1)]
+        graphemes::previous(self.text(), position)
     }
 
     fn next(&self, position: usize) -> usize {
-        let boundaries = self.line_boundaries(self.text().char_to_line(position));
-        boundaries
-            .get(boundaries.partition_point(|&p| p <= position))
-            .copied()
-            .unwrap_or_else(|| (position + 1).min(self.text().len_chars()))
+        graphemes::next(self.text(), position)
     }
 }
 
 pub(crate) fn normalize(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edits_keep_prefix_column_cache_and_invalidate_shifted_lines_and_history() {
+        let mut buffer = Buffer::new("éabc\n👩‍💻xy\nlast");
+        let prefix = buffer.line_boundaries(0);
+        let edited = buffer.line_boundaries(1);
+        let suffix = buffer.line_boundaries(2);
+        buffer.set_caret(buffer.text().line_to_char(1), false);
+        buffer.insert("new\n");
+        assert!(Arc::ptr_eq(&prefix, &buffer.line_boundaries(0)));
+        assert!(!Arc::ptr_eq(&edited, &buffer.line_boundaries(1)));
+        assert!(!Arc::ptr_eq(&suffix, &buffer.line_boundaries(2)));
+        assert_eq!(&*buffer.line_boundaries(1), &[6, 7, 8, 9]);
+        assert_eq!(&*buffer.line_boundaries(2), &[10, 13, 14, 15]);
+        buffer.undo();
+        assert_eq!(&*buffer.line_boundaries(1), &[6, 9, 10, 11]);
+        buffer.redo();
+        assert_eq!(&*buffer.line_boundaries(2), &[10, 13, 14, 15]);
+        buffer.document_edge(false, false);
+        buffer.delete();
+        assert_eq!(&*buffer.line_boundaries(0), &[0, 1, 2, 3]);
+    }
 }
