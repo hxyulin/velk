@@ -2,6 +2,29 @@ use velk_editor_widget::{
     Annotations, Editor, OverlayKind, OverlayPlacement, SpanStyle, StyledRange, TextOverlay,
 };
 
+/// One bounded Unicode region in an otherwise very long monospace line.
+pub fn unicode_horizontal_editor() -> Editor {
+    let prefix = " abcdefghij".repeat(10_000);
+    let island = "日本語 café e\u{301} 👩‍💻 🇭🇰";
+    let mut editor = Editor::new(&format!(
+        "{prefix}{island}\nUse Command+Right to reach the Unicode tail, then type with your IME.\nSelect across these source lines and start composition to test the projection.\n"
+    ));
+    editor
+        .set_annotations(Annotations {
+            spans: vec![StyledRange::new(
+                prefix.chars().count()..prefix.chars().count() + island.chars().count(),
+                SpanStyle {
+                    foreground: Some([0.4, 0.8, 1., 1.]),
+                    background: Some([0.1, 0.3, 0.4, 0.4]),
+                    ..SpanStyle::default()
+                },
+            )],
+            ..Annotations::default()
+        })
+        .unwrap();
+    editor
+}
+
 /// Deterministic 2.5 MB document with one style and inline hint on every line.
 pub fn editor() -> Editor {
     const LINES: usize = 100_000;

@@ -12,18 +12,14 @@ use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, ti
 const CACHE_LIMIT: usize = 256;
 const OVERSCAN: usize = 4;
 
-// Keep ordinary IME updates in the logical-line cache. A replacement spanning
-// source lines or containing hard line breaks retains the full-document path.
+// Direct line-level composition support for CPU reference probes. Native
+// composition is projected into a transient Rope before entering this cache.
 fn composition_line(surface: &Surface) -> Option<usize> {
     let composition = surface.composition.as_ref()?;
     let range = surface.selection.range();
     let line = surface.rope.char_to_line(range.start);
     (surface.rope.char_to_line(range.end) == line && !composition.text.contains(['\n', '\r']))
         .then_some(line)
-}
-
-fn composition_fallback(surface: &Surface) -> bool {
-    surface.composition.is_some() && composition_line(surface).is_none()
 }
 
 /// CPU/GPU preparation diagnostics for the most recently prepared frame.
@@ -41,11 +37,15 @@ pub struct FrameMetrics {
     pub gpu_prepare_ms: f64,
     pub total_prepare_ms: f64,
     pub paint_record_ms: f64,
-    /// Native dispatch to completed preparation; excludes GPU execution/presentation.
+    /// Editor input-listener start to preparation; excludes GPU execution/presentation.
     pub input_to_prepare_ms: Option<f64>,
+    /// Retained diagnostic for older consumers; projected composition keeps this false.
     pub composition_fallback: bool,
     pub horizontal_lines: usize,
     pub rich_horizontal_lines: usize,
+    pub unicode_horizontal_lines: usize,
+    pub composition_projected: bool,
+    pub projection_ms: f64,
 }
 
 pub(super) struct LineHit {
@@ -54,6 +54,7 @@ pub(super) struct LineHit {
     pub left: f32,
     pub grid: Option<(f32, usize)>,
     pub rich: Option<Arc<RichLine>>,
+    pub unicode: Option<Arc<crate::unicode_window::UnicodeLine>>,
     pub geometry: Rc<RefCell<Geometry>>,
 }
 
@@ -312,6 +313,8 @@ struct CachedLine {
     checked_fonts: u64,
     rich: Option<Arc<RichLine>>,
     rich_window: Option<RichWindow>,
+    unicode: Option<Arc<crate::unicode_window::UnicodeLine>>,
+    unicode_window: Option<RichWindow>,
     hover_ids: Vec<usize>,
     metric_safe: bool,
     annotation_range: Range<usize>,
@@ -335,9 +338,8 @@ pub(crate) struct ViewportState {
     revision: Option<u64>,
     frame: u64,
     visible: Range<usize>,
-    fallback: SurfaceState,
+    projected: Option<Box<crate::composition::ProjectedComposition>>,
     metrics: FrameMetrics,
-    was_composing: bool,
     grid_probe: TextBuffer,
     grid_layout: Option<Arc<TextLayout>>,
     cell: Option<f32>,
@@ -354,9 +356,8 @@ impl Default for ViewportState {
             revision: None,
             frame: 0,
             visible: 0..0,
-            fallback: SurfaceState::default(),
+            projected: None,
             metrics: FrameMetrics::default(),
-            was_composing: false,
             grid_probe: {
                 let mut buffer = TextBuffer::new();
                 let ascii: String = (b' '..=b'~').map(char::from).collect();
@@ -398,6 +399,7 @@ impl ViewportState {
                 revision: 0,
                 selection: Selection::default(),
                 composition: None,
+                preedit: None,
                 geometry: Rc::new(RefCell::new(Geometry::default())),
                 epoch: 0,
                 input_started: None,
@@ -405,6 +407,7 @@ impl ViewportState {
                 caret_visible: false,
                 minimum_line_metrics: None,
                 annotations: None,
+                annotation_groups: None,
                 selection_color: surface.selection_color,
             },
             state: SurfaceState::default(),
@@ -415,6 +418,8 @@ impl ViewportState {
             checked_fonts: u64::MAX,
             rich: None,
             rich_window: None,
+            unicode: None,
+            unicode_window: None,
             hover_ids: Vec::new(),
             metric_safe: false,
             annotation_range: range.clone(),
@@ -465,6 +470,29 @@ impl ViewportState {
             };
             entry.checked_annotations = self.annotation_epoch;
             entry.checked_fonts = self.font_epoch;
+            entry.unicode = if !entry.grid_eligible && entry.metric_safe && length > 1024 {
+                if let (Some(cell), Some(context)) = (
+                    self.cell,
+                    crate::unicode_window::UnicodeLine::context_range(slice.slice(..length)),
+                ) {
+                    let annotations = self
+                        .index
+                        .project(line, start + context.start..start + context.end, &[])
+                        .0;
+                    crate::unicode_window::UnicodeLine::build(
+                        slice.slice(..length),
+                        context,
+                        cell,
+                        annotations.as_deref(),
+                        fonts,
+                    )?
+                    .map(Arc::new)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
         }
         let window = self
             .cell
@@ -477,21 +505,29 @@ impl ViewportState {
             .as_ref()
             .filter(|_| composition.is_none())
             .map(|index| index.window(length, offset, width));
-        let columns = rich_window
+        let unicode_window = entry
+            .unicode
+            .as_ref()
+            .filter(|_| composition.is_none())
+            .map(|index| index.window(offset, width));
+        let columns = unicode_window
+            .as_ref()
+            .or(rich_window.as_ref())
             .as_ref()
             .map(|window| window.range.clone())
             .or_else(|| window.as_ref().map(|window| window.range.clone()))
             .unwrap_or(0..length);
         let text = slice.slice(columns.clone()).to_string();
-        let annotation_range = if window.is_some() || rich_window.is_some() {
-            start + columns.start..if columns.end == length {
-                range.end
+        let annotation_range =
+            if window.is_some() || rich_window.is_some() || unicode_window.is_some() {
+                start + columns.start..if columns.end == length {
+                    range.end
+                } else {
+                    start + columns.end
+                }
             } else {
-                start + columns.end
-            }
-        } else {
-            range.clone()
-        };
+                range.clone()
+            };
         let (annotations, hover_ids) = self.index.project(
             line,
             annotation_range.clone(),
@@ -501,6 +537,10 @@ impl ViewportState {
                 .map_or(&[], |rich| rich.backgrounds.as_slice()),
         );
         entry.hover_ids = hover_ids;
+        entry.surface.annotation_groups = surface
+            .annotation_groups
+            .as_ref()
+            .map(|groups| Arc::new(entry.hover_ids.iter().map(|&id| groups[id]).collect()));
         entry.annotation_range = annotation_range;
         let clamp = |position: usize| {
             position
@@ -509,7 +549,8 @@ impl ViewportState {
         };
         if entry.window.is_none()
             && entry.rich_window.is_none()
-            && (window.is_some() || rich_window.is_some())
+            && entry.unicode_window.is_none()
+            && (window.is_some() || rich_window.is_some() || unicode_window.is_some())
             && !entry.text.is_empty()
         {
             // A former Unicode/rich fallback can retain whole-line shaping
@@ -520,7 +561,12 @@ impl ViewportState {
         }
         entry.window = window;
         entry.rich_window = rich_window;
-        entry.surface.minimum_line_metrics = entry.rich.as_ref().map(|rich| rich.line);
+        entry.unicode_window = unicode_window;
+        entry.surface.minimum_line_metrics = entry
+            .unicode
+            .as_ref()
+            .map(|unicode| unicode.line)
+            .or_else(|| entry.rich.as_ref().map(|rich| rich.line));
         entry.source_start = start;
         entry.full_len = length;
         if entry.text != text {
@@ -544,6 +590,13 @@ impl ViewportState {
             head: clamp(selection.head),
         };
         entry.surface.composition = composition;
+        entry.surface.preedit = surface.preedit.as_ref().and_then(|preedit| {
+            let start = preedit.start.max(entry.source_start + columns.start);
+            let end = preedit.end.min(entry.source_start + columns.end);
+            (start < end).then(|| {
+                start - entry.source_start - columns.start..end - entry.source_start - columns.start
+            })
+        });
         entry.surface.selection_color = surface.selection_color;
         entry.surface.caret_visible = surface.caret_visible
             && surface.rope.char_to_line(selection.head) == line
@@ -703,6 +756,11 @@ impl ViewportState {
             .filter(|line| self.cache[line].rich_window.is_some())
             .count();
         self.metrics.cached_lines = self.cache.len();
+        self.metrics.unicode_horizontal_lines = self
+            .visible
+            .clone()
+            .filter(|line| self.cache[line].unicode_window.is_some())
+            .count();
         self.metrics.cached_source_bytes = self.cache.values().map(|entry| entry.text.len()).sum();
         self.metrics.cpu_layout_ms = started.elapsed().as_secs_f64() * 1000.;
         Ok(())
@@ -710,6 +768,9 @@ impl ViewportState {
 }
 impl CachedLine {
     fn left(&self) -> f32 {
+        if let Some(window) = &self.unicode_window {
+            return window.left;
+        }
         self.rich_window.as_ref().map_or_else(
             || self.window.as_ref().map_or(0., HorizontalWindow::left),
             |window| window.left,
@@ -718,6 +779,8 @@ impl CachedLine {
     fn width(&self) -> f32 {
         if self.surface.composition.is_some() {
             self.state.content_width()
+        } else if let Some(unicode) = &self.unicode {
+            unicode.width
         } else if let Some(rich) = &self.rich {
             rich.width
         } else {
@@ -727,8 +790,9 @@ impl CachedLine {
         }
     }
     fn columns(&self) -> Range<usize> {
-        self.rich_window
+        self.unicode_window
             .as_ref()
+            .or(self.rich_window.as_ref())
             .map(|window| window.range.clone())
             .or_else(|| self.window.as_ref().map(|window| window.range.clone()))
             .unwrap_or(0..self.full_len)
@@ -737,6 +801,13 @@ impl CachedLine {
         if self.surface.composition.is_some() {
             let caret = self.surface.candidate_caret(&self.state).unwrap();
             Rect::new(caret.x, top + caret.y, caret.width, caret.height)
+        } else if let Some(unicode) = &self.unicode {
+            Rect::new(
+                unicode.caret(head.saturating_sub(self.source_start).min(self.full_len)),
+                top,
+                1.5,
+                unicode.line.height,
+            )
         } else if let Some(rich) = &self.rich {
             Rect::new(
                 rich.caret(head.saturating_sub(self.source_start).min(self.full_len)),
@@ -778,25 +849,14 @@ impl CustomElement for ViewportSurface {
     ) -> Result<(), UiError> {
         let started = Instant::now();
         let surface = &self.0;
-        if composition_fallback(surface) {
-            state.was_composing = true;
-            surface.geometry.borrow_mut().lines.clear();
-            surface.prepare(&mut state.fallback, element, cx)?;
-            let metrics = FrameMetrics {
-                composition_fallback: true,
-                total_prepare_ms: started.elapsed().as_secs_f64() * 1000.,
-                ..FrameMetrics::default()
-            };
-            surface.geometry.borrow_mut().metrics = metrics;
-            if std::env::var_os("VELK_PROFILE").is_some() {
-                eprintln!("Velk frame: {metrics:?}");
-            }
-            return Ok(());
+        if surface.composition.is_some() {
+            let projected = state.projected.get_or_insert_with(|| {
+                Box::new(crate::composition::ProjectedComposition::new(surface))
+            });
+            return projected.prepare(surface, element, cx);
         }
-        if state.was_composing {
-            state.fallback = SurfaceState::default();
-            state.was_composing = false;
-        }
+        state.projected = None;
+        surface.geometry.borrow_mut().composed = None;
         state.prepare_cpu(
             surface,
             [element.bounds.width, element.bounds.height],
@@ -834,7 +894,10 @@ impl CustomElement for ViewportSurface {
             }
             geometry.lines.push(LineHit {
                 top,
-                start_char: if entry.window.is_some() || entry.rich_window.is_some() {
+                start_char: if entry.window.is_some()
+                    || entry.rich_window.is_some()
+                    || entry.unicode_window.is_some()
+                {
                     start_char
                 } else {
                     start_char + entry.columns().start
@@ -843,6 +906,10 @@ impl CustomElement for ViewportSurface {
                 grid: entry.window.as_ref().map(|w| (w.cell, w.full_len)),
                 rich: entry
                     .rich
+                    .clone()
+                    .filter(|_| entry.surface.composition.is_none()),
+                unicode: entry
+                    .unicode
                     .clone()
                     .filter(|_| entry.surface.composition.is_none()),
                 geometry: entry.surface.geometry.clone(),
@@ -869,8 +936,17 @@ impl CustomElement for ViewportSurface {
         element: &ElementInfo<'_>,
         paint: &mut PaintSession<'_, '_>,
     ) -> Result<(), UiError> {
-        if composition_fallback(&self.0) {
-            return self.0.paint(&state.fallback, element, paint);
+        if self.0.composition.is_some() {
+            let projected = state.projected.as_ref().unwrap();
+            projected.surface.paint(&projected.state, element, paint)?;
+            self.0.geometry.borrow_mut().metrics.paint_record_ms = projected
+                .surface
+                .0
+                .geometry
+                .borrow()
+                .metrics
+                .paint_record_ms;
+            return Ok(());
         }
         let started = Instant::now();
         let geometry = self.0.geometry.borrow();
@@ -968,6 +1044,7 @@ impl CpuViewportProbe {
                 revision: 0,
                 selection: Selection::default(),
                 composition: None,
+                preedit: None,
                 geometry: Rc::new(RefCell::new(Geometry::default())),
                 epoch: 0,
                 input_started: None,
@@ -975,6 +1052,7 @@ impl CpuViewportProbe {
                 caret_visible: true,
                 minimum_line_metrics: None,
                 annotations: None,
+                annotation_groups: None,
                 selection_color: [0.; 4],
             },
             state: ViewportState::default(),
@@ -1021,6 +1099,7 @@ mod tests {
             revision: 0,
             selection: Selection::default(),
             composition: None,
+            preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),
             epoch: 0,
             input_started: None,
@@ -1028,6 +1107,7 @@ mod tests {
             caret_visible: true,
             minimum_line_metrics: None,
             annotations: None,
+            annotation_groups: None,
             selection_color: [0.; 4],
         }
     }
@@ -1104,22 +1184,42 @@ mod tests {
     }
 
     #[test]
-    fn multiline_ime_replacements_keep_the_full_document_fallback() {
-        let mut full = surface("first\nsecond\n");
-        full.composition = Some(crate::surface::Composition {
-            text: "あ".into(),
-            cursor: None,
-        });
-        full.selection = Selection { anchor: 0, head: 7 };
-        assert!(composition_fallback(&full));
-        full.selection = Selection { anchor: 2, head: 2 };
-        assert!(!composition_fallback(&full));
-        for text in ["a\nb", "a\rb", "a\r\nb"] {
-            full.composition.as_mut().unwrap().text = text.into();
-            assert!(composition_fallback(&full));
-        }
-        full.composition = None;
-        assert!(!composition_fallback(&full));
+    fn unicode_window_cache_handles_metric_and_directional_fallback_transitions() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let source = format!("{}日本語 👩‍💻{}", "x".repeat(5000), "y".repeat(4000));
+        let mut full = surface(&source);
+        let mut state = ViewportState::default();
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert_eq!(state.metrics.unicode_horizontal_lines, 1);
+        assert!(state.metrics.cached_source_bytes < 4000);
+        full.geometry.borrow_mut().offset[0] = 49_000.;
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert!(state.cache[&0].text.contains("日本語"));
+        assert!(state.cache[&0].text.contains("👩‍💻"));
+        full.annotations = Some(Arc::new(Annotations {
+            spans: vec![StyledRange::new(
+                0..2,
+                SpanStyle {
+                    font_size: Some(32.),
+                    ..SpanStyle::default()
+                },
+            )],
+            ..Annotations::default()
+        }));
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert_eq!(state.metrics.unicode_horizontal_lines, 0);
+        assert_eq!(state.cache[&0].text, source);
+        full.annotations = None;
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert_eq!(state.metrics.unicode_horizontal_lines, 1);
+        assert!(state.metrics.cached_source_bytes < 4000);
+        full.rope = Rope::from_str(&source.replace("日本語", "אבג"));
+        full.revision += 1;
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert_eq!(state.metrics.unicode_horizontal_lines, 0);
+        assert!(state.cache[&0].unicode.is_none());
     }
     #[test]
     fn shrinking_a_line_rewindows_after_the_horizontal_scroll_clamp() {
@@ -1547,6 +1647,7 @@ mod tests {
             left: line.left(),
             grid: Some((cell, line.full_len)),
             rich: None,
+            unicode: None,
             geometry: line.surface.geometry.clone(),
         }];
         assert_eq!(

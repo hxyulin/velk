@@ -17,7 +17,20 @@ fn main() -> Result<(), ApplicationError> {
     let rich_horizontal = std::env::args()
         .skip(1)
         .any(|argument| argument == "--rich-long-lines");
+    let unicode_horizontal = std::env::args()
+        .skip(1)
+        .any(|argument| argument == "--unicode-long-lines");
     Application::new().run(move |cx| {
+        if unicode_horizontal {
+            let editor = cx.new(|_| stress::unicode_horizontal_editor());
+            cx.open_window(
+                WindowOptions::new()
+                    .title("Velk — Unicode and IME windows")
+                    .size(1280., 800.),
+                editor,
+            )?;
+            return Ok(());
+        }
         if rich_horizontal {
             let editor = cx.new(|_| stress::rich_horizontal_editor());
             cx.open_window(

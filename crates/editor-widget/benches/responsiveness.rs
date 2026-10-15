@@ -69,13 +69,20 @@ fn main() {
     let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
     let clock = Instant::now();
     let wait_for_gpu = std::env::var_os("VELK_BENCH_GPU_WAIT").is_some();
-    println!("case,sample,event_ms,first_submit_ms,settled_ms,frames,gpu_done_ms");
+    println!(
+        "case,sample,event_ms,first_submit_ms,settled_ms,frames,gpu_done_ms,cached_source_bytes,composition_fallback,visible_lines,gpu_prepared_lines"
+    );
     for case in [
         "plain_navigation",
         "rich_navigation",
         "large_document_typing",
         "ime_preedit",
         "large_document_ime",
+        "long_line_ime",
+        "long_line_emoji_ime",
+        "long_line_rtl_ime",
+        "multiline_replacement_ime",
+        "unicode_island_navigation",
     ] {
         if std::env::var("VELK_BENCH_CASE").is_ok_and(|filter| filter != case) {
             continue;
@@ -85,6 +92,17 @@ fn main() {
             "rich_navigation" => rich(),
             "large_document_typing" => Editor::new(&"let count = 42; // value\n".repeat(100_000)),
             "large_document_ime" => Editor::new(&"let count = 42; // value\n".repeat(10_000)),
+            "long_line_ime" | "long_line_emoji_ime" | "long_line_rtl_ime" => {
+                Editor::new(&"x".repeat(100_000))
+            }
+            "multiline_replacement_ime" => {
+                Editor::new(&"let count = 42; // value\n".repeat(10_000))
+            }
+            "unicode_island_navigation" => Editor::new(&format!(
+                "{}日本語 👩‍💻{}",
+                "x".repeat(5000),
+                "y".repeat(4000)
+            )),
             _ => Editor::new("Unicode: café 世界 👩‍💻\n"),
         };
         let mut test = TestUi::new(&graphics, [1200, 800], editor).unwrap();
@@ -99,16 +117,54 @@ fn main() {
         while test.runtime().animation_frame_requested() {
             frame(&mut test, &mut target, clock);
         }
+        if matches!(
+            case,
+            "long_line_ime" | "long_line_emoji_ime" | "long_line_rtl_ime"
+        ) {
+            key(&mut test, KeyboardKey::End);
+            frame(&mut test, &mut target, clock);
+        }
+        if case == "multiline_replacement_ime" {
+            for _ in 0..1000 {
+                test.key(KeyEvent {
+                    key: KeyboardKey::ArrowDown,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        shift: true,
+                        ..Modifiers::default()
+                    },
+                })
+                .unwrap();
+            }
+            frame(&mut test, &mut target, clock);
+        }
         // Warm up the event path and both window ends before collecting samples.
-        let (warmup, samples) = if case == "large_document_ime" {
+        let (warmup, samples) = if matches!(
+            case,
+            "large_document_ime"
+                | "long_line_ime"
+                | "long_line_emoji_ime"
+                | "long_line_rtl_ime"
+                | "multiline_replacement_ime"
+        ) {
             (2, 21)
         } else {
             (20, 201)
         };
+        let warmup = std::env::var("VELK_BENCH_WARMUP")
+            .ok()
+            .map(|v| v.parse::<usize>().expect("numeric warmup count"))
+            .unwrap_or(warmup);
+        let samples = std::env::var("VELK_BENCH_SAMPLES")
+            .ok()
+            .map(|v| v.parse::<usize>().expect("numeric sample count"))
+            .unwrap_or(samples);
+        assert!(samples > 0);
         for i in 0..warmup + samples {
             let start = Instant::now();
             match case {
-                "plain_navigation" | "rich_navigation" => key(
+                "plain_navigation" | "rich_navigation" | "unicode_island_navigation" => key(
                     &mut test,
                     if i % 2 == 0 {
                         KeyboardKey::End
@@ -120,10 +176,34 @@ fn main() {
                     test.text_input(TextInputEvent::Insert("x".into())).unwrap();
                 }
                 "large_document_typing" => key(&mut test, KeyboardKey::Backspace),
-                "large_document_ime" => {
+                "large_document_ime" | "long_line_ime" | "multiline_replacement_ime" => {
                     test.text_input(TextInputEvent::Preedit {
                         text: if i % 2 == 0 { "かんじ" } else { "にほん" }.into(),
                         cursor: Some((0, 9)),
+                    })
+                    .unwrap();
+                }
+                "long_line_emoji_ime" => {
+                    let text = if i % 2 == 0 {
+                        "👩‍💻"
+                    } else {
+                        "👨‍💻"
+                    };
+                    test.text_input(TextInputEvent::Preedit {
+                        text: text.into(),
+                        cursor: Some((0, text.len())),
+                    })
+                    .unwrap();
+                }
+                "long_line_rtl_ime" => {
+                    let text = if i % 2 == 0 {
+                        "العربية"
+                    } else {
+                        "עברית"
+                    };
+                    test.text_input(TextInputEvent::Preedit {
+                        text: text.into(),
+                        cursor: Some((0, text.len())),
                     })
                     .unwrap();
                 }
@@ -161,13 +241,18 @@ fn main() {
                 String::new()
             };
             if i >= warmup {
+                let metrics = test.read(|e| e.frame_metrics());
                 let ms = |d: Duration| d.as_secs_f64() * 1000.;
                 println!(
-                    "{case},{},{:.6},{:.6},{:.6},{frames},{gpu_done}",
+                    "{case},{},{:.6},{:.6},{:.6},{frames},{gpu_done},{},{},{},{}",
                     i - warmup,
                     ms(event),
                     ms(first),
-                    ms(settled)
+                    ms(settled),
+                    metrics.cached_source_bytes,
+                    metrics.composition_fallback,
+                    metrics.visible_lines,
+                    metrics.gpu_prepared_lines
                 );
             }
         }

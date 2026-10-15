@@ -39,6 +39,7 @@ pub(crate) struct Geometry {
     pub(super) lines: Vec<crate::viewport::LineHit>,
     pub(super) metrics: crate::viewport::FrameMetrics,
     pub(super) last_input: Option<std::time::Instant>,
+    pub(super) composed: Option<crate::composition::ComposedGeometry>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,6 +58,11 @@ pub(super) struct HoverRegion {
 
 impl Geometry {
     pub fn hover(&self, point: [f32; 2]) -> Option<HoverHit> {
+        if let Some(composed) = &self.composed {
+            let mut hit = composed.geometry.borrow().hover(point)?;
+            hit.id = *composed.providers.get(hit.id)?;
+            return Some(hit);
+        }
         if point[0] < 0.
             || point[1] < 0.
             || point[0] >= self.viewport[0]
@@ -98,6 +104,9 @@ impl Geometry {
     }
 
     pub fn hit(&self, point: [f32; 2]) -> Option<usize> {
+        if let Some(composed) = &self.composed {
+            return composed.hit(point);
+        }
         if !self.lines.is_empty() {
             let y = point[1] - PADDING + self.offset[1];
             let index = self
@@ -105,6 +114,9 @@ impl Geometry {
                 .partition_point(|line| line.top <= y)
                 .saturating_sub(1);
             let line = &self.lines[index];
+            if let Some(unicode) = &line.unicode {
+                return Some(line.start_char + unicode.hit(point[0] - PADDING + self.offset[0]));
+            }
             if let Some(rich) = &line.rich {
                 return Some(line.start_char + rich.hit(point[0] - PADDING + self.offset[0]));
             }
@@ -177,11 +189,14 @@ impl Geometry {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Surface {
     pub rope: Rope,
     pub revision: u64,
     pub selection: Selection,
     pub composition: Option<Composition>,
+    /// Already-projected preedit character range; it is not source selection.
+    pub preedit: Option<Range<usize>>,
     pub geometry: Rc<RefCell<Geometry>>,
     pub epoch: u64,
     pub input_started: Option<std::time::Instant>,
@@ -189,6 +204,7 @@ pub(crate) struct Surface {
     pub caret_visible: bool,
     pub minimum_line_metrics: Option<TextLineMetrics>,
     pub annotations: Option<Arc<Annotations>>,
+    pub annotation_groups: Option<Arc<Vec<usize>>>,
     pub selection_color: Color,
 }
 
@@ -205,6 +221,8 @@ pub(crate) struct SurfaceState {
     buffer: TextBuffer,
     revision: Option<u64>,
     composition: Option<Composition>,
+    preedit: Option<Range<usize>>,
+    shaped_preedit: bool,
     selection: Selection,
     prepared: Option<PreparedText>,
     layout: Option<Arc<TextLayout>>,
@@ -213,6 +231,7 @@ pub(crate) struct SurfaceState {
     selection_rects: Vec<Rect>,
     composition_rects: Vec<Rect>,
     annotations: Option<Arc<Annotations>>,
+    annotation_groups: Option<Arc<Vec<usize>>>,
     decorations: DecorationCache,
     projection: InlineProjection,
     shaped_annotations: Option<Arc<Annotations>>,
@@ -278,6 +297,7 @@ impl Surface {
         let composition_changed = state.composition != self.composition;
         if state.revision != Some(self.revision)
             || composition_changed
+            || state.shaped_preedit != self.preedit.is_some()
             || self.composition.is_some() && state.shaped_selection != self.selection
             || !same_annotations(&state.shaped_annotations, &self.annotations)
         {
@@ -331,6 +351,7 @@ impl Surface {
                 }
             }
             let shaping = if self.composition.is_none()
+                && self.preedit.is_none()
                 && spans.is_empty()
                 && text.bytes().all(|byte| (b' '..=b'~').contains(&byte))
             {
@@ -346,6 +367,7 @@ impl Surface {
             state.buffer.set_wrap(TextWrap::None);
             state.revision = Some(self.revision);
             state.composition = self.composition.clone();
+            state.shaped_preedit = self.preedit.is_some();
         }
         state.shaped_selection = self.selection;
         state.shaped_annotations = self.annotations.clone();
@@ -398,9 +420,11 @@ impl CustomElement for Surface {
         if let Some(composition) = &self.composition {
             replacement = Some((range.clone(), composition.text.len()));
         }
-        let composition_changed = state.composition != self.composition;
+        let composition_changed =
+            state.composition != self.composition || state.preedit != self.preedit;
         let selection_changed = state.selection != self.selection;
-        let annotations_changed = !same_annotations(&state.annotations, &self.annotations);
+        let annotations_changed = !same_annotations(&state.annotations, &self.annotations)
+            || state.annotation_groups.as_deref() != self.annotation_groups.as_deref();
         let mut layout_changed = self.shape(
             state,
             (element.bounds.width - PADDING * 2.).max(0.),
@@ -412,6 +436,7 @@ impl CustomElement for Surface {
             .as_ref()
             .is_none_or(|old| !Arc::ptr_eq(old, &layout));
         state.selection = self.selection;
+        state.preedit = self.preedit.clone();
         let raster_changed = state.raster_scale != cx.raster_scale;
         if layout_changed || raster_changed {
             state.prepared = Some(cx.painter.prepare_text(
@@ -441,6 +466,16 @@ impl CustomElement for Surface {
                         .composition_rects
                         .extend(layout.selection_rects(start..end)?);
                 }
+            } else if let Some(preedit) = &self.preedit {
+                let bytes =
+                    self.rope.char_to_byte(preedit.start)..self.rope.char_to_byte(preedit.end);
+                for projected in state.projection.ranges(bytes) {
+                    let start = boundary_before(&layout, projected.start);
+                    let end = boundary_after(&layout, projected.end);
+                    state
+                        .composition_rects
+                        .extend(layout.selection_rects(start..end)?);
+                }
             } else if !range.is_empty() {
                 for projected in state.projection.ranges(range) {
                     state
@@ -454,6 +489,7 @@ impl CustomElement for Surface {
             state.decorations =
                 prepare_annotations(self, &layout, replacement.as_ref(), &state.projection, cx)?;
             state.annotations = self.annotations.clone();
+            state.annotation_groups = self.annotation_groups.clone();
         }
         let mut geometry = self.geometry.borrow_mut();
         let viewport = [element.bounds.width, element.bounds.height];
@@ -643,6 +679,7 @@ mod tests {
             revision: 0,
             selection: Selection::default(),
             composition: None,
+            preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),
             epoch: 0,
             input_started: None,
@@ -650,6 +687,7 @@ mod tests {
             caret_visible: true,
             minimum_line_metrics: None,
             annotations: None,
+            annotation_groups: None,
             selection_color: [0.; 4],
         };
         let mut state = SurfaceState::default();
@@ -772,8 +810,13 @@ fn prepare_annotations(
     let Some(annotations) = &surface.annotations else {
         return Ok(cache);
     };
+    let mut grouped_backgrounds =
+        std::collections::HashMap::<usize, std::collections::HashSet<usize>>::new();
     for (id, span) in annotations.spans.iter().enumerate() {
-        let mut background_lines = std::collections::HashSet::new();
+        let group = surface
+            .annotation_groups
+            .as_ref()
+            .map_or(id, |groups| groups[id]);
         let source =
             surface.rope.char_to_byte(span.range.start)..surface.rope.char_to_byte(span.range.end);
         for range in display_ranges(source, replacement)
@@ -795,7 +838,7 @@ fn prepare_annotations(
                     if index == end && range.end == line.source.start && index > start {
                         continue;
                     }
-                    if !background_lines.insert(index) {
+                    if !grouped_backgrounds.entry(group).or_default().insert(index) {
                         continue;
                     }
                     cache.backgrounds.push(Background {

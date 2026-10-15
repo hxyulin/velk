@@ -2655,6 +2655,7 @@ dependencies = [
  "pollster",
  "ropey",
  "rxui",
+ "unicode-bidi",
  "unicode-segmentation",
 ]
 

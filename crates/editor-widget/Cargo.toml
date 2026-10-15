@@ -13,6 +13,7 @@ performance = []
 ropey.workspace = true
 rxui.workspace = true
 unicode-segmentation.workspace = true
+unicode-bidi = "0.3.18"
 
 [dev-dependencies]
 pollster = "0.4"

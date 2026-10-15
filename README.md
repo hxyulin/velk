@@ -143,6 +143,7 @@ cargo bench -p velk-editor-widget --bench responsiveness --locked
 cargo run --release --locked -- --stress
 cargo run --release --locked -- --long-lines
 cargo run --release --locked -- --rich-long-lines
+cargo run --release --locked -- --unicode-long-lines
 ```
 
 Set `VELK_PROFILE=1` to log preparation counters/timings and draw-recording time.
@@ -154,17 +155,20 @@ results, cache behavior, scope, and next optimizations.
 
 Long printable-ASCII lines now prepare horizontal windows plus overscan. The rich
 path supports verified monospace metric runs, bold/italic/mixed sizes, backgrounds,
-and printable-ASCII inline labels. Unicode/complex shaping and unsupported overlay
-placements keep the full-line renderer. See the [rich-window and native timing report](docs/performance/rich-horizontal-and-scheduling.md)
+and printable-ASCII inline labels. Lines outside these fast paths keep the full-line
+renderer; the Unicode extension is described below. See the [rich-window and native timing report](docs/performance/rich-horizontal-and-scheduling.md)
 for current eligibility, results, and remaining scheduling limits; the
 [fixed-grid report](docs/performance/horizontal-virtualization.md) records the first pass.
 Set `ASTRELIS_PROFILE=1` to add native CPU frame-stage timings to `VELK_PROFILE=1`.
 
 Custom IME geometry is now published after preparation in the same frame, so
 navigation, typing and composition no longer request a second submission just
-to update the candidate rectangle. Single-line IME replacements use the line
-cache; replacements spanning source lines retain the full-document fallback.
-The composing logical line uses full shaping, including on long ASCII lines.
+to update the candidate rectangle. IME uses a transient Rope projection, so
+replacements spanning source lines also use the viewport cache. A bounded LTR
+Unicode/preedit region with retained shaping context can be windowed inside a
+verified monospace ASCII line. RTL, large/dispersed Unicode regions, and rich
+metric styles keep full-line shaping. See [Unicode/composition windows](docs/performance/composition-windows.md)
+for current eligibility, first-preedit timings, reference checks and remaining limits.
 See [the responsiveness report](docs/performance/responsiveness.md) for controlled
 submission timings, native event latency, limits and reproduction commands.
 Set `VELK_BENCH_GPU_WAIT=1` on the responsiveness benchmark to additionally wait

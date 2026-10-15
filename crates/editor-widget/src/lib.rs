@@ -2,9 +2,11 @@
 mod annotations;
 mod blink;
 mod buffer;
+mod composition;
 mod horizontal;
 mod inline;
 mod surface;
+mod unicode_window;
 mod viewport;
 #[cfg(feature = "performance")]
 #[doc(hidden)]
@@ -328,6 +330,7 @@ impl View for Editor {
             revision: self.buffer.revision(),
             selection: self.buffer.selection(),
             composition: self.composition.clone(),
+            preedit: None,
             geometry: self.geometry.clone(),
             epoch: self.epoch,
             input_started: self.input_started,
@@ -335,6 +338,7 @@ impl View for Editor {
             caret_visible,
             minimum_line_metrics: None,
             annotations: self.annotations.clone(),
+            annotation_groups: None,
             selection_color: self.appearance.selection,
         }))
         .key("editor-surface")
@@ -483,6 +487,9 @@ mod responsiveness_tests {
         })
         .unwrap();
         draw_and_check(&mut test, 4);
+        assert!(test.read(|e| e.frame_metrics().composition_projected));
+        assert_eq!(test.read(|e| e.frame_metrics().unicode_horizontal_lines), 1);
+        assert!(test.read(|e| e.frame_metrics().cached_source_bytes) < 4000);
         assert_eq!(test.read(|e| e.buffer.text().len_chars()), 10_000);
         test.text_input(TextInputEvent::Commit("漢字".into()))
             .unwrap();
@@ -500,7 +507,7 @@ mod responsiveness_tests {
     }
 
     #[test]
-    fn ime_line_hit_mapping_and_multiline_fallback_restore_without_changing_source() {
+    fn projected_ime_hits_and_multiline_replacement_restore_without_changing_source() {
         let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
         let source = "aébc 👩‍💻 def\n".repeat(1000);
         let mut test = TestUi::new(&graphics, [640, 240], Editor::new(&source)).unwrap();
@@ -546,7 +553,8 @@ mod responsiveness_tests {
         })
         .unwrap();
         draw_and_check(&mut test, 2);
-        assert!(test.read(|e| e.frame_metrics().composition_fallback));
+        assert!(test.read(|e| e.frame_metrics().composition_projected));
+        assert!(!test.read(|e| e.frame_metrics().composition_fallback));
         test.text_input(TextInputEvent::CancelComposition).unwrap();
         draw_and_check(&mut test, 3);
         assert!(!test.read(|e| e.frame_metrics().composition_fallback));

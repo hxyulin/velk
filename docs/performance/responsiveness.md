@@ -1,5 +1,9 @@
 # Editor input responsiveness and IME preparation
 
+Follow-up: [Unicode and composition windows](composition-windows.md) replaces the
+multiline full-document fallback and adds guarded horizontal Unicode/preedit
+windows. This report records the earlier implementation and its measurements.
+
 2026-10-15, Apple M3 Pro, macOS 27.0.1, Rust 1.99.0, release builds.
 This follows [rich horizontal windows](rich-horizontal-and-scheduling.md).
 The target remains an 8.33 ms frame budget. Submission, GPU completion and
