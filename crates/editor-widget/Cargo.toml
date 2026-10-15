@@ -15,6 +15,7 @@ ropey.workspace = true
 rxui.workspace = true
 unicode-segmentation.workspace = true
 unicode-bidi = "0.3.18"
+unicode-ident = "1.0"
 
 [dev-dependencies]
 pollster = "0.4"

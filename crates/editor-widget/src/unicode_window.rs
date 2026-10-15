@@ -139,6 +139,26 @@ impl UnicodeLine {
         };
         self.left() + self.layout.caret(TextPosition::new(byte)).unwrap().origin[0]
     }
+    pub fn hover_source(&self, x: f32) -> Option<(usize, f32)> {
+        if x < 0. || x >= self.width {
+            return None;
+        }
+        if x < self.left() {
+            let position = (x / self.cell).floor() as usize;
+            return Some((position, position as f32 * self.cell));
+        }
+        let right = self.left() + self.layout.size()[0];
+        if x >= right {
+            let offset = ((x - right) / self.cell).floor() as usize;
+            return Some((self.range.end + offset, right + offset as f32 * self.cell));
+        }
+        let point = [x - self.left(), self.line.height / 2.];
+        let (byte, rect) = crate::surface::layout_hover(&self.layout, point)?;
+        Some((
+            self.range.start + self.context.byte_to_char(byte),
+            self.left() + rect.x,
+        ))
+    }
     pub fn hit(&self, x: f32) -> usize {
         if x < self.left() {
             return ((x.max(0.) / self.cell).round() as usize).min(self.range.start);

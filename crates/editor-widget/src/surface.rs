@@ -95,6 +95,94 @@ impl Geometry {
             })
     }
 
+    /// Source glyph under the pointer, rather than a nearest caret in whitespace.
+    /// Virtual inlay text and transient composition never become semantic targets.
+    pub fn text_hover(&self, point: [f32; 2]) -> Option<(usize, [f32; 2])> {
+        if self.composed.is_some()
+            || point[0] < 0.
+            || point[1] < 0.
+            || point[0] >= self.viewport[0]
+            || point[1] >= self.viewport[1]
+        {
+            return None;
+        }
+        let x = point[0] - PADDING + self.offset[0];
+        let y = point[1] - PADDING + self.offset[1];
+        if !self.lines.is_empty() {
+            let line = self.lines.get(
+                self.lines
+                    .partition_point(|line| line.top <= y)
+                    .checked_sub(1)?,
+            )?;
+            if y >= line.top + line.height {
+                return None;
+            }
+            let (position, left) = if let Some((cell, length)) = line.grid {
+                if x < 0. {
+                    return None;
+                }
+                let column = (x / cell).floor() as usize;
+                if column >= length {
+                    return None;
+                }
+                (line.start_char + column, column as f32 * cell)
+            } else if let Some(rich) = &line.rich {
+                let (position, left) = rich.hover_source(x)?;
+                (line.start_char + position, left)
+            } else if let Some(unicode) = &line.unicode {
+                let (position, left) = unicode.hover_source(x)?;
+                (line.start_char + position, left)
+            } else {
+                let geometry = line.geometry.borrow();
+                let layout = geometry.layout.as_ref()?;
+                let (byte, rect) = layout_hover(layout, [x - line.left, y - line.top])?;
+                if geometry
+                    .projection
+                    .insertions
+                    .iter()
+                    .any(|hint| hint.display.contains(&byte))
+                {
+                    return None;
+                }
+                let base = geometry.projection.base_offset(byte);
+                (
+                    line.start_char
+                        + geometry
+                            .rope
+                            .byte_to_char(base.min(geometry.rope.len_bytes())),
+                    line.left + rect.x,
+                )
+            };
+            return Some((
+                position,
+                [
+                    self.origin[0] + PADDING + left - self.offset[0],
+                    self.origin[1] + PADDING + line.top + line.height - self.offset[1],
+                ],
+            ));
+        }
+        let layout = self.layout.as_ref()?;
+        let (byte, rect) = layout_hover(layout, [x, y])?;
+        if self
+            .projection
+            .insertions
+            .iter()
+            .any(|hint| hint.display.contains(&byte))
+        {
+            return None;
+        }
+        let position = self
+            .rope
+            .byte_to_char(self.projection.base_offset(byte).min(self.rope.len_bytes()));
+        Some((
+            position,
+            [
+                self.origin[0] + PADDING + rect.x - self.offset[0],
+                self.origin[1] + PADDING + rect.y + rect.height - self.offset[1],
+            ],
+        ))
+    }
+
     pub fn caret_area(&self) -> Bounds {
         let caret = self.caret.unwrap_or(Rect::new(0., 0., 1., LINE_HEIGHT));
         Bounds {
@@ -189,6 +277,44 @@ impl Geometry {
         }
         self.clamp_scroll();
     }
+}
+
+/// Test neighboring graphemes against their painted selection cells. Nearest
+/// caret hit testing alone also snaps to line ends and the right half of a glyph.
+pub(crate) fn layout_hover(layout: &TextLayout, point: [f32; 2]) -> Option<(usize, Rect)> {
+    let hit = layout.hit_test(point)?;
+    // At bidi run boundaries the nearest caret can belong to another logical
+    // run. Include its visual neighbors without scanning the line's glyphs.
+    for position in [
+        Some(hit),
+        layout.visual_neighbor(hit, false),
+        layout.visual_neighbor(hit, true),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for start in [
+            layout.previous_boundary(position.byte_offset),
+            Some(position.byte_offset),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Some(end) = layout.next_boundary(start) else {
+                continue;
+            };
+            for rect in layout.selection_rects(start..end).ok()? {
+                if point[0] >= rect.x
+                    && point[0] < rect.x + rect.width
+                    && point[1] >= rect.y
+                    && point[1] < rect.y + rect.height
+                {
+                    return Some((start, rect));
+                }
+            }
+        }
+    }
+    None
 }
 
 #[derive(Clone)]
@@ -675,6 +801,41 @@ mod tests {
             assert!(caret.origin.into_iter().all(f32::is_finite));
             assert!(layout.hit_test(caret.origin).is_some());
             assert!(layout.selection_rects(0..text.len()).is_ok());
+        }
+    }
+
+    #[test]
+    fn hover_hit_uses_shaped_grapheme_cells_including_right_halves_and_bidi() {
+        use unicode_segmentation::UnicodeSegmentation;
+        let mut fonts = TextSystem::new();
+        assert!(!fonts.load_system_fonts().is_empty());
+        for text in ["alpha café", "é 👩‍💻 世界", "אבג العربية hello"] {
+            let mut buffer = TextBuffer::new();
+            buffer.set_wrap(TextWrap::None);
+            buffer.set_text(text, editor_text_style()).unwrap();
+            let layout = buffer.layout(&mut fonts).unwrap();
+            layout.prepare_interaction().unwrap();
+            for (start, grapheme) in text.grapheme_indices(true) {
+                for rect in layout
+                    .selection_rects(start..start + grapheme.len())
+                    .unwrap()
+                {
+                    if rect.width <= 0. {
+                        continue;
+                    }
+                    for fraction in [0.2, 0.8] {
+                        let point = [rect.x + rect.width * fraction, rect.y + rect.height / 2.];
+                        let (byte, _) = layout_hover(&layout, point).unwrap_or_else(|| {
+                            panic!(
+                                "missing hover: {text:?} {grapheme:?} at {point:?}, hit {:?}",
+                                layout.hit_test(point)
+                            )
+                        });
+                        assert_eq!(byte, start, "{text:?}, {grapheme:?}, fraction {fraction}");
+                    }
+                }
+            }
+            assert!(layout_hover(&layout, [layout.size()[0] + 30., 12.]).is_none());
         }
     }
 

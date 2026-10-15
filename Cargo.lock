@@ -3049,6 +3049,7 @@ dependencies = [
  "ropey",
  "rxui",
  "unicode-bidi",
+ "unicode-ident",
  "unicode-segmentation",
  "velk-syntax",
 ]

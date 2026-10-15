@@ -3,8 +3,8 @@ use super::Document;
 use rxui::prelude::*;
 use std::sync::Arc;
 use velk_editor_widget::{
-    Annotations, Buffer, HoverCard, LinePattern, OverlayKind, OverlayPlacement, SpanStyle,
-    StyledRange, TextOverlay, Underline,
+    Annotations, Buffer, HoverCard, HoverSource, HoverTarget, LinePattern, OverlayKind,
+    OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
 };
 use velk_semantic::{DocumentSnapshot, Event, HoverRequest, Service, Severity, Status};
 
@@ -14,6 +14,7 @@ pub(super) struct State {
     pub status: Status,
     pub count: usize,
     pub hover: Option<HoverRequest>,
+    pub target: Option<HoverTarget>,
     pub next_hover: u64,
     pub task: Option<Task>,
     pub notice: Option<String>,
@@ -28,6 +29,7 @@ impl Document {
             status: Status::Starting,
             count: 0,
             hover: None,
+            target: None,
             next_hover: 1,
             task: None,
             notice: None,
@@ -49,12 +51,22 @@ impl Document {
         };
         let editor = self.editor.read(cx);
         let buffer = editor.buffer();
-        if state.hover.is_some_and(|h| {
-            h.revision != buffer.revision() || h.position != buffer.selection().head
-        }) {
-            state.hover = None;
+        let target = editor.hover_request();
+        if state.target != target {
             state.service.cancel_hover();
+            state.target = target;
+            state.hover = None;
             state.notice = None;
+            if let Some(target) = target {
+                let request = HoverRequest {
+                    id: state.next_hover,
+                    revision: target.revision,
+                    position: target.position,
+                };
+                state.next_hover += 1;
+                state.hover = Some(request);
+                state.service.hover(request);
+            }
         }
         if state.revision == buffer.revision() {
             return false;
@@ -104,6 +116,9 @@ impl Document {
                     self.editor
                         .update(cx, |editor, _| editor.clear_annotations());
                 }
+                let enabled = matches!(status,Status::Ready(c) if c.hover);
+                self.editor
+                    .update(cx, |editor, _| editor.set_semantic_hover(enabled));
                 state.status = status;
             }
             Event::Diagnostics {
@@ -123,60 +138,63 @@ impl Document {
                 });
             }
             Event::Hover { request, hover } => {
-                if state.hover != Some(request) {
+                let current = self.editor.read(cx);
+                let valid = state.hover == Some(request)
+                    && state.target.is_some()
+                    && current.hover_request() == state.target
+                    && current.buffer().revision() == request.revision;
+                drop(current);
+                if !valid {
                     cx.unchanged();
                     return;
                 }
-                let editor = self.editor.read(cx);
-                if editor.buffer().revision() != request.revision
-                    || editor.buffer().selection().head != request.position
-                {
-                    drop(editor);
-                    cx.unchanged();
-                    return;
-                }
-                drop(editor);
+                let target = state.target.unwrap();
                 state.hover = None;
-                if let Some(hover) = hover.filter(|h| !h.contents.is_empty()) {
-                    state.notice = None;
-                    self.editor.update(cx, |editor, _| {
-                        editor.show_hover_at_caret(HoverCard {
+                let (range, card) = hover.map_or((None, None), |hover| {
+                    (
+                        hover.range,
+                        Some(HoverCard {
                             title: "Rust".into(),
                             body: hover.contents,
-                        })
-                    });
-                } else {
+                        }),
+                    )
+                });
+                let empty = card.is_none();
+                self.editor.update(cx, |editor, _| {
+                    editor.resolve_hover(target, range, card);
+                });
+                if empty && target.source == HoverSource::Caret {
                     state.notice = Some("No hover information at the caret".into());
                 }
             }
             Event::RequestFailed { request, message } => {
-                let current = self.editor.read(cx);
-                let valid = current.buffer().revision() == request.revision
-                    && current.buffer().selection().head == request.position;
-                drop(current);
-                if state.hover != Some(request) || !valid {
+                if state.hover != Some(request)
+                    || state.target.is_none()
+                    || self.editor.read(cx).hover_request() != state.target
+                {
                     cx.unchanged();
                     return;
                 }
                 state.hover = None;
-                state.notice = Some(message);
+                let target = state.target.unwrap();
+                self.editor.update(cx, |editor, _| {
+                    editor.resolve_hover(target, None, None);
+                });
+                if target.source == HoverSource::Caret {
+                    state.notice = Some(message);
+                }
             }
         }
     }
     pub(super) fn request_hover(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(state) = &mut self.semantic else {
+        if self.semantic.is_none() {
             return;
-        };
-        let editor = self.editor.read(cx);
-        let request = HoverRequest {
-            id: state.next_hover,
-            revision: editor.buffer().revision(),
-            position: editor.buffer().selection().head,
-        };
-        state.next_hover += 1;
-        state.hover = Some(request);
-        state.notice = None;
-        state.service.hover(request);
+        }
+        self.editor.update(cx, |editor, _| {
+            editor.set_semantic_hover(true);
+            editor.request_hover_at_caret();
+        });
+        self.sync_semantics(cx);
     }
     pub(super) fn semantic_status(&self) -> Option<String> {
         self.semantic.as_ref().map(|state| {
@@ -331,6 +349,7 @@ mod tests {
                     }),
                     count: 0,
                     hover: None,
+                    target: None,
                     next_hover: 1,
                     task: None,
                     notice: None,
@@ -398,6 +417,7 @@ mod tests {
                     status: Status::Ready(Default::default()),
                     count: 0,
                     hover: Some(request),
+                    target: None,
                     next_hover: 3,
                     task: None,
                     notice: None,

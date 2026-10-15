@@ -157,8 +157,13 @@ For a packaged/local executable, ensure `rust-analyzer` is on PATH, or set
 `VELK_RUST_ANALYZER` to its absolute path. A missing or failed server appears in
 the status line; plain editing and syntax highlighting keep working.
 
-Diagnostics appear as colored wavy underlines with message cards. Press **F1**
-with the caret on a symbol for semantic hover. The status line shows availability
+Diagnostics appear as colored wavy underlines with message cards. Rest the pointer
+on a symbol for 350 ms to request semantic hover, or press **F1** at the caret.
+The popup combines diagnostic messages and symbol documentation; its body supports
+text selection and independent scrolling. Moving within the same identifier keeps
+the result, and a short leave grace lets you enter the popup. Editing, navigating,
+or scrolling the source dismisses it and cancels obsolete requests.
+The status line shows availability
 and diagnostic count. Compiler checking on save is initially disabled; native
 rust-analyzer diagnostics still work, but this does not replace `cargo check`.
 Cargo/project/build-script/proc-macro helpers may still run. Python 3 is needed

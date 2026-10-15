@@ -286,6 +286,22 @@ impl RichLine {
             .filter(|h| h.0 == source)
             .map_or_else(|| self.caret(source), |h| h.1)
     }
+    pub fn hover_source(&self, x: f32) -> Option<(usize, f32)> {
+        let item = self
+            .items
+            .get(self.items.partition_point(|item| item.end <= x))?;
+        if x < item.x || x >= item.end {
+            return None;
+        }
+        match &item.content {
+            Content::Hint(_) => None,
+            Content::Source(source, cell) => {
+                let column = ((x - item.x) / cell).floor() as usize;
+                (column < source.len())
+                    .then_some((source.start + column, item.x + column as f32 * cell))
+            }
+        }
+    }
     pub fn hit(&self, x: f32) -> usize {
         let index = self.items.partition_point(|item| item.end < x);
         let item = &self.items[index.min(self.items.len() - 1)];

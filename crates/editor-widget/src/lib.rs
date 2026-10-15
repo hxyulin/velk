@@ -5,6 +5,7 @@ mod buffer;
 mod composition;
 mod graphemes;
 mod horizontal;
+mod hover;
 mod inline;
 mod surface;
 mod syntax;
@@ -21,12 +22,13 @@ pub use annotations::{
     OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
 };
 pub use buffer::{Buffer, Checkpoint, Selection, TextEdit, Transaction, TransactionError};
+pub use hover::{HoverSource, HoverTarget};
 use rxui::{prelude::*, standard_commands as commands};
+use std::sync::Arc;
 #[cfg(any(test, feature = "performance"))]
 use std::time::Instant;
 use std::{cell::RefCell, rc::Rc};
-use std::{sync::Arc, time::Duration};
-use surface::{Composition, Geometry, HoverHit, Surface};
+use surface::{Composition, Geometry, Surface};
 pub use velk_syntax::Language;
 
 /// An editor view. Create a separate entity per window; document state can be
@@ -47,9 +49,7 @@ pub struct Editor {
     reveal_caret: bool,
     annotations: Option<Arc<Annotations>>,
     appearance: EditorAppearance,
-    hovered: Option<HoverHit>,
-    hover_task: Option<Task>,
-    tooltip_visible: bool,
+    hover: hover::State,
 }
 
 impl Editor {
@@ -115,7 +115,7 @@ impl Editor {
     pub fn set_annotations(&mut self, annotations: Annotations) -> Result<(), AnnotationError> {
         annotations.validate(&self.buffer)?;
         self.annotations = Some(Arc::new(annotations));
-        self.hide_hover();
+        self.refresh_hover_annotations();
         self.epoch += 1;
         self.reveal_caret = false;
         Ok(())
@@ -138,62 +138,6 @@ impl Editor {
         self.epoch += 1;
         self.reveal_caret = false;
         Ok(())
-    }
-
-    /// Present a semantic hover requested at the current caret. The caller must
-    /// validate its document revision, request identity, and caret before use.
-    pub fn show_hover_at_caret(&mut self, card: HoverCard) {
-        self.hide_hover();
-        let geometry = self.geometry.borrow();
-        let caret = geometry.caret_area();
-        self.hovered = Some(HoverHit {
-            id: usize::MAX,
-            card,
-            anchor: [
-                geometry.origin[0] + caret.x,
-                geometry.origin[1] + caret.y + caret.height,
-            ],
-        });
-        self.tooltip_visible = true;
-        self.reveal_caret = false;
-        self.epoch += 1;
-    }
-
-    fn hide_hover(&mut self) {
-        if self.hovered.is_some() || self.tooltip_visible {
-            self.epoch += 1;
-            self.reveal_caret = false;
-        }
-        self.hover_task = None;
-        self.hovered = None;
-        self.tooltip_visible = false;
-    }
-
-    fn hover(&mut self, point: [f32; 2], cx: &mut Context<'_, Self>) {
-        let target = self.geometry.borrow().hover(point);
-        if self.hovered.as_ref().map(|h| h.id) == target.as_ref().map(|h| h.id) {
-            cx.unchanged();
-            return;
-        }
-        self.hide_hover();
-        if let Some(target) = target {
-            let id = target.id;
-            self.hovered = Some(target);
-            self.epoch += 1;
-            self.reveal_caret = false;
-            self.hover_task = cx
-                .try_spawn(
-                    rxui::sleep(Duration::from_millis(350)),
-                    move |this, result, _| {
-                        if result.is_ok() && this.hovered.as_ref().is_some_and(|hit| hit.id == id) {
-                            this.tooltip_visible = true;
-                            this.epoch += 1;
-                            this.reveal_caret = false;
-                        }
-                    },
-                )
-                .ok();
-        }
     }
 
     /// Replace the entire document as one undoable edit.
@@ -260,7 +204,7 @@ impl Editor {
         if !key.pressed || self.composition.is_some() {
             return;
         }
-        let had_hover = self.hovered.is_some();
+        let had_hover = self.has_hover();
         self.hide_hover();
         let extend = key.modifiers.shift;
         // Leave unsupported modifier chords untouched. Word movement will be
@@ -525,7 +469,7 @@ impl View for Editor {
         }))
         .on_hover(cx.listener(|this, event: &HoverEvent, cx| {
             if !event.hovered {
-                this.hide_hover();
+                this.leave_hover(cx);
             } else {
                 cx.unchanged();
             }
@@ -567,32 +511,58 @@ impl View for Editor {
         // A container root keeps native input and preparation on the same
         // path as RXUI's built-in editor examples.
         let mut root = column().fill_width().fill_height().child(surface);
-        if self.tooltip_visible
-            && let Some(hit) = &self.hovered
-        {
+        if let Some((anchor, card)) = self.hover_card() {
             root = root.child(
                 popover(
-                    hit.anchor,
+                    anchor,
                     column()
                         .gap(6.)
+                        .padding(12.)
+                        .on_hover(cx.listener(|this, event: &HoverEvent, cx| {
+                            this.card_hover(event.hovered, cx)
+                        }))
+                        .on_pointer_move(cx.listener(|this, event: &PointerInput, cx| {
+                            if event.buttons.contains(PointerButton::Primary) {
+                                this.card_hover(true, cx);
+                            } else {
+                                cx.unchanged();
+                            }
+                        }))
+                        .on_pointer_up(cx.listener(|this, event: &PointerInput, cx| {
+                            this.card_hover(event.bounds.contains(event.position), cx)
+                        }))
+                        .child(label(card.title).font_size(14.).color(ThemeColor::Text))
                         .child(
-                            label(hit.card.title.clone())
-                                .font_size(14.)
-                                .color(ThemeColor::Text),
-                        )
-                        .child(
-                            label(hit.card.body.clone())
-                                .font_size(12.)
-                                .color(ThemeColor::TextMuted),
+                            scroll_area(
+                                label(card.body)
+                                    .selectable(true)
+                                    .font_size(13.)
+                                    .color(ThemeColor::Text)
+                                    .fill_width(),
+                            )
+                            .handle(self.hover.scroll.clone())
+                            .scrollbar_style(ScrollbarStyle::platform())
+                            .fill_width()
+                            .into_element()
+                            .key("editor-hover-body")
+                            .layout(|style| {
+                                style.flex_grow = 0.;
+                                style.flex_basis = rxui::taffy::prelude::auto();
+                            })
+                            .max_height(
+                                (self.geometry.borrow().viewport[1] - 100.).clamp(40., 360.),
+                            ),
                         ),
                 )
                 .key("editor-hover")
-                .width(360.)
-                .padding(12.)
+                .gap(0.)
+                .width((self.geometry.borrow().viewport[0] - 24.).clamp(80., 520.))
+                .padding(0.)
                 .autofocus(false)
+                .transition(rxui::Transition::None)
                 .on_dismiss(cx.listener(|this, _: &DismissEvent, _| this.hide_hover()))
                 .into_element()
-                .pointer_events(PointerEvents::None),
+                .pointer_events(PointerEvents::Auto),
             );
         }
         root
@@ -623,6 +593,63 @@ mod responsiveness_tests {
             "caret geometry requires no follow-up frame"
         );
         expected
+    }
+
+    #[test]
+    fn hover_remains_painted_during_text_selection() {
+        let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
+        let mut test = TestUi::new(&graphics, [640, 240], Editor::new("let value = 42;")).unwrap();
+        test.painter_mut().fonts_mut().load_system_fonts();
+        test.render().unwrap();
+        let entity = test.entity().clone();
+        test.runtime().update(|cx| {
+            entity.update(cx, |e, _| {
+                e.set_semantic_hover(true);
+                e.request_hover_at_caret();
+                let target = e.hover_request().unwrap();
+                assert!(e.resolve_hover(
+                    target,
+                    None,
+                    Some(HoverCard {
+                        title: "Rust".into(),
+                        body: "let value: usize\nVariable documentation".into(),
+                    })
+                ));
+            })
+        });
+        let before = test.render().unwrap();
+        let bounds = test.element("editor-hover-body").unwrap().unwrap().bounds;
+        let from = [bounds.x + 4., bounds.y + 8.];
+        let to = [bounds.x + 90., bounds.y + 8.];
+        test.pointer(rxui::PointerEvent::Moved(from)).unwrap();
+        test.pointer(rxui::PointerEvent::Down {
+            position: from,
+            button: PointerButton::Primary,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+        test.pointer(rxui::PointerEvent::Moved(to)).unwrap();
+        test.pointer(rxui::PointerEvent::Up {
+            position: to,
+            button: PointerButton::Primary,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+        let after = test.render().unwrap();
+        assert!(test.read(|e| e.hover_card().is_some()));
+        // Background below the body is unaffected by selection and must stay opaque.
+        let x = (bounds.x + bounds.width / 2.) as usize;
+        let y = (bounds.y + bounds.height + 4.) as usize;
+        let pixel = (y * 640 + x) * 4;
+        assert!(before[pixel + 3] > 0);
+        assert_eq!(&before[pixel..pixel + 4], &after[pixel..pixel + 4]);
+        let (_, ui, _) = test.parts();
+        assert!(
+            ui.elements().any(|e| e
+                .editing
+                .is_some_and(|s| s.selection.anchor != s.selection.focus)),
+            "popup body should have a text selection"
+        );
     }
 
     #[test]

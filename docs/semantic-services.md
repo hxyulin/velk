@@ -103,9 +103,24 @@ badges. Diagnostics do not replace syntax foreground colors. The current app
 owns the explicit annotation provider; multi-provider semantic/debug annotation
 composition is future work.
 
-F1 requests hover at the caret. Diagnostic message cards continue to use existing
-pointer hover. Semantic hover dismissal uses the widget's existing input/hover
-behavior. Automatic symbol hover, completion, navigation, formatting, inlay hints,
+Pointer hover waits 350 ms before requesting symbol documentation; F1 requests it
+immediately at the caret. The widget owns `HoverTarget` tokens (generation,
+revision, scalar position, and pointer/caret source), and the host maps these to
+semantic request IDs. Results must match the current target and viewport geometry.
+Retargeting or dismissal invalidates pending results immediately and cancels the
+provider request. Empty results are cached for the current target; moving within
+the same Unicode identifier does not repeat requests or restart dwell.
+
+Hit testing uses source grapheme cells rather than nearest caret placement,
+including horizontally virtualized lines and mixed bidirectional text. Blank
+space, line padding, and virtual inline hints do not request source documentation.
+Diagnostic and semantic content share one bounded popup with selectable plain text
+and an independent scroll area. A 180 ms leave grace permits entering the popup;
+it stays while the pointer is inside or selecting text. Source edits, navigation,
+scrolling, IME activity, Escape, and outside clicks dismiss it. Hover does not move
+the source caret. No per-hover process or UI-thread parsing is introduced.
+
+Completion, navigation, formatting, inlay hints,
 code actions, pull diagnostics, file-watch registration, and automatic server
 restart are deferred. Input modifiers, indentation, and pairing behavior are
 unchanged.
@@ -124,7 +139,9 @@ edits, stale diagnostic versions, late hover responses, deadlines, saved snapsho
 text, graceful shutdown, and cancellation of a stuck initializer. Unit tests cover
 all supported position encodings, chunk/Unicode diff reconstruction, framing,
 neutral backend delivery/lifetime, grapheme decorations, stale presentation, and
-both portable/native F1 spellings.
+both portable/native F1 spellings. Widget tests cover dwell, retargeting, empty and
+stale results, popup entry/leave, independent scrolling, diagnostic refresh, and
+shaped grapheme hit testing across Unicode and bidirectional runs.
 
 A separate optional test requires rust-analyzer and rust-src:
 
@@ -136,5 +153,8 @@ cargo test -p velk-semantic --features lsp --test lsp --locked \
 This was run against rust-analyzer 1.99.0. It changed an in-memory declaration from
 `usize` to `i64`, received the new type through hover, verified graceful shutdown,
 and left the file on disk unchanged. Native smoke testing also verified a live
-syntax diagnostic, its removal after undo, and a caret hover showing the variable
-type. No native end-to-end latency measurement is claimed for this integration.
+syntax diagnostic, its removal after undo, and pointer/caret hovers showing the
+variable type. Pointer hover was also checked for entering the popup, selecting
+its text, leaving, and reopening it. Hover content currently uses the provider's
+plain-text representation; Markdown formatting and actionable links are deferred.
+No native end-to-end latency measurement is claimed for this integration.

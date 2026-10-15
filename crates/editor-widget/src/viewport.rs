@@ -54,6 +54,7 @@ pub struct FrameMetrics {
 
 pub(super) struct LineHit {
     pub top: f32,
+    pub height: f32,
     pub start_char: usize,
     pub left: f32,
     pub grid: Option<(f32, usize)>,
@@ -960,6 +961,7 @@ impl CustomElement for ViewportSurface {
             }
             geometry.lines.push(LineHit {
                 top,
+                height: state.heights.values[line],
                 start_char: if entry.window.is_some()
                     || entry.rich_window.is_some()
                     || entry.unicode_window.is_some()
@@ -1938,6 +1940,7 @@ mod tests {
         assert!(line.columns().start > 49_000);
         let mut geometry = surface.geometry.borrow_mut();
         geometry.lines = vec![LineHit {
+            height: LINE_HEIGHT,
             top: LINE_HEIGHT,
             start_char: 7,
             left: line.left(),
