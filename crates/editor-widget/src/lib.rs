@@ -542,7 +542,7 @@ impl View for Editor {
                                     .selectable(true)
                                     .paint_style(
                                         PaintStyle::new()
-                                            .focus_color(ThemeColor::TextMuted)
+                                            .focus_color(ThemeColor::Focus)
                                             .focus_width(1.),
                                     )
                                     .font_size(13.)

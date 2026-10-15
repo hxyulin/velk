@@ -1,5 +1,6 @@
 mod document;
 mod file;
+mod theme;
 
 use rxui::{WeakEntity, prelude::*};
 use std::{
@@ -60,6 +61,7 @@ fn run() -> Result<(), Error> {
     let closing = document.clone();
     let quitting = document.clone();
     Application::new()
+        .theme(theme::dark())
         .window_created(move |_, cx| {
             if let Some(document) = created.borrow().as_ref().and_then(WeakEntity::upgrade) {
                 document.read(cx).title();

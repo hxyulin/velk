@@ -128,7 +128,7 @@ impl Editor {
                 span = span.italic();
             }
             if style.code {
-                span = span.monospace().color(ThemeColor::Accent);
+                span = span.monospace().color(ThemeColor::Text);
             }
             if style.strikethrough {
                 span = span.strikethrough();

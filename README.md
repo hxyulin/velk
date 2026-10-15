@@ -47,6 +47,11 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+Velk installs its own dark color scheme from `crates/editor/src/theme.rs`.
+UI surfaces, focus outlines, links, and selections use that explicit palette,
+independent of the OS accent color or appearance. Markdown code uses the text
+foreground with a monospace face. The source editor retains its syntax palette.
+
 ## Workspace
 
 - `crates/editor`: the `velk-editor` package and `velk` application binary.
