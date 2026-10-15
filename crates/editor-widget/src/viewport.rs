@@ -1,6 +1,7 @@
 //! Bounded logical-line layout and GPU cache. Document positions stay in the Rope.
 use crate::{
     Annotations, Selection,
+    horizontal::{FontMetrics, RichLine, RichWindow},
     surface::{Geometry, LINE_HEIGHT, PADDING, Surface, SurfaceState, editor_text_style},
 };
 use ropey::Rope;
@@ -30,6 +31,7 @@ pub struct FrameMetrics {
     pub input_to_prepare_ms: Option<f64>,
     pub composition_fallback: bool,
     pub horizontal_lines: usize,
+    pub rich_horizontal_lines: usize,
 }
 
 pub(super) struct LineHit {
@@ -37,6 +39,7 @@ pub(super) struct LineHit {
     pub start_char: usize,
     pub left: f32,
     pub grid: Option<(f32, usize)>,
+    pub rich: Option<Arc<RichLine>>,
     pub geometry: Rc<RefCell<Geometry>>,
 }
 
@@ -179,37 +182,71 @@ impl AnnotationIndex {
         ids.sort_unstable();
         ids
     }
+    #[cfg(test)]
     fn line(&self, line: usize, range: Range<usize>) -> Option<Arc<Annotations>> {
-        let annotations = self.snapshot.as_ref()?;
-        let spans = self
-            .span_ids(&range)
-            .into_iter()
-            .map(|id| {
+        self.project(line, range, &[]).0
+    }
+    fn project(
+        &self,
+        line: usize,
+        range: Range<usize>,
+        backgrounds: &[usize],
+    ) -> (Option<Arc<Annotations>>, Vec<usize>) {
+        let Some(annotations) = self.snapshot.as_ref() else {
+            return (None, Vec::new());
+        };
+        let mut ids = self.span_ids(&range);
+        ids.extend_from_slice(backgrounds);
+        ids.sort_unstable();
+        ids.dedup();
+        let spans = ids
+            .iter()
+            .map(|&id| {
                 let mut span = annotations.spans[id].clone();
-                span.range = span.range.start.max(range.start) - range.start
-                    ..span.range.end.min(range.end) - range.start;
+                if span.range.end <= range.start || span.range.start >= range.end {
+                    span.range = 0..range.len();
+                    span.hover = None;
+                    span.style = crate::SpanStyle {
+                        background: span.style.background,
+                        full_line_background: true,
+                        ..crate::SpanStyle::default()
+                    };
+                } else {
+                    span.range = span.range.start.max(range.start) - range.start
+                        ..span.range.end.min(range.end) - range.start;
+                }
                 span
             })
             .collect::<Vec<_>>();
-        let overlays = self
-            .overlay_ids(line, &range)
-            .into_iter()
-            .map(|id| {
+        let overlay_ids = self.overlay_ids(line, &range);
+        let overlays = overlay_ids
+            .iter()
+            .map(|&id| {
                 let mut overlay = annotations.overlays[id].clone();
                 overlay.anchor -= range.start;
                 overlay
             })
             .collect::<Vec<_>>();
+        let mut hover_ids = ids;
+        hover_ids.extend(
+            overlay_ids
+                .into_iter()
+                .map(|id| annotations.spans.len() + id),
+        );
         if spans.is_empty() && overlays.is_empty() {
-            None
+            (None, hover_ids)
         } else {
-            Some(Arc::new(Annotations {
-                document_revision: 0,
-                spans,
-                overlays,
-            }))
+            (
+                Some(Arc::new(Annotations {
+                    document_revision: 0,
+                    spans,
+                    overlays,
+                })),
+                hover_ids,
+            )
         }
     }
+    #[cfg(test)]
     fn hover_id(&self, line: usize, range: Range<usize>, local_id: usize) -> usize {
         let ids = self.span_ids(&range);
         if let Some(&id) = ids.get(local_id) {
@@ -258,6 +295,10 @@ struct CachedLine {
     gpu_dirty: bool,
     checked_revision: Option<u64>,
     checked_annotations: u64,
+    checked_fonts: u64,
+    rich: Option<Arc<RichLine>>,
+    rich_window: Option<RichWindow>,
+    hover_ids: Vec<usize>,
     metric_safe: bool,
     annotation_range: Range<usize>,
     grid_eligible: bool,
@@ -287,6 +328,8 @@ pub(crate) struct ViewportState {
     grid_layout: Option<Arc<TextLayout>>,
     cell: Option<f32>,
     annotation_epoch: u64,
+    font_epoch: u64,
+    rich_fonts: FontMetrics,
 }
 impl Default for ViewportState {
     fn default() -> Self {
@@ -310,6 +353,8 @@ impl Default for ViewportState {
             grid_layout: None,
             cell: None,
             annotation_epoch: 0,
+            font_epoch: 0,
+            rich_fonts: FontMetrics::default(),
         }
     }
 }
@@ -341,6 +386,7 @@ impl ViewportState {
                 input_started: None,
                 reveal_caret: false,
                 caret_visible: false,
+                minimum_line_metrics: None,
                 annotations: None,
                 selection_color: surface.selection_color,
             },
@@ -349,6 +395,10 @@ impl ViewportState {
             gpu_dirty: true,
             checked_revision: None,
             checked_annotations: u64::MAX,
+            checked_fonts: u64::MAX,
+            rich: None,
+            rich_window: None,
+            hover_ids: Vec::new(),
             metric_safe: false,
             annotation_range: range.clone(),
             grid_eligible: false,
@@ -364,7 +414,10 @@ impl ViewportState {
                 .all(|chunk| chunk.bytes().all(|byte| (b' '..=b'~').contains(&byte)));
             entry.checked_revision = Some(surface.revision);
         }
-        if changed || entry.checked_annotations != self.annotation_epoch {
+        if changed
+            || entry.checked_annotations != self.annotation_epoch
+            || entry.checked_fonts != self.font_epoch
+        {
             entry.metric_safe = self.index.snapshot.as_ref().is_none_or(|a| {
                 self.index.span_ids(&range).into_iter().all(|id| {
                     let style = &a.spans[id].style;
@@ -374,29 +427,71 @@ impl ViewportState {
                         && !style.full_line_background
                 }) && self.index.overlay_ids(line, &range).is_empty()
             });
+            entry.rich = if entry.grid_eligible
+                && !entry.metric_safe
+                && length > 1024
+                && self.cell.is_some()
+            {
+                let annotations = self.index.snapshot.as_ref().unwrap();
+                RichLine::build(
+                    length,
+                    start,
+                    annotations,
+                    &self.index.span_ids(&range),
+                    &self.index.overlay_ids(line, &range),
+                    &mut self.rich_fonts,
+                    fonts,
+                )?
+                .map(Arc::new)
+            } else {
+                None
+            };
             entry.checked_annotations = self.annotation_epoch;
+            entry.checked_fonts = self.font_epoch;
         }
         let window = self
             .cell
             .filter(|_| entry.grid_eligible && entry.metric_safe && length > 1024)
             .map(|cell| HorizontalWindow::new(length, cell, offset, width));
-        let columns = window
+        let rich_window = entry
+            .rich
             .as_ref()
-            .map_or(0..length, |window| window.range.clone());
+            .map(|index| index.window(length, offset, width));
+        let columns = rich_window
+            .as_ref()
+            .map(|window| window.range.clone())
+            .or_else(|| window.as_ref().map(|window| window.range.clone()))
+            .unwrap_or(0..length);
         let text = slice.slice(columns.clone()).to_string();
-        let annotation_range = if window.is_some() {
-            start + columns.start..start + columns.end
+        let annotation_range = if window.is_some() || rich_window.is_some() {
+            start + columns.start..if columns.end == length {
+                range.end
+            } else {
+                start + columns.end
+            }
         } else {
             range.clone()
         };
-        let annotations = self.index.line(line, annotation_range.clone());
+        let (annotations, hover_ids) = self.index.project(
+            line,
+            annotation_range.clone(),
+            entry
+                .rich
+                .as_ref()
+                .map_or(&[], |rich| rich.backgrounds.as_slice()),
+        );
+        entry.hover_ids = hover_ids;
         entry.annotation_range = annotation_range;
         let clamp = |position: usize| {
             position
                 .saturating_sub(start + columns.start)
                 .min(columns.len())
         };
-        if entry.window.is_none() && window.is_some() && !entry.text.is_empty() {
+        if entry.window.is_none()
+            && entry.rich_window.is_none()
+            && (window.is_some() || rich_window.is_some())
+            && !entry.text.is_empty()
+        {
             // A former Unicode/rich fallback can retain whole-line shaping
             // scratch. Release it when returning to bounded grid preparation.
             entry.state = SurfaceState::default();
@@ -404,6 +499,8 @@ impl ViewportState {
             entry.surface.geometry.borrow_mut().content_size = [0.; 2];
         }
         entry.window = window;
+        entry.rich_window = rich_window;
+        entry.surface.minimum_line_metrics = entry.rich.as_ref().map(|rich| rich.line);
         entry.source_start = start;
         entry.full_len = length;
         if entry.text != text {
@@ -500,6 +597,8 @@ impl ViewportState {
                     .all(|glyph| (glyph.advance - advance).abs() < 0.0001))
             .then_some(advance);
             self.grid_layout = Some(probe);
+            self.font_epoch += 1;
+            self.rich_fonts.clear();
         }
         // Shape the caret line even when it is offscreen so document-edge and
         // keyboard navigation can reveal exact caret geometry without a scan.
@@ -550,16 +649,34 @@ impl ViewportState {
         geometry.content_size = [
             self.cache
                 .values()
-                .map(|e| e.width().max(e.surface.geometry.borrow().content_size[0]))
+                .map(CachedLine::width)
                 .fold(viewport[0] - PADDING * 2., f32::max),
             self.heights.top(surface.rope.len_lines()),
         ];
+        let prepared_offset = geometry.offset[0];
         geometry.clamp_scroll();
+        if geometry.offset[0] != prepared_offset {
+            // Width changes can move the final viewport left after caret reveal.
+            // Prepare that viewport in this frame, without relying on a follow-up.
+            for line in self.visible.clone() {
+                self.prepare_line(surface, line, width, geometry.offset[0], fonts)?;
+            }
+            if !self.visible.contains(&caret_line) {
+                self.prepare_line(surface, caret_line, width, geometry.offset[0], fonts)?;
+            }
+        }
         self.metrics.visible_lines = self.visible.len();
         self.metrics.horizontal_lines = self
             .visible
             .clone()
-            .filter(|line| self.cache[line].window.is_some())
+            .filter(|line| {
+                self.cache[line].window.is_some() || self.cache[line].rich_window.is_some()
+            })
+            .count();
+        self.metrics.rich_horizontal_lines = self
+            .visible
+            .clone()
+            .filter(|line| self.cache[line].rich_window.is_some())
             .count();
         self.metrics.cached_lines = self.cache.len();
         self.metrics.cached_source_bytes = self.cache.values().map(|entry| entry.text.len()).sum();
@@ -569,21 +686,36 @@ impl ViewportState {
 }
 impl CachedLine {
     fn left(&self) -> f32 {
-        self.window.as_ref().map_or(0., HorizontalWindow::left)
-    }
-    fn width(&self) -> f32 {
-        self.window.as_ref().map_or_else(
-            || self.surface.layout(&self.state).size()[0],
-            HorizontalWindow::width,
+        self.rich_window.as_ref().map_or_else(
+            || self.window.as_ref().map_or(0., HorizontalWindow::left),
+            |window| window.left,
         )
     }
+    fn width(&self) -> f32 {
+        if let Some(rich) = &self.rich {
+            rich.width
+        } else {
+            self.window
+                .as_ref()
+                .map_or_else(|| self.state.content_width(), HorizontalWindow::width)
+        }
+    }
     fn columns(&self) -> Range<usize> {
-        self.window
+        self.rich_window
             .as_ref()
-            .map_or(0..self.full_len, |window| window.range.clone())
+            .map(|window| window.range.clone())
+            .or_else(|| self.window.as_ref().map(|window| window.range.clone()))
+            .unwrap_or(0..self.full_len)
     }
     fn document_caret(&self, head: usize, top: f32) -> Rect {
-        if let Some(window) = &self.window {
+        if let Some(rich) = &self.rich {
+            Rect::new(
+                rich.caret(head.saturating_sub(self.source_start).min(self.full_len)),
+                top,
+                1.5,
+                rich.line.height,
+            )
+        } else if let Some(window) = &self.window {
             Rect::new(
                 head.saturating_sub(self.source_start).min(self.full_len) as f32 * window.cell,
                 top,
@@ -663,9 +795,7 @@ impl CustomElement for ViewportSurface {
             geometry.content_size[0] = geometry.content_size[0].max(local.content_size[0]);
             for hit in &local.hover_regions {
                 let mut hit = hit.clone();
-                hit.id = state
-                    .index
-                    .hover_id(line, entry.annotation_range.clone(), hit.id);
+                hit.id = entry.hover_ids[hit.id];
                 hit.rect.x += entry.left();
                 hit.rect.y += top;
                 geometry.hover_regions.push(hit);
@@ -675,13 +805,14 @@ impl CustomElement for ViewportSurface {
             }
             geometry.lines.push(LineHit {
                 top,
-                start_char: if entry.window.is_some() {
+                start_char: if entry.window.is_some() || entry.rich_window.is_some() {
                     start_char
                 } else {
                     start_char + entry.columns().start
                 },
                 left: entry.left(),
                 grid: entry.window.as_ref().map(|w| (w.cell, w.full_len)),
+                rich: entry.rich.clone(),
                 geometry: entry.surface.geometry.clone(),
             });
         }
@@ -810,6 +941,7 @@ impl CpuViewportProbe {
                 input_started: None,
                 reveal_caret: false,
                 caret_visible: true,
+                minimum_line_metrics: None,
                 annotations: None,
                 selection_color: [0.; 4],
             },
@@ -862,6 +994,7 @@ mod tests {
             input_started: None,
             reveal_caret: false,
             caret_visible: true,
+            minimum_line_metrics: None,
             annotations: None,
             selection_color: [0.; 4],
         }
@@ -874,6 +1007,350 @@ mod tests {
             Some(fonts)
         }
     }
+    #[test]
+    fn shrinking_a_line_rewindows_after_the_horizontal_scroll_clamp() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut full = surface(&"a".repeat(100_000));
+        full.geometry.borrow_mut().offset[0] = 900_000.;
+        let mut state = ViewportState::default();
+        state.prepare_cpu(&full, [2600., 800.], &mut fonts).unwrap();
+        full.rope = Rope::from_str(&"a".repeat(2000));
+        full.revision += 1;
+        full.epoch += 1;
+        full.selection = Selection {
+            anchor: 2000,
+            head: 2000,
+        };
+        full.reveal_caret = true;
+        state.prepare_cpu(&full, [2600., 800.], &mut fonts).unwrap();
+        let entry = &state.cache[&0];
+        let window = entry.window.as_ref().unwrap();
+        assert!(
+            window.left() <= full.geometry.borrow().offset[0],
+            "prepared window misses the final viewport after clamping"
+        );
+    }
+
+    #[test]
+    fn rendered_rich_window_maps_visible_hint_hover_and_pointer_to_global_source() {
+        let Ok(graphics) = pollster::block_on(rxui::astrelis::GraphicsContext::headless()) else {
+            return;
+        };
+        let mut editor = crate::Editor::new(&"a".repeat(10_000));
+        let mut annotations = Annotations::default();
+        annotations.spans.push(StyledRange::new(
+            0..3,
+            SpanStyle {
+                font_size: Some(32.),
+                ..SpanStyle::default()
+            },
+        ));
+        for anchor in (0..10_000).step_by(10) {
+            annotations.overlays.push(TextOverlay {
+                anchor,
+                text: ": i32".into(),
+                kind: OverlayKind::InlayHint,
+                placement: OverlayPlacement::Inline,
+                foreground: [1.; 4],
+                background: Some([0., 0., 0., 1.]),
+                hover: Some(crate::HoverCard {
+                    title: "inlay".into(),
+                    body: "source anchor".into(),
+                }),
+            });
+        }
+        editor.set_annotations(annotations).unwrap();
+        let mut ui = rxui::TestUi::new(&graphics, [640, 240], editor).unwrap();
+        if ui.painter_mut().fonts_mut().load_system_fonts().is_empty() {
+            return;
+        }
+        ui.render().unwrap();
+        let entity = ui.entity().clone();
+        ui.runtime().update(|cx| {
+            entity.update(cx, |editor, _| {
+                editor.geometry.borrow_mut().offset[0] = 50_000.;
+                editor.epoch += 1;
+                editor.reveal_caret = false;
+            })
+        });
+        ui.render().unwrap();
+        ui.read(|editor| {
+            let geometry = editor.geometry.borrow();
+            let region = geometry
+                .hover_regions
+                .iter()
+                .find(|region| {
+                    region.rect.x > geometry.offset[0]
+                        && region.rect.x + region.rect.width < geometry.offset[0] + 600.
+                })
+                .expect("visible projected hint");
+            let point = [
+                PADDING + region.rect.x + region.rect.width * 0.5 - geometry.offset[0],
+                PADDING + region.rect.y + region.rect.height * 0.5,
+            ];
+            let hover = geometry.hover(point).unwrap();
+            assert_eq!(hover.id, region.id);
+            assert_eq!(hover.card.title, "inlay");
+            let overlay = &editor.annotations.as_ref().unwrap().overlays[hover.id - 1];
+            assert_eq!(geometry.hit(point), Some(overlay.anchor));
+            assert_eq!(geometry.metrics.rich_horizontal_lines, 1);
+            assert!(geometry.metrics.cached_source_bytes < 1024);
+            assert_eq!(editor.buffer.text().len_chars(), 10_000);
+            assert!(
+                (geometry.lines[0]
+                    .geometry
+                    .borrow()
+                    .layout
+                    .as_ref()
+                    .unwrap()
+                    .lines()[0]
+                    .height
+                    - 48.)
+                    .abs()
+                    < 0.001
+            );
+        });
+        ui.runtime()
+            .update(|cx| entity.update(cx, |editor, _| editor.set_text("short")));
+        ui.render().unwrap();
+        ui.read(|editor| {
+            assert_eq!(
+                editor.geometry.borrow().offset[0],
+                0.,
+                "old decoration widths must not keep a short document scrolled"
+            )
+        });
+    }
+
+    #[test]
+    fn rich_run_cache_reuses_index_and_invalidates_on_annotation_or_source_changes() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut full = surface(&"a".repeat(5000));
+        let mut annotations = Annotations::default();
+        annotations.overlays.push(TextOverlay {
+            anchor: 2500,
+            text: ": i32".into(),
+            kind: OverlayKind::InlayHint,
+            placement: OverlayPlacement::Inline,
+            foreground: [1.; 4],
+            background: None,
+            hover: None,
+        });
+        full.annotations = Some(Arc::new(annotations));
+        let mut state = ViewportState::default();
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        let first = state.cache[&0].rich.as_ref().unwrap().clone();
+        full.geometry.borrow_mut().offset[0] = 20_000.;
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert!(Arc::ptr_eq(&first, state.cache[&0].rich.as_ref().unwrap()));
+        assert_eq!(state.metrics.rich_horizontal_lines, 1);
+        let mut changed = full.annotations.as_ref().unwrap().as_ref().clone();
+        changed.overlays[0].text = "a much longer hint".into();
+        full.annotations = Some(Arc::new(changed.clone()));
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert!(state.cache[&0].rich.as_ref().unwrap().width > first.width);
+        changed.overlays[0].text = "Unicode: é".into();
+        full.annotations = Some(Arc::new(changed));
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert!(state.cache[&0].rich.is_none());
+        assert_eq!(state.cache[&0].text.len(), 5000);
+        let mut crowded = Annotations::default();
+        for _ in 0..300 {
+            crowded.overlays.push(TextOverlay {
+                anchor: 2500,
+                text: ": i32".into(),
+                kind: OverlayKind::InlayHint,
+                placement: OverlayPlacement::Inline,
+                foreground: [1.; 4],
+                background: None,
+                hover: None,
+            });
+        }
+        full.annotations = Some(Arc::new(crowded));
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert!(state.cache[&0].rich.is_none());
+        full.annotations = None;
+        full.rope.insert(2500, "👩‍💻");
+        full.revision += 1;
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        assert!(state.cache[&0].rich.is_none());
+        assert!(state.cache[&0].window.is_none());
+    }
+
+    #[test]
+    fn rich_index_matches_full_shaping_and_keeps_offscreen_font_baseline() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut full = surface(&"a".repeat(1536));
+        let mut annotations = Annotations::default();
+        annotations.spans.push(StyledRange::new(
+            0..32,
+            SpanStyle {
+                font_size: Some(32.),
+                weight: Some(700),
+                ..SpanStyle::default()
+            },
+        ));
+        annotations.spans.push(StyledRange::new(
+            400..700,
+            SpanStyle {
+                italic: Some(true),
+                ..SpanStyle::default()
+            },
+        ));
+        annotations.spans.push(StyledRange::new(
+            600..800,
+            SpanStyle {
+                font_size: Some(20.),
+                ..SpanStyle::default()
+            },
+        ));
+        for (id, anchor) in [0, 16, 16, 256, 512, 768, 1200, 1536]
+            .into_iter()
+            .enumerate()
+        {
+            annotations.overlays.push(TextOverlay {
+                anchor,
+                text: if id == 2 {
+                    "second".into()
+                } else {
+                    ": i32".into()
+                },
+                kind: if id == 3 {
+                    OverlayKind::GhostText
+                } else {
+                    OverlayKind::InlayHint
+                },
+                placement: OverlayPlacement::Inline,
+                foreground: [1.; 4],
+                background: None,
+                hover: None,
+            });
+        }
+        let (_, projection) = crate::inline::InlineProjection::build(
+            &full.rope.to_string(),
+            annotations
+                .overlays
+                .iter()
+                .enumerate()
+                .map(|(id, o)| (o.anchor, id, o.text.as_str()))
+                .collect(),
+        );
+        full.annotations = Some(Arc::new(annotations));
+        let mut reference = SurfaceState::default();
+        full.shape(&mut reference, 1200., &mut fonts).unwrap();
+        let natural = full.layout(&reference).clone();
+        let mut state = ViewportState::default();
+        full.geometry.borrow_mut().offset[0] = 10_000.;
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        let entry = &state.cache[&0];
+        let rich = entry.rich.as_ref().expect("rich run index");
+        assert!(entry.columns().start > 32);
+        assert!(entry.text.len() < 1024);
+        let slice = entry.surface.layout(&entry.state);
+        assert!((slice.lines()[0].height - natural.lines()[0].height).abs() < 0.001);
+        assert!((slice.lines()[0].baseline - natural.lines()[0].baseline).abs() < 0.001);
+        assert!(
+            (rich.width - natural.size()[0]).abs() < 0.05,
+            "{} {}",
+            rich.width,
+            natural.size()[0]
+        );
+        for position in (0..=1536)
+            .step_by(17)
+            .chain([0, 16, 256, 512, 768, 1200, 1536])
+        {
+            let expected = natural
+                .caret(rxui::astrelis::TextPosition::new(
+                    projection.display_offset(position, true),
+                ))
+                .unwrap();
+            assert!(
+                (rich.caret(position) - expected.origin[0]).abs() < 0.05,
+                "{position}: {} {}",
+                rich.caret(position),
+                expected.origin[0]
+            );
+        }
+        for hint in &projection.insertions {
+            let a = natural
+                .caret(rxui::astrelis::TextPosition::new(hint.display.start))
+                .unwrap();
+            let b = natural
+                .caret(rxui::astrelis::TextPosition::new(hint.display.end))
+                .unwrap();
+            let x = (a.origin[0] + b.origin[0]) * 0.5;
+            let hit = natural.hit_test([x, 12.]).unwrap();
+            assert_eq!(rich.hit(x), projection.base_offset(hit.byte_offset));
+        }
+    }
+
+    #[test]
+    fn rich_windows_include_eof_hints_and_offscreen_backgrounds_in_provider_order() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut full = surface(&format!("{}\n", "a".repeat(4096)));
+        let mut annotations = Annotations::default();
+        annotations.spans.push(StyledRange::new(
+            0..1,
+            SpanStyle {
+                full_line_background: true,
+                background: Some([0.2, 0., 0., 1.]),
+                ..SpanStyle::default()
+            },
+        ));
+        annotations.spans.push(
+            StyledRange::new(
+                3000..4096,
+                SpanStyle {
+                    background: Some([0., 0.2, 0., 1.]),
+                    ..SpanStyle::default()
+                },
+            )
+            .with_hover("range", "correct provider"),
+        );
+        annotations.overlays.push(TextOverlay {
+            anchor: 4096,
+            text: "EOF".into(),
+            kind: OverlayKind::InlayHint,
+            placement: OverlayPlacement::Inline,
+            foreground: [1.; 4],
+            background: None,
+            hover: Some(crate::HoverCard {
+                title: "hint".into(),
+                body: "at EOF".into(),
+            }),
+        });
+        full.annotations = Some(Arc::new(annotations));
+        full.selection = Selection {
+            anchor: 0,
+            head: 4096,
+        };
+        full.epoch = 1;
+        full.reveal_caret = true;
+        let mut state = ViewportState::default();
+        state.prepare_cpu(&full, [1200., 800.], &mut fonts).unwrap();
+        let entry = &state.cache[&0];
+        assert_eq!(entry.columns().end, 4096);
+        let local = entry.surface.annotations.as_ref().unwrap();
+        assert_eq!(local.overlays.len(), 1);
+        assert_eq!(local.overlays[0].anchor, entry.text.len());
+        assert_eq!(entry.hover_ids, vec![0, 1, 2]);
+        assert!(local.spans[0].style.full_line_background);
+        assert_eq!(local.spans[0].range, 0..entry.text.len());
+        assert!(local.spans[0].hover.is_none());
+        assert_eq!(entry.surface.selection.range(), 0..entry.text.len());
+        let rich = entry.rich.as_ref().unwrap();
+        assert_eq!(full.geometry.borrow().caret.unwrap().x, rich.width);
+        assert_eq!(rich.hit(rich.width + 100.), 4096);
+    }
+
     #[test]
     fn horizontal_windows_cover_viewport_and_keep_bounded_overscan() {
         for offset in [0., 1., 1279., 500_000., 999_990.] {
@@ -955,6 +1432,7 @@ mod tests {
             start_char: 7,
             left: line.left(),
             grid: Some((cell, line.full_len)),
+            rich: None,
             geometry: line.surface.geometry.clone(),
         }];
         assert_eq!(

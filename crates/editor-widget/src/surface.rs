@@ -7,7 +7,7 @@ use crate::{
 use ropey::Rope;
 use rxui::astrelis::{
     FontFamily, FontSlant, LineDraw, PaintSession, PreparedText, Rect, TextBuffer, TextDraw,
-    TextLayout, TextPosition, TextRasterOptions, TextShaping, TextStyle, TextWrap,
+    TextLayout, TextLineMetrics, TextPosition, TextRasterOptions, TextShaping, TextStyle, TextWrap,
 };
 use rxui::{Bounds, CustomElement, CustomPrepare, ElementInfo, UiError};
 use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
@@ -105,6 +105,9 @@ impl Geometry {
                 .partition_point(|line| line.top <= y)
                 .saturating_sub(1);
             let line = &self.lines[index];
+            if let Some(rich) = &line.rich {
+                return Some(line.start_char + rich.hit(point[0] - PADDING + self.offset[0]));
+            }
             if let Some((cell, length)) = line.grid {
                 let x = (point[0] - PADDING + self.offset[0]).max(0.);
                 return Some(line.start_char + ((x / cell).round() as usize).min(length));
@@ -184,6 +187,7 @@ pub(crate) struct Surface {
     pub input_started: Option<std::time::Instant>,
     pub reveal_caret: bool,
     pub caret_visible: bool,
+    pub minimum_line_metrics: Option<TextLineMetrics>,
     pub annotations: Option<Arc<Annotations>>,
     pub selection_color: Color,
 }
@@ -222,6 +226,21 @@ impl SurfaceState {
     }
     pub(super) fn raster_scale(&self) -> f32 {
         self.raster_scale
+    }
+    pub(super) fn content_width(&self) -> f32 {
+        let width = self.layout.as_ref().map_or(0., |layout| layout.size()[0]);
+        // GPU-prepared decorations may belong to an older document/window.
+        if self
+            .prepared_layout
+            .as_ref()
+            .zip(self.layout.as_ref())
+            .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
+            && same_annotations(&self.annotations, &self.shaped_annotations)
+        {
+            width.max(self.decorations.content_size[0])
+        } else {
+            width
+        }
     }
 }
 
@@ -312,6 +331,9 @@ impl Surface {
         }
         state.shaped_selection = self.selection;
         state.shaped_annotations = self.annotations.clone();
+        state
+            .buffer
+            .set_minimum_line_metrics(self.minimum_line_metrics)?;
         state.buffer.set_width(Some(width))?;
         let mut layout = state.buffer.layout(fonts)?;
         if state.buffer.shaping() == TextShaping::Basic
@@ -622,6 +644,7 @@ mod tests {
             input_started: None,
             reveal_caret: false,
             caret_visible: true,
+            minimum_line_metrics: None,
             annotations: None,
             selection_color: [0.; 4],
         };

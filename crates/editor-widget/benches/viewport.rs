@@ -270,4 +270,21 @@ fn main() {
         11,
     );
     println!("long_line_1000_inline_layout,1,10000,{median:.6},{p95:.6}");
+    probe.prepare_at([1200., 800.], [40_000., 0.]);
+    let (median, p95) = sample(
+        || {
+            black_box(probe.prepare_at([1200., 800.], [40_000., 0.]));
+        },
+        101,
+    );
+    println!("long_line_1000_inline_warm,1,10000,{median:.6},{p95:.6}");
+    let mut x = 40_000.;
+    let (median, p95) = sample(
+        || {
+            x += 1200.;
+            black_box(probe.prepare_at([1200., 800.], [x, 0.]));
+        },
+        31,
+    );
+    println!("long_line_1000_inline_scroll,1,10000,{median:.6},{p95:.6}");
 }

@@ -106,3 +106,5 @@ Next priorities are run/cluster-aware windows for styled and inline text, increm
 source eligibility after edits, and native scheduling/presentation tracing. Full-line
 backgrounds can be handled separately from text chunks in a follow-up without
 requiring general rich-text shaping changes.
+
+The next pass adds rich metric runs and inline labels; see the [rich-window and native timing report](rich-horizontal-and-scheduling.md).

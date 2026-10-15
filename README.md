@@ -38,7 +38,7 @@ resolved dependency graph. To update RXUI, change the workspace dependency's
 `rev`, refresh the lockfile, and run the workspace checks.
 
 Rendering experiments currently require the patched sibling checkout
-`../astrelis` (branch `perf/editor-text`, commit `9c60dfd`). The workspace patches
+`../astrelis` (branch `perf/editor-text`, commit `b66648b`). The workspace patches
 both Astrelis crates to that checkout while keeping RXUI pinned. See the
 [local Astrelis performance report](docs/performance/astrelis-local.md) for the
 backend revision, measurements, and reproducibility details.
@@ -141,6 +141,7 @@ cargo bench -p velk-editor-widget --bench editing --locked
 cargo bench -p velk-editor-widget --bench viewport --features performance --locked
 cargo run --release --locked -- --stress
 cargo run --release --locked -- --long-lines
+cargo run --release --locked -- --rich-long-lines
 ```
 
 Set `VELK_PROFILE=1` to log preparation counters/timings and draw-recording time.
@@ -150,8 +151,10 @@ frame budget (8.33 ms); these measurements do not establish presentation cadence
 See [the performance report](docs/performance/editor-prototype.md) for measured
 results, cache behavior, scope, and next optimizations.
 
-Long printable-ASCII lines with verified fixed font advances now prepare only a
-horizontal window plus overscan. Colors and decorations that preserve font metrics
-can use this path; Unicode, mixed metrics, line backgrounds, inline hints, and IME
-retain the general renderer. See the [horizontal virtualization report](docs/performance/horizontal-virtualization.md)
-for eligibility, measurements, and native validation.
+Long printable-ASCII lines now prepare horizontal windows plus overscan. The rich
+path supports verified monospace metric runs, bold/italic/mixed sizes, backgrounds,
+and printable-ASCII inline labels. Unicode/complex shaping and unsupported overlay
+placements keep the full-line renderer. See the [rich-window and native timing report](docs/performance/rich-horizontal-and-scheduling.md)
+for current eligibility, results, and remaining scheduling limits; the
+[fixed-grid report](docs/performance/horizontal-virtualization.md) records the first pass.
+Set `ASTRELIS_PROFILE=1` to add native CPU frame-stage timings to `VELK_PROFILE=1`.

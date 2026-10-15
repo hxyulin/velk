@@ -14,7 +14,20 @@ fn main() -> Result<(), ApplicationError> {
     let horizontal = std::env::args()
         .skip(1)
         .any(|argument| argument == "--long-lines");
+    let rich_horizontal = std::env::args()
+        .skip(1)
+        .any(|argument| argument == "--rich-long-lines");
     Application::new().run(move |cx| {
+        if rich_horizontal {
+            let editor = cx.new(|_| stress::rich_horizontal_editor());
+            cx.open_window(
+                WindowOptions::new()
+                    .title("Velk — rich horizontal virtualization")
+                    .size(1280., 800.),
+                editor,
+            )?;
+            return Ok(());
+        }
         if horizontal {
             let editor = cx.new(|_| stress::horizontal_editor());
             cx.open_window(

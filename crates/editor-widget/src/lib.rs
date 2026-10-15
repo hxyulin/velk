@@ -2,6 +2,7 @@
 mod annotations;
 mod blink;
 mod buffer;
+mod horizontal;
 mod inline;
 mod surface;
 mod viewport;
@@ -342,6 +343,7 @@ impl View for Editor {
             input_started: self.input_started,
             reveal_caret: self.reveal_caret,
             caret_visible,
+            minimum_line_metrics: None,
             annotations: self.annotations.clone(),
             selection_color: self.appearance.selection,
         }))
