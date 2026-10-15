@@ -3064,6 +3064,8 @@ dependencies = [
  "pollster",
  "ropey",
  "rxui",
+ "serde",
+ "serde_json",
  "tempfile",
  "velk-editor-widget",
  "velk-markup",

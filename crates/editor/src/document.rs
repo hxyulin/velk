@@ -1,5 +1,6 @@
 mod plugins;
 mod semantic;
+mod shell;
 use crate::file::FileState;
 use rxui::{Subscription, prelude::*};
 use std::path::PathBuf;
@@ -17,6 +18,10 @@ struct ClosePlugins;
 impl Command for ClosePlugins {}
 struct Hover;
 impl Command for Hover {}
+struct ToggleSettings;
+impl Command for ToggleSettings {}
+struct CloseSettings;
+impl Command for CloseSettings {}
 #[derive(Clone, Copy)]
 pub enum Intent {
     Close,
@@ -37,6 +42,7 @@ pub struct Document {
     plugins: Option<plugins::State>,
     plugin_menu_open: bool,
     editor_focus: rxui::FocusHandle,
+    shell: shell::State,
 }
 impl Document {
     pub fn new(
@@ -72,6 +78,7 @@ impl Document {
             plugins: None,
             plugin_menu_open: false,
             editor_focus: rxui::FocusHandle::new(),
+            shell: shell::State::default(),
         }
     }
     pub fn title(&self) {
@@ -221,6 +228,17 @@ impl View for Document {
             .enabled(self.plugin_menu_open)
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
         let plugin_menu = self.plugin_menu(cx, toggle_plugins.clone(), close_plugins.clone());
+        let toggle_settings = cx
+            .command(ToggleSettings, |this, _, cx| {
+                this.set_settings(!this.shell.open, cx);
+            })
+            .label("Settings")
+            .shortcut(Shortcut::primary(","));
+        let close_settings = cx
+            .command(CloseSettings, |this, _, cx| this.set_settings(false, cx))
+            .enabled(self.shell.open)
+            .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
+        let settings_menu = self.settings_menu(cx, toggle_settings.clone(), close_settings.clone());
         let status = self.status.as_deref().unwrap_or(if self.dirty {
             "Unsaved changes"
         } else {
@@ -230,34 +248,49 @@ impl View for Document {
             Some(semantic) => format!("{status} · {semantic}"),
             None => status.to_owned(),
         };
-        let status = self
-            .plugins
-            .as_ref()
-            .map_or(status.clone(), |p| format!("{status} · {}", p.status));
+        let activity = self.activity_bar(toggle_settings.clone(), toggle_plugins.clone());
+        let status_bar = self.status_bar(status, toggle_settings.clone(), toggle_plugins.clone());
         column()
             .fill_width()
             .fill_height()
             .on_command(save)
             .on_command(hover)
             .on_command(toggle_plugins)
-            .on_command(close_plugins)
+            .on_command(toggle_settings)
             .children(plugin_menu)
+            .children(settings_menu)
             .child(
-                self.editor
-                    .clone()
-                    .into_element()
-                    .focus_handle(self.editor_focus.clone())
+                row()
                     .fill_width()
                     .fill_height()
                     .flex_shrink(1.)
-                    .min_height(0.),
+                    .min_height(0.)
+                    .children(activity)
+                    .child(
+                        self.editor
+                            .clone()
+                            .into_element()
+                            .focus_handle(self.editor_focus.clone())
+                            .fill_width()
+                            .fill_height()
+                            .flex_shrink(1.)
+                            .min_width(0.)
+                            .min_height(0.),
+                    ),
             )
-            .child(
-                label(status.to_owned())
-                    .font_size(12.)
-                    .padding(6.)
-                    .color(ThemeColor::TextMuted),
+            .children(
+                (!self.shell.store.preferences.status_bar)
+                    .then_some(self.status.as_ref())
+                    .flatten()
+                    .map(|message| {
+                        label(message.clone())
+                            .key("document-notice")
+                            .font_size(12.)
+                            .padding(6.)
+                            .color(ThemeColor::TextMuted)
+                    }),
             )
+            .children(status_bar)
     }
 }
 

@@ -108,6 +108,9 @@ impl Document {
 
 impl Document {
     pub(super) fn set_plugin_menu(&mut self, open: bool, cx: &mut Context<'_, Self>) {
+        if open {
+            self.shell.open = false;
+        }
         self.plugin_menu_open = open;
         if !open {
             let _ = self.editor_focus.focus(cx);
