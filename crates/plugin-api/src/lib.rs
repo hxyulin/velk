@@ -1,7 +1,7 @@
 //! Experimental native ABI. No Rust containers or trait objects cross it.
 use std::ffi::c_void;
-pub const ABI_VERSION: u32 = 2;
-pub const ENTRY_SYMBOL: &[u8] = b"velk_plugin_entry_v2\0";
+pub const ABI_VERSION: u32 = 1;
+pub const ENTRY_SYMBOL: &[u8] = b"velk_plugin_entry_v1\0";
 pub const OK: i32 = 0;
 pub const INCOMPATIBLE: i32 = 1;
 pub const INVALID: i32 = 2;
@@ -9,7 +9,7 @@ pub const BUFFER_TOO_SMALL: i32 = 3;
 pub const PANICKED: i32 = 4;
 /// All functions run serially on the plugin worker. Callers provide valid buffers
 /// and instances. Plugins must not retain borrowed pointers, spawn background work,
-/// or register thread-local destructors: v2 has no asynchronous lifetime protocol.
+/// or register thread-local destructors: v1 has no asynchronous lifetime protocol.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PluginApi {

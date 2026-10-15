@@ -1,10 +1,17 @@
-use super::Document;
-use rxui::prelude::*;
+use super::{ClosePlugins, Document, LoadPlugins, UnloadPlugins};
+use rxui::{Element, prelude::*};
 use velk_plugin_host::{Client, Event};
+enum Operation {
+    Load,
+    UnloadAll,
+    Unload(String),
+}
+
 pub(super) struct State {
     client: Client,
     task: Option<Task>,
     pub status: String,
+    loaded: Vec<velk_plugin_host::PluginInfo>,
 }
 impl Document {
     pub fn enable_plugins(&mut self, client: Client, cx: &mut Context<'_, Self>) {
@@ -12,6 +19,7 @@ impl Document {
             client,
             task: None,
             status: String::new(),
+            loaded: Vec::new(),
         });
         self.change_plugins(true, cx);
     }
@@ -31,6 +39,16 @@ impl Document {
         self.plugins.as_ref().is_none_or(|s| s.task.is_some())
     }
     pub(super) fn change_plugins(&mut self, load: bool, cx: &mut Context<'_, Self>) {
+        self.plugin_operation(
+            if load {
+                Operation::Load
+            } else {
+                Operation::UnloadAll
+            },
+            cx,
+        );
+    }
+    fn plugin_operation(&mut self, operation: Operation, cx: &mut Context<'_, Self>) {
         let Some(state) = &mut self.plugins else {
             return;
         };
@@ -38,10 +56,10 @@ impl Document {
             cx.unchanged();
             return;
         }
-        let receiver = if load {
-            state.client.load()
-        } else {
-            state.client.unload_all()
+        let receiver = match &operation {
+            Operation::Load => state.client.load(),
+            Operation::UnloadAll => state.client.unload_all(),
+            Operation::Unload(id) => state.client.unload(id.clone()),
         };
         let receiver = match receiver {
             Ok(r) => r,
@@ -50,7 +68,7 @@ impl Document {
                 return;
             }
         };
-        state.status = if load {
+        state.status = if matches!(operation, Operation::Load) {
             "Loading plugins…"
         } else {
             "Unloading plugins…"
@@ -63,6 +81,7 @@ impl Document {
             state.task = None;
             state.status = match result {
                 Ok(Ok(Ok(report))) => {
+                    state.loaded = report.plugins;
                     let errors: Vec<_> = report
                         .events
                         .iter()
@@ -84,5 +103,191 @@ impl Document {
             Ok(task) => state.task = Some(task),
             Err(error) => state.status = format!("Plugins: {error}"),
         }
+    }
+}
+
+impl Document {
+    pub(super) fn set_plugin_menu(&mut self, open: bool, cx: &mut Context<'_, Self>) {
+        self.plugin_menu_open = open;
+        if !open {
+            let _ = self.editor_focus.focus(cx);
+        }
+    }
+    pub(super) fn plugin_menu(&self, cx: &mut ViewContext<'_, Self>) -> Option<Element> {
+        if !self.plugin_menu_open {
+            return None;
+        }
+        let load = cx
+            .command(LoadPlugins, |this, _, cx| this.change_plugins(true, cx))
+            .label("Load from disk")
+            .enabled(!self.plugins_busy());
+        let unload = cx
+            .command(UnloadPlugins, |this, _, cx| this.change_plugins(false, cx))
+            .label("Unload all")
+            .enabled(
+                !self.plugins_busy() && self.plugins.as_ref().is_some_and(|s| !s.loaded.is_empty()),
+            );
+        let close = cx
+            .command(ClosePlugins, |this, _, cx| this.set_plugin_menu(false, cx))
+            .label("Close (F2 / Esc)");
+        let menu = column()
+            .key("plugin-menu")
+            .on_command(load.clone())
+            .on_command(unload.clone())
+            .fill_width()
+            .max_height(280.)
+            .flex_shrink(0.)
+            .padding(10.)
+            .gap(6.)
+            .background(ThemeColor::Surface)
+            .child(label("Plugins").font_size(16.))
+            .child(
+                row()
+                    .gap(8.)
+                    .child(load.button())
+                    .child(unload.button())
+                    .child(close.button().key("plugin-menu-close")),
+            );
+        let mut entries = column()
+            .gap(6.)
+            .fill_width()
+            .scroll_y()
+            .flex_shrink(1.)
+            .min_height(0.);
+        if let Some(state) = &self.plugins {
+            entries = entries.child(label(state.status.clone()).font_size(12.));
+            if state.loaded.is_empty() {
+                entries = entries.child(label(
+                    "No plugins loaded. Load from disk to read plugins.json.",
+                ));
+            }
+            for plugin in &state.loaded {
+                let id = plugin.id.clone();
+                entries = entries.child(
+                    column()
+                        .gap(3.)
+                        .child(
+                            row()
+                                .gap(8.)
+                                .child(label(format!(
+                                    "{} · {} · generation {}",
+                                    plugin.id, plugin.version, plugin.generation
+                                )))
+                                .child(button("Unload").disabled(self.plugins_busy()).on_click(
+                                    cx.listener(move |this, _, cx| {
+                                        this.plugin_operation(Operation::Unload(id.clone()), cx);
+                                    }),
+                                )),
+                        )
+                        .child(label(plugin.description.clone()).font_size(12.)),
+                );
+            }
+        } else {
+            entries = entries.child(label("Plugin worker unavailable."));
+        }
+        Some(menu.child(entries))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rxui::{KeyEvent, Runtime, Ui};
+
+    #[test]
+    fn plugin_panel_toggles_with_f2_and_closes_from_button_focus_without_editing() {
+        struct Measure;
+        impl rxui::TextMeasure for Measure {
+            fn measure(
+                &mut self,
+                _: rxui::ElementId,
+                request: rxui::TextRequest<'_>,
+            ) -> Result<[f32; 2], rxui::UiError> {
+                Ok([request.text.len() as f32 * 7., 18.])
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let (file, editor) = crate::file::FileState::open(&path).unwrap();
+        let mut runtime = Runtime::new();
+        let editor = runtime.update(|cx| cx.new(|_| editor));
+        let document =
+            runtime.update(|cx| cx.new(|cx| Document::new(editor.clone(), file, path, cx)));
+        let mut ui = Ui::new(&mut runtime, document.clone()).unwrap();
+        let prepare = |ui: &mut Ui<Document>, runtime: &mut Runtime| {
+            ui.prepare(runtime, [640., 400.], &mut Measure).unwrap()
+        };
+        prepare(&mut ui, &mut runtime);
+        let source = ui
+            .elements()
+            .find(|e| e.key == Some(&rxui::Key::from("editor-surface")))
+            .unwrap()
+            .id;
+        assert!(ui.focus(source));
+        for spelling in ["F2", "Named(F2)"] {
+            for open in [true, false, true] {
+                ui.key(
+                    &mut runtime,
+                    KeyEvent {
+                        key: KeyboardKey::Other(spelling.into()),
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    },
+                )
+                .unwrap();
+                prepare(&mut ui, &mut runtime);
+                assert_eq!(
+                    ui.elements()
+                        .any(|e| e.key == Some(&rxui::Key::from("plugin-menu"))),
+                    open
+                );
+            }
+            // Focus the close button as a pointer/tab interaction would, then
+            // dispatch its action. Closing must restore the editing surface.
+            let close = ui
+                .elements()
+                .find(|e| e.key == Some(&rxui::Key::from("plugin-menu-close")))
+                .unwrap()
+                .id;
+            assert!(ui.focus(close));
+            assert_eq!(
+                ui.dispatch_command::<ClosePlugins>(&mut runtime).unwrap(),
+                rxui::CommandStatus::Handled
+            );
+            prepare(&mut ui, &mut runtime);
+            assert_eq!(ui.focused_element(), Some(source));
+            ui.key(
+                &mut runtime,
+                KeyEvent {
+                    key: KeyboardKey::Other(spelling.into()),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            )
+            .unwrap();
+            prepare(&mut ui, &mut runtime);
+            ui.key(
+                &mut runtime,
+                KeyEvent {
+                    key: KeyboardKey::Escape,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            )
+            .unwrap();
+            prepare(&mut ui, &mut runtime);
+            assert!(
+                !ui.elements()
+                    .any(|e| e.key == Some(&rxui::Key::from("plugin-menu")))
+            );
+        }
+        runtime.update(|cx| {
+            assert_eq!(editor.read(cx).buffer().text().to_string(), "original");
+            assert!(!editor.read(cx).buffer().is_dirty());
+        });
     }
 }

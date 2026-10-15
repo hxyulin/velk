@@ -152,7 +152,7 @@ crosses the C ABI. With no provider loaded, requests return literal Markdown as
 plain text; provider/queue errors also use a literal fallback. Loading a provider
 restores formatting for subsequent requests. The parser is not retained as a
 built-in fallback. See the README's local-plugin workflow for load/unload commands,
-ABI v2, limits, and the cooperative native-code lifecycle contract.
+ABI v1, limits, and the cooperative native-code lifecycle contract.
 
 Completion, navigation, formatting, inlay hints,
 code actions, pull diagnostics, file-watch registration, and automatic server

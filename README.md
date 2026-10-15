@@ -67,11 +67,12 @@ directory (`CARGO_TARGET_DIR` included) and stages native artifacts into
 `VELK_PLUGIN_DIR` explicitly. Direct launches search `plugins/` beside the
 executable; `VELK_PLUGIN_DIR=/absolute/path` overrides that directory.
 
-Plugins listed in `plugins.json` load asynchronously at startup. While the editor
-is open, use these application commands (the source editor has focus):
-
-- **Command/Ctrl+Alt+P**: load plugins from disk. Already-loaded IDs stay active.
-- **Command/Ctrl+Alt+Shift+P**: unload all plugins.
+Plugins listed in `plugins.json` load asynchronously at startup. Press **F2** to
+open or close the basic plugin panel; **Escape** also closes it. The panel lists
+loaded plugin IDs, versions, generations, and descriptions, with **Load from disk**,
+**Unload all**, and individual **Unload** buttons. Loading leaves active IDs alone.
+Controls are disabled while a lifecycle operation is pending; errors remain visible.
+The previous load/unload keyboard chords have been removed.
 
 The status line reports the loaded count and failures. Disk I/O, library loading,
 plugin calls, and teardown run serially on one sleeping background worker. There
@@ -124,11 +125,12 @@ also fall back to literal text in the app. An active render can delay unload; it
 cannot block the UI event loop. Multiple Markdown providers are reported as a
 conflict until explicit provider selection is implemented.
 
-The experimental ABI is now v2 (`velk_plugin_entry_v2`); rebuild/stage both bundled
-plugins with `cargo xtask build` after updating the editor. Older ABI artifacts are
-rejected rather than called with a changed function-table layout.
+The internal ABI stays at v1 (`velk_plugin_entry_v1`) during development. Its
+layout is experimental: rebuild/stage bundled plugins with `cargo xtask build`
+after SDK changes. Layout size checks reject incompatible function tables.
+Versioned compatibility will be introduced when the plugin API becomes public.
 
-These are trusted in-process native plugins. The v2 contract requires serialized,
+These are trusted in-process native plugins. The v1 contract requires serialized,
 returning calls, no retained host pointers, no background threads/tasks/callbacks,
 and no unload-sensitive thread-local destructors. Safe author-facing methods do
 not enforce those restrictions on arbitrary Rust code. A reported destructor

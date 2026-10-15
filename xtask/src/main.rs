@@ -344,7 +344,7 @@ fn markdown_smoke(output: &Path) -> Result<(), String> {
         assert_eq!(client.render_markdown(source.into()).await?, document);
         assert_eq!(
             client
-                .unload_all()?
+                .unload("velk.markdown".into())?
                 .recv()
                 .await
                 .map_err(|e| e.to_string())??

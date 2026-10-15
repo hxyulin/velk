@@ -20,12 +20,12 @@ macro_rules! export_plugin {
     ($plugin:ty) => {
         #[allow(unsafe_code)]
         #[unsafe(no_mangle)]
-        unsafe extern "C" fn velk_plugin_entry_v2(
+        unsafe extern "C" fn velk_plugin_entry_v1(
             abi: u32,
             output: *mut $crate::api::PluginApi,
             size: usize,
         ) -> i32 {
-            // SAFETY: called by a host satisfying the documented v2 ABI.
+            // SAFETY: called by a host satisfying the documented v1 ABI.
             unsafe { $crate::ffi::entry::<$plugin>(abi, output, size) }
         }
     };

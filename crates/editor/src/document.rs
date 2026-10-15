@@ -11,6 +11,10 @@ struct LoadPlugins;
 impl Command for LoadPlugins {}
 struct UnloadPlugins;
 impl Command for UnloadPlugins {}
+struct TogglePlugins;
+impl Command for TogglePlugins {}
+struct ClosePlugins;
+impl Command for ClosePlugins {}
 struct Hover;
 impl Command for Hover {}
 #[derive(Clone, Copy)]
@@ -31,6 +35,8 @@ pub struct Document {
     _subscription: Subscription,
     semantic: Option<semantic::State>,
     plugins: Option<plugins::State>,
+    plugin_menu_open: bool,
+    editor_focus: rxui::FocusHandle,
 }
 impl Document {
     pub fn new(
@@ -64,6 +70,8 @@ impl Document {
             _subscription: subscription,
             semantic: None,
             plugins: None,
+            plugin_menu_open: false,
+            editor_focus: rxui::FocusHandle::new(),
         }
     }
     pub fn title(&self) {
@@ -194,16 +202,25 @@ impl View for Document {
                 KeyboardKey::Other("Named(F1)".into()),
                 Default::default(),
             ));
-        let load_plugins = cx
-            .command(LoadPlugins, |this, _, cx| this.change_plugins(true, cx))
-            .label("Load plugins from disk")
-            .enabled(!self.plugins_busy())
-            .shortcut(Shortcut::primary("p").alt());
-        let unload_plugins = cx
-            .command(UnloadPlugins, |this, _, cx| this.change_plugins(false, cx))
-            .label("Unload plugins")
-            .enabled(!self.plugins_busy())
-            .shortcut(Shortcut::primary("p").alt().shift());
+        let toggle_plugins = cx
+            .command(TogglePlugins, |this, _, cx| {
+                this.set_plugin_menu(!this.plugin_menu_open, cx);
+            })
+            .label("Plugins (F2)")
+            .shortcut(Shortcut::new(
+                KeyboardKey::Other("F2".into()),
+                Default::default(),
+            ))
+            .shortcut(Shortcut::new(
+                KeyboardKey::Other("Named(F2)".into()),
+                Default::default(),
+            ));
+        let close_plugins = cx
+            .command(ClosePlugins, |this, _, cx| this.set_plugin_menu(false, cx))
+            .label("Close plugins")
+            .enabled(self.plugin_menu_open)
+            .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
+        let plugin_menu = self.plugin_menu(cx);
         let status = self.status.as_deref().unwrap_or(if self.dirty {
             "Unsaved changes"
         } else {
@@ -222,12 +239,14 @@ impl View for Document {
             .fill_height()
             .on_command(save)
             .on_command(hover)
-            .on_command(load_plugins)
-            .on_command(unload_plugins)
+            .on_command(toggle_plugins)
+            .on_command(close_plugins)
+            .children(plugin_menu)
             .child(
                 self.editor
                     .clone()
                     .into_element()
+                    .focus_handle(self.editor_focus.clone())
                     .fill_width()
                     .fill_height()
                     .flex_shrink(1.)

@@ -61,11 +61,14 @@ pub enum Event {
 #[derive(Debug)]
 pub struct Report {
     pub loaded: usize,
+    /// Owned snapshot after this operation, including unchanged active plugins.
+    pub plugins: Vec<PluginInfo>,
     pub events: Vec<Event>,
 }
 enum Operation {
     Load,
     UnloadAll,
+    Unload(String),
 }
 enum Request {
     Lifecycle {
@@ -89,6 +92,12 @@ impl Client {
     }
     pub fn unload_all(&self) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
         self.request(Operation::UnloadAll)
+    }
+    pub fn unload(
+        &self,
+        id: String,
+    ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
+        self.request(Operation::Unload(id))
     }
     /// The returned future is local Rust scheduling, not a future across the ABI.
     /// Dropping it closes the result channel, allowing queued work to be skipped.
@@ -124,7 +133,7 @@ pub struct Runtime {
 impl Runtime {
     /// # Safety
     /// The directory must contain only trusted native libraries implementing the
-    /// v2 ABI and its unload contract. Native code is not sandboxed.
+    /// v1 ABI and its unload contract. Native code is not sandboxed.
     #[allow(unsafe_code)]
     pub unsafe fn start(directory: PathBuf) -> Result<Self, String> {
         Self::spawn(move || Manager::new(directory))
@@ -151,9 +160,10 @@ impl Runtime {
                         Request::Lifecycle { operation, reply } => (operation, reply),
                     };
                     let events = match operation {
-                        // SAFETY: start's caller guarantees all artifacts obey v2.
+                        // SAFETY: start's caller guarantees all artifacts obey v1.
                         Operation::Load => unsafe { manager.load() },
                         Operation::UnloadAll => Ok(manager.unload_all()),
+                        Operation::Unload(id) => Ok(manager.unload(&id).into_iter().collect()),
                     };
                     if let Ok(events) = &events {
                         for event in events {
@@ -171,6 +181,7 @@ impl Runtime {
                     }
                     let result = events.map(|events| Report {
                         loaded: manager.plugins().count(),
+                        plugins: manager.plugins().cloned().collect(),
                         events,
                     });
                     let _ = reply.try_send(result);

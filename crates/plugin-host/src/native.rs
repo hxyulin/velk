@@ -52,7 +52,7 @@ impl Generation {
         // SAFETY: caller explicitly trusts libraries selected by this manifest.
         let library = unsafe { Library::new(&path) }.map_err(|e| e.to_string())?;
         let mut output = std::mem::MaybeUninit::<PluginApi>::uninit();
-        // SAFETY: entry symbol/type and successful initialization are required by v2.
+        // SAFETY: entry symbol/type and successful initialization are required by v1.
         let api = unsafe {
             let entry = library
                 .get::<Entry>(ENTRY_SYMBOL)
@@ -266,7 +266,7 @@ fn metadata(bytes: &[u8]) -> Result<String, String> {
     String::from_utf8(bytes[..end].to_vec()).map_err(|e| e.to_string())
 }
 /// Serial, worker-owned lifecycle manager. It exposes no raw function pointers or
-/// plugin-owned values, so all v2 calls complete before replacement/destruction.
+/// plugin-owned values, so all v1 calls complete before replacement/destruction.
 pub struct Manager {
     directory: PathBuf,
     plugins: BTreeMap<String, Generation>,
@@ -318,7 +318,7 @@ impl Manager {
     /// Load inactive plugins listed on disk. Already-active IDs are left alone,
     /// even when a newer build is staged. Unload explicitly before replacing one.
     /// # Safety
-    /// All libraries selected by the directory must implement the trusted v2 ABI,
+    /// All libraries selected by the directory must implement the trusted v1 ABI,
     /// including its no-background-work/no-retained-borrows unload contract.
     pub unsafe fn load(&mut self) -> Result<Vec<Event>, String> {
         if !self.directory.join(crate::MANIFEST).exists() {
