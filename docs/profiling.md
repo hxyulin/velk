@@ -63,6 +63,15 @@ The existing RXUI/Astrelis `profiling` instrumentation is connected through
   parsing, LSP process spawn, initialization, message encoding/decoding, async
   message waits, hover round trips and shutdown.
 
+Painter preparation is split into RXUI pipeline, text, image, custom-widget and
+composition stages. Composition planning and new layer allocation have separate
+scopes. Astrelis further separates shape, line, path and text pipeline preparation,
+with coverage and MTSDF text variants distinguished. On a mesh pipeline cache miss,
+`astrelis::create_mesh_pipeline` includes validation/setup and a nested
+`astrelis::wgpu::create_render_pipeline` scope measures the host API call. Cache
+hits return before either creation scope. These scopes measure host elapsed time,
+including any driver blocking, rather than GPU execution.
+
 Async Rust work uses `tracing::Instrument` / `#[tracing::instrument]`. Entered
 spans describe individual polls; an `async_work = true` field adds a separate
 wall-time lifetime. Never retain a normal entered CPU span across an `.await`.
