@@ -22,6 +22,8 @@ pub struct UiState {
     search_query: velk_search::Query,
     pub plugins: Vec<String>,
     notice: Option<String>,
+    #[serde(default)]
+    panels: super::panels::UiState,
 }
 impl Document {
     pub(super) fn reloading(&self) -> bool {
@@ -35,6 +37,7 @@ impl Document {
             && !self.editor.read(cx).has_composition()
     }
     pub fn restore_ui(&mut self, state: UiState) {
+        self.panels.ui = state.panels;
         self.shell.store.preferences = state.preferences;
         self.shell.open = state.settings_open;
         self.plugin_menu_open = state.plugins_open;
@@ -88,6 +91,7 @@ impl Document {
                 state.loaded.iter().map(|p| p.id.clone()).collect()
             }),
             notice: self.status.clone(),
+            panels: self.panels.ui.clone(),
         };
         let geometry = self
             .window

@@ -2,8 +2,7 @@
 
 Velk starts with the editor and a compact bottom status bar. The bar shows save
 and semantic status and provides Settings and Plugins buttons. Enabling the left
-activity bar moves those buttons into it. There are no empty file/search panels
-and no built-in filesystem scanning or search backend.
+activity bar moves those buttons into it. Panels start hidden, and the mock Files plugin performs no filesystem scanning.
 
 Settings opens as a modal with Command+, on macOS and Control+, elsewhere. It can
 hide either bar, including both; the shortcut remains available. Escape, the
@@ -33,28 +32,18 @@ Reset appearance restores only the two layout options.
 
 ## Feature plugins
 
-This change establishes host chrome, not a plugin panel API. Files, search, and
-other optional tools should be supplied by plugins as those features are built.
-The intended boundary is:
+Plugins can now contribute host-rendered panels through the named
+`velk.ui.panels.v1` request hook. Left, right and bottom slots support tabbed tree
+or text snapshots. The built-in `velk.demo.files` plugin demonstrates a mock file
+tree; it does not access the filesystem. Panels start hidden. Open them with the
+Panels button, Command+B / Control+B, or **Panels: Toggle visibility** in the
+palette. Closing a slot restores editing focus. The launcher moves into the
+activity bar when enabled and remains reachable by shortcut with both bars hidden.
 
-- The host owns layout slots, selection, focus, accessibility, scrolling, and
-  rendering. Visible rows should be virtualized using host controls.
-- Plugins contribute panel descriptors and versioned data snapshots/deltas, and
-  receive actions such as expanding a directory or submitting a search query.
-- Filesystem traversal, watching, indexing, and searching run off the UI thread.
-  Results must be bounded, cancellable, and tagged with a query/generation so late
-  replies cannot revive a closed panel or an unloaded plugin.
-- Rendering reads host-owned cached data. It must not synchronously call a plugin
-  for each row or frame. Unload removes a plugin's contributions and cancels its
-  outstanding work before releasing its code.
-
-The named registry provides the discovery/contract boundary for that future
-work. It does not currently publish panel contributions or connect plugins to
-these bars. We should choose a concrete panel contract while implementing the
-first real feature, and measure result transfer, UI preparation, and interaction
-latency with realistic workloads. A C ABI alone is not a performance guarantee;
-unbounded payloads, blocking callbacks, and eager row construction would dominate
-the cost of a function call.
+The host owns layout, scrolling, virtualized row controls and view state. Snapshot
+requests run off the UI thread, and lifecycle changes invalidate pending replies.
+See [panels.md](panels.md) for the contract, limits, authoring example, ownership,
+reload behavior and current restrictions.
 
 ## Command palette
 

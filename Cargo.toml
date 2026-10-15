@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/diagnostics", "crates/editor", "crates/search", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/builtin", "plugins/markdown", "plugins/search", "plugins/lsp", "plugins/rust-analyzer", "xtask"]
+members = ["crates/panels", "plugins/mock-files", "crates/diagnostics", "crates/editor", "crates/search", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/builtin", "plugins/markdown", "plugins/search", "plugins/lsp", "plugins/rust-analyzer", "xtask"]
 default-members = ["crates/editor"]
 resolver = "3"
 
@@ -10,6 +10,7 @@ rust-version = "1.99.0"
 publish = false
 
 [workspace.dependencies]
+velk-panels = { path = "crates/panels" }
 velk-diagnostics = { path = "crates/diagnostics" }
 tracing = "0.1.44"
 velk-search = { path = "crates/search" }

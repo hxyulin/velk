@@ -70,6 +70,8 @@ impl Document {
             cx.unchanged();
             return;
         }
+        self.suspend_panels();
+        let state = self.plugins.as_mut().expect("plugin state");
         let receiver = match &operation {
             Operation::Load => state.client.load(),
             Operation::LoadSelected(ids, states) => {
@@ -83,6 +85,7 @@ impl Document {
             Ok(r) => r,
             Err(e) => {
                 state.status = format!("Plugins: {e}");
+                self.refresh_panels(cx);
                 return;
             }
         };
@@ -119,13 +122,17 @@ impl Document {
                 Ok(Ok(Err(error))) => format!("Plugins: {error}"),
                 _ => "Plugin worker unavailable".into(),
             };
+            this.refresh_panels(cx);
             if this.search.open {
                 this.search.preserve_selection = true;
                 this.restart_search(cx);
             }
         }) {
             Ok(task) => state.task = Some(task),
-            Err(error) => state.status = format!("Plugins: {error}"),
+            Err(error) => {
+                state.status = format!("Plugins: {error}");
+                self.refresh_panels(cx);
+            }
         }
     }
 }

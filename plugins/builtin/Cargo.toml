@@ -7,6 +7,7 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib"]
 [dependencies]
+velk-plugin-mock-files = { path = "../mock-files" }
 velk-plugin-sdk.workspace = true
 velk-plugin-markdown = { path = "../markdown" }
 velk-plugin-lsp = { path = "../lsp" }

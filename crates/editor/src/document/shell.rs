@@ -61,6 +61,7 @@ impl Document {
         &self,
         settings: rxui::CommandAction<ToggleSettings>,
         plugins: rxui::CommandAction<TogglePlugins>,
+        panels: rxui::CommandAction<super::panels::Toggle>,
     ) -> Option<Element> {
         self.shell.store.preferences.activity_bar.then(|| {
             column()
@@ -71,6 +72,14 @@ impl Document {
                 .padding(4.)
                 .gap(4.)
                 .background(ThemeColor::Surface)
+                .child(
+                    panels
+                        .label("Panels")
+                        .button()
+                        .font_size(12.)
+                        .variant(rxui::ButtonVariant::Quiet)
+                        .fill_width(),
+                )
                 .child(column().flex_grow(1.))
                 .child(
                     plugins
@@ -94,6 +103,7 @@ impl Document {
         status: String,
         settings: rxui::CommandAction<ToggleSettings>,
         plugins: rxui::CommandAction<TogglePlugins>,
+        panels: rxui::CommandAction<super::panels::Toggle>,
     ) -> Option<Element> {
         self.shell.store.preferences.status_bar.then(|| {
             let mut bar = row()
@@ -117,6 +127,14 @@ impl Document {
             // Keep launchers in one place when the activity bar is visible.
             if !self.shell.store.preferences.activity_bar {
                 bar = bar
+                    .child(
+                        panels
+                            .label("Panels")
+                            .button()
+                            .key("panels-button")
+                            .font_size(12.)
+                            .variant(rxui::ButtonVariant::Quiet),
+                    )
                     .child(
                         plugins
                             .label("Plugins")

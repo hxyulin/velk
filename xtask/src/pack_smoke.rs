@@ -14,7 +14,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .iter()
                 .all(|e| matches!(e, Event::Loaded(_)))
         );
-        assert_eq!(manager.plugins().count(), 4);
+        assert_eq!(manager.plugins().count(), 5);
         let image = manager.plugins().next().unwrap().loaded_path.clone();
         assert!(
             manager
@@ -30,6 +30,25 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .any(|r| r.style.bold)
         );
         let search = manager.bind_hook(velk_search::DEFAULT_BACKEND, velk_search::HOOK)?;
+        let panel = manager.bind_hook("velk.demo.files", velk_panels::HOOK)?;
+        let bytes = manager.call_hook(
+            &panel,
+            &velk_panels::encode(&velk_panels::Request::Describe)?,
+        )?;
+        let snapshot: velk_panels::Snapshot = velk_panels::decode(&bytes)?;
+        snapshot.validate()?;
+        assert_eq!(snapshot.panels[0].title, "Files (mock)");
+        assert!(matches!(
+            manager.unload("velk.demo.files"),
+            Some(Event::Removed(_))
+        ));
+        assert!(manager.call_hook(&panel, b"{}").is_err());
+        assert_eq!(
+            snapshot.panels[0].title, "Files (mock)",
+            "snapshot remains host owned after unload"
+        );
+        assert_eq!(manager.load()?.len(), 1);
+
         assert!(matches!(manager.unload(ID), Some(Event::Removed(_))));
         assert!(image.exists());
         assert_eq!(manager.describe("velk.lsp")?, "Generic LSP transport");
@@ -37,10 +56,10 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         let markdown = manager.plugins().find(|p| p.id == ID).unwrap();
         assert_eq!(markdown.loaded_path, image);
         assert!(markdown.generation > old);
-        assert_eq!(manager.unload_all().len(), 4);
+        assert_eq!(manager.unload_all().len(), 5);
         assert!(image.exists(), "LSP's image lease applies to all members");
         assert!(manager.call_hook(&search, b"{}").is_err());
-        assert_eq!(manager.load()?.len(), 4);
+        assert_eq!(manager.load()?.len(), 5);
         assert!(manager.plugins().all(|p| p.loaded_path == image));
         manager.unload_all();
         // Even selecting only a nonresident member must discover pack residency.
@@ -60,7 +79,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     probe(root, output, release)?;
     crate::lsp_smoke::run_pack(root, output)?;
     println!(
-        "Plugin pack smoke passed: one image, four identities, independent unload/reload, resident subsets, artifact revalidation, nonresident cleanup, initialization failures, stale handles, packed LSP sessions"
+        "Plugin pack smoke passed: one image, five identities, independent unload/reload, resident subsets, artifact revalidation, nonresident cleanup, initialization failures, stale handles, packed LSP sessions"
     );
     Ok(())
 }

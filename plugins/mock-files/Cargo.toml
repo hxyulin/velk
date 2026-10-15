@@ -1,0 +1,15 @@
+[package]
+name = "velk-plugin-mock-files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lib]
+crate-type = ["rlib"]
+[dependencies]
+velk-plugin-sdk.workspace = true
+velk-panels.workspace = true
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"

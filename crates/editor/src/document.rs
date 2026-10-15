@@ -1,5 +1,6 @@
 mod diagnostics;
 mod palette;
+mod panels;
 mod plugins;
 pub(crate) mod reload;
 mod search;
@@ -53,6 +54,7 @@ pub struct Document {
     shell: shell::State,
     search: search::State,
     palette: palette::State,
+    panels: panels::State,
 }
 impl Document {
     pub fn new(
@@ -96,6 +98,7 @@ impl Document {
             shell: shell::State::default(),
             search: search::State::default(),
             palette: palette::State::default(),
+            panels: panels::State::default(),
         }
     }
     pub fn title(&self) {
@@ -296,9 +299,19 @@ impl View for Document {
             Some(semantic) => format!("{status} · {semantic}"),
             None => status.to_owned(),
         };
-        let activity = self.activity_bar(toggle_settings.clone(), toggle_plugins.clone());
+        let toggle_panels = self.panels_action(cx);
+        let activity = self.activity_bar(
+            toggle_settings.clone(),
+            toggle_plugins.clone(),
+            toggle_panels.clone(),
+        );
         let (find, search_bar) = self.search_bar(cx);
-        let status_bar = self.status_bar(status, toggle_settings.clone(), toggle_plugins.clone());
+        let status_bar = self.status_bar(
+            status,
+            toggle_settings.clone(),
+            toggle_plugins.clone(),
+            toggle_panels.clone(),
+        );
         let restart_plugins = cx
             .command(reload::RestartPlugins, |this, _, cx| {
                 this.plugin_operation(plugins::Operation::Restart(None), cx)
@@ -385,6 +398,11 @@ impl View for Document {
                             "Ctrl+Alt+R"
                         },
                     ),
+                    palette::Entry::new(
+                        "velk.panels.toggle",
+                        toggle_panels.clone(),
+                        palette::primary("B"),
+                    ),
                     palette::Entry::new("velk.diagnostics.start", trace_start.clone(), ""),
                     palette::Entry::new("velk.diagnostics.stop", trace_stop.clone(), ""),
                     palette::Entry::new("velk.diagnostics.marker", trace_marker.clone(), ""),
@@ -396,6 +414,7 @@ impl View for Document {
         column()
             .fill_width()
             .fill_height()
+            .on_command(toggle_panels)
             .on_command(trace_start)
             .on_command(trace_stop)
             .on_command(trace_marker)
@@ -427,6 +446,7 @@ impl View for Document {
                     .flex_shrink(1.)
                     .min_height(0.)
                     .children(activity)
+                    .children(self.panel_slot(velk_panels::Slot::Left, cx))
                     .child(
                         self.editor
                             .clone()
@@ -437,8 +457,10 @@ impl View for Document {
                             .flex_shrink(1.)
                             .min_width(0.)
                             .min_height(0.),
-                    ),
+                    )
+                    .children(self.panel_slot(velk_panels::Slot::Right, cx)),
             )
+            .children(self.panel_slot(velk_panels::Slot::Bottom, cx))
             .children(
                 (!self.shell.store.preferences.status_bar)
                     .then_some(self.status.as_ref())
