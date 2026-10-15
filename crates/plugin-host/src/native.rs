@@ -27,6 +27,8 @@ pub struct PluginInfo {
     pub description: String,
     /// Logical unload releases sessions/instances, while this build stays mapped.
     pub resident_code: bool,
+    /// Names of the hooks this generation registered, in registration order.
+    pub hooks: Vec<String>,
 }
 struct Generation {
     info: PluginInfo,
@@ -67,6 +69,7 @@ impl Generation {
                 loaded_path: code.path.clone(),
                 description: String::new(),
                 resident_code: code.resident,
+                hooks: vec![],
             },
             api,
             instance,
@@ -78,6 +81,7 @@ impl Generation {
             library: Some(code),
         };
         loaded.discover_hooks()?;
+        loaded.info.hooks = loaded.hooks.iter().map(|h| h.info.name.clone()).collect();
         loaded.info.description = loaded.describe()?;
         Ok(loaded)
     }
@@ -310,11 +314,27 @@ impl Manager {
     /// including its join-before-release semantic session contract.
     #[tracing::instrument(level = "debug", skip_all)]
     pub unsafe fn load(&mut self) -> Result<Vec<Event>, String> {
+        unsafe { self.load_except(&[]) }
+    }
+    /// Like `load`, skipping the given IDs (for example user-disabled plugins).
+    /// # Safety
+    /// Same trusted native-code requirements as `load`.
+    pub unsafe fn load_except(&mut self, excluded: &[String]) -> Result<Vec<Event>, String> {
         if !self.directory.join(crate::MANIFEST).exists() {
             return Ok(vec![]);
         }
-        let manifest = read_manifest(&self.directory)?;
+        let mut manifest = read_manifest(&self.directory)?;
+        manifest.plugins.retain(|spec| !excluded.contains(&spec.id));
         unsafe { self.load_specs(manifest.plugins) }
+    }
+    /// IDs listed in the current manifest, loaded or not. Unreadable is empty.
+    pub fn available(&self) -> Vec<String> {
+        if !self.directory.join(crate::MANIFEST).exists() {
+            return vec![];
+        }
+        read_manifest(&self.directory)
+            .map(|m| m.plugins.into_iter().map(|p| p.id).collect())
+            .unwrap_or_default()
     }
     /// # Safety
     /// Same trusted native-code requirements as `load`.
@@ -515,6 +535,7 @@ mod tests {
                     loaded_path: copy.path().into(),
                     description: String::new(),
                     resident_code: false,
+                    hooks: vec![],
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,
@@ -564,6 +585,30 @@ mod tests {
             matches!(&events[..], [Event::Rejected { message, .. }] if message.contains("restart required"))
         );
         assert_eq!(DESTROYS.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn load_except_skips_excluded_ids_and_available_lists_the_manifest() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut manager = Manager::new(directory.path().into());
+        assert!(manager.available().is_empty());
+        let spec = |id: &str| PluginSpec {
+            id: id.into(),
+            library: format!("{id}.dylib").into(),
+            digest: "0".repeat(64),
+            pack: false,
+        };
+        let manifest = crate::Manifest {
+            plugins: vec![spec("test.one"), spec("test.two")],
+        };
+        std::fs::write(
+            directory.path().join(crate::MANIFEST),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manager.available(), ["test.one", "test.two"]);
+        // SAFETY: the libraries are absent, so nothing native is loaded.
+        let events = unsafe { manager.load_except(&["test.two".into()]) }.unwrap();
+        assert!(matches!(&events[..], [Event::Rejected { id, .. }] if id == "test.one"));
     }
 }
 
@@ -633,6 +678,7 @@ pub(super) mod test_provider {
                     loaded_path: copy.path().into(),
                     description: String::new(),
                     resident_code: false,
+                    hooks: vec![],
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,

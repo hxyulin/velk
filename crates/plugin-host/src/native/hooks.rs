@@ -15,7 +15,7 @@ pub struct HookHandle {
     slot: usize,
 }
 pub(super) struct Hook {
-    info: HookDescriptor,
+    pub(super) info: HookDescriptor,
     bytes: Option<BytesApi>,
     event: Option<EventApi>,
 }
