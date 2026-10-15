@@ -540,6 +540,11 @@ impl View for Editor {
                             scroll_area(
                                 self.hover_body(&card)
                                     .selectable(true)
+                                    .paint_style(
+                                        PaintStyle::new()
+                                            .focus_color(ThemeColor::TextMuted)
+                                            .focus_width(1.),
+                                    )
                                     .font_size(13.)
                                     .color(ThemeColor::Text)
                                     .fill_width(),
