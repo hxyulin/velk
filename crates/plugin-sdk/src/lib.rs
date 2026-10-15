@@ -47,3 +47,29 @@ macro_rules! export_plugin {
         }
     };
 }
+
+/// Export several implementations from one native image. Implementations must
+/// not also export standalone entry points in their library dependencies.
+#[macro_export]
+macro_rules! export_plugin_pack {
+    ($($plugin:ty),+ $(,)?) => {
+        #[allow(unsafe_code)]
+        #[unsafe(no_mangle)]
+        unsafe extern "C" fn velk_plugin_pack_entry_v1(
+            abi: u32,
+            output: *mut $crate::api::PluginPackApi,
+            size: usize,
+        ) -> i32 {
+            #[allow(unsafe_code)]
+            unsafe extern "C" fn member(index: usize, abi: u32, output: *mut $crate::api::PluginApi, size: usize) -> i32 {
+                let entries: &[$crate::api::Entry] = &[$($crate::ffi::member::<$plugin>),+];
+                match entries.get(index) {
+                    Some(entry) => unsafe { entry(abi, output, size) },
+                    None => $crate::api::NOT_FOUND,
+                }
+            }
+            let count = [$(stringify!($plugin)),+].len();
+            unsafe { $crate::ffi::pack_entry(abi, output, size, count, member) }
+        }
+    };
+}

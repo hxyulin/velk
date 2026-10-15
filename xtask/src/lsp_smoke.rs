@@ -5,16 +5,29 @@ use std::time::Duration;
 use velk_semantic::{DocumentSnapshot, Event, Events, HoverRequest, Status};
 
 pub(super) fn run(root: &Path, output: &Path) -> Result<(), String> {
+    run_with_format(root, output, false)
+}
+pub(super) fn run_pack(root: &Path, output: &Path) -> Result<(), String> {
+    run_with_format(root, output, true)
+}
+fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String> {
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let directory = temp.path().join("plugins");
-    let markdown = stage(output, &directory)?;
-    let lsp = stage_plugin(output, &directory, "velk.lsp", "velk_plugin_lsp")?;
-    let rust = stage_plugin(
-        output,
-        &directory,
-        "velk.language-server.rust-analyzer",
-        "velk_plugin_rust_analyzer",
-    )?;
+    let (markdown, lsp, rust) = if pack {
+        let specs = stage_builtins(output, &directory)?;
+        (specs[0].clone(), specs[1].clone(), specs[2].clone())
+    } else {
+        (
+            stage(output, &directory)?,
+            stage_plugin(output, &directory, "velk.lsp", "velk_plugin_lsp")?,
+            stage_plugin(
+                output,
+                &directory,
+                "velk.language-server.rust-analyzer",
+                "velk_plugin_rust_analyzer",
+            )?,
+        )
+    };
     let source = temp.path().join("file 世界.rs");
     std::fs::write(&source, "fn café() {}\n").map_err(|e| e.to_string())?;
     for mode in ["normal", "stall-init", "no-profile", "missing-transport"] {
@@ -137,6 +150,7 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 return Ok::<_,String>(());
             }
             assert_eq!(loaded.loaded, 3);
+            let profile_resident=loaded.plugins.iter().find(|p|p.id=="velk.language-server.rust-analyzer").unwrap().resident_code;
             let profile_image=loaded.plugins.iter().find(|p|p.id=="velk.language-server.rust-analyzer").unwrap().loaded_path.clone();
             let image = loaded
                 .plugins
@@ -283,7 +297,7 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 .map_err(|e| e.to_string())??;
             assert_eq!(report.loaded, 2);
             assert_reaped(log);
-            assert!(!profile_image.exists(),"profile code/copy is ordinarily reclaimable");
+            assert_eq!(profile_image.exists(),profile_resident,"profile image follows its standalone or pack lifetime");
             until(&service.events, |e| {
                 matches!(e, Event::Status(Status::Stopped))
             })

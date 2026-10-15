@@ -1,0 +1,18 @@
+[package]
+name = "velk-plugin-builtin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+velk-plugin-sdk.workspace = true
+velk-plugin-markdown = { path = "../markdown" }
+velk-plugin-lsp = { path = "../lsp" }
+velk-plugin-rust-analyzer = { path = "../rust-analyzer" }
+velk-plugin-search = { path = "../search" }
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"

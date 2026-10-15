@@ -90,7 +90,6 @@ impl Plugin for Search {
         "Unicode literal buffer search".into()
     }
 }
-velk_plugin_sdk::export_plugin!(Search);
 
 impl Search {
     fn request(&mut self, request: Request) -> Result<Reply, String> {

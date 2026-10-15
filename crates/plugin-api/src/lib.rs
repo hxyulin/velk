@@ -46,6 +46,22 @@ pub struct PluginApi {
 }
 pub type Entry = unsafe extern "C" fn(u32, *mut PluginApi, usize) -> i32;
 
+/// A pack enumerates metadata/factories, never creates instances during discovery.
+/// Every member's table obeys the ordinary v1 plugin contract. The host retains
+/// the whole image if any advertised member requires resident code.
+pub const PACK_ENTRY_SYMBOL: &[u8] = b"velk_plugin_pack_entry_v1\0";
+pub const MAX_PACK_MEMBERS: usize = 256;
+pub type PackMember = unsafe extern "C" fn(usize, u32, *mut PluginApi, usize) -> i32;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PluginPackApi {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub member_count: usize,
+    pub member: Option<PackMember>,
+}
+pub type PackEntry = unsafe extern "C" fn(u32, *mut PluginPackApi, usize) -> i32;
+
 /// Borrowed interpretation of author.[namespace.]name. Namespace may contain dots;
 /// nesting has no implicit dependency, permissions, or ownership semantics.
 #[derive(Debug, PartialEq, Eq)]

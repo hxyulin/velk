@@ -22,7 +22,7 @@ impl Plugin for Lsp {
         )
     }
 }
-velk_plugin_sdk::export_plugin!(Lsp);
+
 struct Configured(LanguageServer);
 impl Backend for Configured {
     fn run(self: Box<Self>, session: Session) -> BackendFuture {

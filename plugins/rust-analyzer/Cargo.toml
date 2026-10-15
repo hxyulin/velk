@@ -5,7 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [lib]
+crate-type = ["rlib"]
+[[example]]
+name = "velk_plugin_rust_analyzer"
+path = "examples/standalone.rs"
 crate-type = ["cdylib"]
+
 [dependencies]
 velk-plugin-sdk.workspace = true
 serde = { version = "1.0", features = ["derive"] }

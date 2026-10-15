@@ -26,11 +26,20 @@ pub struct PluginSpec {
     /// Relative path inside the plugin directory, normally content-addressed.
     pub library: PathBuf,
     pub digest: String,
+    /// Select this ID from a multi-plugin image. Absent/false means standalone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pack: bool,
 }
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
         let mut ids = std::collections::HashSet::new();
+        let mut libraries = std::collections::HashMap::new();
         for p in &self.plugins {
+            if let Some(previous) = libraries.insert(&p.library, (&p.digest, p.pack))
+                && previous != (&p.digest, p.pack)
+            {
+                return Err("one library path has conflicting digests or formats".into());
+            }
             if velk_plugin_api::parse_plugin_id(&p.id).is_none() {
                 return Err(format!(
                     "invalid plugin ID: {} (expected author.[namespace.]name)",
@@ -362,11 +371,31 @@ impl velk_markup::Renderer for Client {
 mod tests {
     use super::*;
     #[test]
+    fn legacy_manifest_defaults_to_standalone_and_shared_artifacts_must_agree() {
+        let json = format!(
+            r#"{{"plugins":[{{"id":"test.one","library":"plugin.dylib","digest":"{}"}}]}}"#,
+            "0".repeat(64)
+        );
+        let mut manifest: Manifest = serde_json::from_str(&json).unwrap();
+        assert!(!manifest.plugins[0].pack);
+        manifest.plugins[0].pack = true;
+        let mut second = manifest.plugins[0].clone();
+        second.id = "test.two".into();
+        manifest.plugins.push(second);
+        assert!(manifest.validate().is_ok());
+        manifest.plugins[1].pack = false;
+        assert!(manifest.validate().is_err());
+        manifest.plugins[1].pack = true;
+        manifest.plugins[1].digest = "1".repeat(64);
+        assert!(manifest.validate().is_err());
+    }
+    #[test]
     fn rejects_duplicate_ids_and_nonlocal_paths_before_loading() {
         let spec = PluginSpec {
             id: "velk.test".into(),
             library: "../escape.dylib".into(),
             digest: "0".repeat(64),
+            pack: false,
         };
         assert!(
             Manifest {

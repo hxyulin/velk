@@ -5,7 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
+[[example]]
+name = "velk_plugin_lsp"
+path = "examples/standalone.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 ropey.workspace = true
 velk-plugin-sdk.workspace = true

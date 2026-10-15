@@ -3097,6 +3097,17 @@ name = "velk-plugin-api"
 version = "0.1.0"
 
 [[package]]
+name = "velk-plugin-builtin"
+version = "0.1.0"
+dependencies = [
+ "velk-plugin-lsp",
+ "velk-plugin-markdown",
+ "velk-plugin-rust-analyzer",
+ "velk-plugin-sdk",
+ "velk-plugin-search",
+]
+
+[[package]]
 name = "velk-plugin-host"
 version = "0.1.0"
 dependencies = [

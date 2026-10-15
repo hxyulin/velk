@@ -18,7 +18,6 @@ impl Plugin for CommonMark {
         "CommonMark documentation renderer".into()
     }
 }
-velk_plugin_sdk::export_plugin!(CommonMark);
 
 #[derive(Default)]
 pub struct CommonMark;

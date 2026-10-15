@@ -11,6 +11,36 @@ use std::{
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
 };
+/// # Safety
+/// Same requirements as `entry`; this wrapper supplies a C ABI function pointer.
+pub unsafe extern "C" fn member<P: Plugin>(abi: u32, output: *mut PluginApi, size: usize) -> i32 {
+    unsafe { entry::<P>(abi, output, size) }
+}
+/// # Safety
+/// Output must be aligned/writable for size bytes. Member must obey PackMember.
+pub unsafe fn pack_entry(
+    abi: u32,
+    output: *mut PluginPackApi,
+    size: usize,
+    count: usize,
+    member: PackMember,
+) -> i32 {
+    if abi != ABI_VERSION || size != std::mem::size_of::<PluginPackApi>() {
+        return INCOMPATIBLE;
+    }
+    if output.is_null() || count == 0 || count > MAX_PACK_MEMBERS {
+        return INVALID;
+    }
+    unsafe {
+        output.write(PluginPackApi {
+            abi_version: ABI_VERSION,
+            struct_size: size as u32,
+            member_count: count,
+            member: Some(member),
+        });
+    }
+    OK
+}
 pub(super) fn guard(f: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(PANICKED)
 }
@@ -176,6 +206,38 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pack_discovery_checks_abi_layout_and_count_without_calling_factories() {
+        unsafe extern "C" fn member(_: usize, _: u32, _: *mut PluginApi, _: usize) -> i32 {
+            NOT_FOUND
+        }
+        let size = std::mem::size_of::<PluginPackApi>();
+        // SAFETY: rejected queries never touch output; success uses aligned storage.
+        unsafe {
+            for (abi, bytes, count, expected) in [
+                (99, size, 1, INCOMPATIBLE),
+                (1, 0, 1, INCOMPATIBLE),
+                (1, size, 0, INVALID),
+                (1, size, MAX_PACK_MEMBERS + 1, INVALID),
+            ] {
+                assert_eq!(
+                    pack_entry(abi, std::ptr::null_mut(), bytes, count, member),
+                    expected
+                );
+            }
+            let mut output = std::mem::MaybeUninit::uninit();
+            assert_eq!(
+                pack_entry(ABI_VERSION, output.as_mut_ptr(), size, 2, member),
+                OK
+            );
+            let pack = output.assume_init();
+            assert_eq!(pack.member_count, 2);
+            assert_eq!(
+                pack.member.unwrap()(2, ABI_VERSION, std::ptr::null_mut(), 0),
+                NOT_FOUND
+            );
+        }
+    }
     #[derive(Default)]
     struct Sample;
     impl Plugin for Sample {

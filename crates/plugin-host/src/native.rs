@@ -1,16 +1,17 @@
 #![allow(unsafe_code)]
 use crate::{Event, PluginSpec, read_manifest};
+mod code;
 mod hooks;
+use code::Code;
 mod language_server;
 mod semantic;
 pub use hooks::{HookDescriptor, HookHandle};
-use libloading::Library;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
     path::PathBuf,
     ptr::NonNull,
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 use velk_plugin_api::*;
 
@@ -27,11 +28,6 @@ pub struct PluginInfo {
     /// Logical unload releases sessions/instances, while this build stays mapped.
     pub resident_code: bool,
 }
-struct Code {
-    library: Library,
-    path: PathBuf,
-    _copy: tempfile::TempDir,
-}
 struct Generation {
     info: PluginInfo,
     api: PluginApi,
@@ -46,74 +42,15 @@ struct Generation {
 }
 impl Generation {
     /// Caller guarantees the plugin ABI and unload contract.
-    unsafe fn load(
-        directory: &std::path::Path,
-        spec: PluginSpec,
-        generation: u64,
-        cached: Option<Arc<Code>>,
-    ) -> Result<Self, String> {
-        let source = directory.join(&spec.library);
-        let copy = tempfile::Builder::new()
-            .prefix("velk-plugin-")
-            .tempdir()
-            .map_err(|e| e.to_string())?;
-        let filename = source.file_name().ok_or("library has no filename")?;
-        let path = copy.path().join(filename);
-        std::fs::copy(&source, &path).map_err(|e| format!("{}: {e}", source.display()))?;
-        let mut hash = blake3::Hasher::new();
-        hash.update_reader(std::fs::File::open(&path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        if hash.finalize().to_hex().as_str() != spec.digest {
-            return Err("library digest mismatch".into());
-        }
-        // SAFETY: caller explicitly trusts libraries selected by this manifest.
-        let code = match cached {
-            Some(code) => code,
-            None => Arc::new(Code {
-                library: unsafe { Library::new(&path) }.map_err(|e| e.to_string())?,
-                path,
-                _copy: copy,
-            }),
-        };
-        let mut output = std::mem::MaybeUninit::<PluginApi>::uninit();
-        // SAFETY: entry symbol/type and successful initialization are required by v1.
-        let api = unsafe {
-            let entry = code
-                .library
-                .get::<Entry>(ENTRY_SYMBOL)
-                .map_err(|e| e.to_string())?;
-            let status = entry(
-                ABI_VERSION,
-                output.as_mut_ptr(),
-                std::mem::size_of::<PluginApi>(),
-            );
-            if status != OK {
-                return Err(format!("ABI query failed with status {status}"));
-            }
-            output.assume_init()
-        };
-        if api.abi_version != ABI_VERSION
-            || api.struct_size as usize != std::mem::size_of::<PluginApi>()
-        {
-            return Err("incompatible plugin API layout".into());
-        }
-        if api.flags & !RESIDENT_CODE != 0 {
-            return Err("unknown plugin lifetime flags".into());
-        }
+    unsafe fn load(spec: &PluginSpec, generation: u64, code: Arc<Code>) -> Result<Self, String> {
+        let api = *code
+            .apis
+            .iter()
+            .find(|api| metadata(&api.id).is_ok_and(|id| id == spec.id))
+            .ok_or_else(|| format!("library does not provide {}", spec.id))?;
         let id = metadata(&api.id)?;
         let version = metadata(&api.version)?;
-        if id != spec.id {
-            return Err(format!("expected {}, library reports {id}", spec.id));
-        }
-        let create = api.create.ok_or("missing create function")?;
-        if api.destroy.is_none()
-            || api.describe.is_none()
-            || api.hook_count.is_none()
-            || api.hook_info.is_none()
-            || api.get_hook.is_none()
-        {
-            return Err("missing lifecycle or registry function".into());
-        }
+        let create = api.create.unwrap();
         let mut instance = std::ptr::null_mut();
         // SAFETY: validated function table; output storage remains live for the call.
         let status = unsafe { create(&mut instance) };
@@ -128,7 +65,7 @@ impl Generation {
                 generation,
                 loaded_path: code.path.clone(),
                 description: String::new(),
-                resident_code: api.flags & RESIDENT_CODE != 0,
+                resident_code: code.resident,
             },
             api,
             instance,
@@ -312,7 +249,8 @@ pub struct Manager {
     next_generation: u64,
     blocked: BTreeSet<String>,
     sessions: BTreeMap<u64, semantic::DocumentSession>,
-    resident_code: BTreeMap<String, Arc<Code>>,
+    resident_code: BTreeMap<(String, bool), Arc<Code>>,
+    images: BTreeMap<(String, bool), Weak<Code>>,
 }
 impl Manager {
     pub fn new(directory: PathBuf) -> Self {
@@ -324,6 +262,7 @@ impl Manager {
             blocked: BTreeSet::new(),
             sessions: BTreeMap::new(),
             resident_code: BTreeMap::new(),
+            images: BTreeMap::new(),
         }
     }
     pub fn plugins(&self) -> impl Iterator<Item = &PluginInfo> {
@@ -373,6 +312,7 @@ impl Manager {
         }
         let manifest = read_manifest(&self.directory)?;
         let mut events = Vec::new();
+        let mut verified = BTreeMap::new();
         for spec in manifest.plugins {
             let id = spec.id.clone();
             if self.blocked.contains(&id) {
@@ -388,20 +328,36 @@ impl Manager {
             let generation = self.next_generation;
             self.next_generation += 1;
             // SAFETY: inherited from load's caller.
-            let digest = spec.digest.clone();
-            let cached = self.resident_code.get(&digest).cloned();
-            match unsafe { Generation::load(&self.directory, spec, generation, cached) } {
+            let key = (spec.digest.clone(), spec.pack);
+            let cached = self
+                .resident_code
+                .get(&key)
+                .cloned()
+                .or_else(|| self.images.get(&key).and_then(Weak::upgrade));
+            // Always verify the selected artifact, even when its code is cached.
+            let artifact = (spec.library.clone(), key.clone());
+            let code = if let Some(code) = verified.get(&artifact) {
+                Ok(Arc::clone(code))
+            } else {
+                unsafe { Code::load(&self.directory, &spec, cached) }.inspect(|code| {
+                    verified.insert(artifact, Arc::clone(code));
+                })
+            };
+            let candidate = code.and_then(|code| {
+                self.images.insert(key.clone(), Arc::downgrade(&code));
+                // Residency applies to the entire image before any factory runs,
+                // including factories which fail during initialization.
+                if code.resident {
+                    self.resident_code.entry(key).or_insert_with(|| {
+                        std::mem::forget(code.clone());
+                        code.clone()
+                    });
+                }
+                unsafe { Generation::load(&spec, generation, code) }
+            });
+            self.images.retain(|_, image| image.strong_count() != 0);
+            match candidate {
                 Ok(candidate) => {
-                    if candidate.api.flags & RESIDENT_CODE != 0 {
-                        self.resident_code.entry(digest).or_insert_with(|| {
-                            let code = candidate.library.as_ref().unwrap().clone();
-                            // Process-wide hooks can still call this code after all
-                            // instances/runtimes are gone. One permanent lease per
-                            // build, reused across ordinary unload/load cycles.
-                            std::mem::forget(code.clone());
-                            code
-                        });
-                    }
                     events.push(Event::Loaded(candidate.info.clone()));
                     self.plugins.insert(id, candidate);
                 }
@@ -488,6 +444,7 @@ mod tests {
                 id: "test.failed".into(),
                 library: "absent-library".into(),
                 digest: "0".repeat(64),
+                pack: false,
             }],
         };
         std::fs::write(

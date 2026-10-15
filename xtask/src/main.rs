@@ -6,6 +6,7 @@ use std::{
 use velk_plugin_host::{MANIFEST, Manifest, PluginSpec};
 mod hooks_smoke;
 mod lsp_smoke;
+mod pack_smoke;
 mod search_smoke;
 const PLUGIN: &str = "velk-plugin-markdown";
 const ID: &str = "velk.markdown";
@@ -54,18 +55,9 @@ fn paths(release: bool) -> Result<(PathBuf, PathBuf), String> {
 }
 fn build(root: &Path, release: bool, editor: bool) -> Result<(), String> {
     let mut command = cargo();
-    command.current_dir(root).args([
-        "build",
-        "--locked",
-        "-p",
-        PLUGIN,
-        "-p",
-        "velk-plugin-lsp",
-        "-p",
-        "velk-plugin-rust-analyzer",
-        "-p",
-        "velk-plugin-search",
-    ]);
+    command
+        .current_dir(root)
+        .args(["build", "--locked", "-p", "velk-plugin-builtin"]);
     if editor {
         command.args(["-p", "velk-editor"]);
     }
@@ -83,6 +75,42 @@ fn library_name(stem: &str) -> String {
 }
 fn stage(output: &Path, directory: &Path) -> Result<PluginSpec, String> {
     stage_plugin(output, directory, ID, "velk_plugin_markdown")
+}
+fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, String> {
+    let artifact = stage_plugin(output, directory, ID, "velk_plugin_builtin")?;
+    Ok([
+        ID,
+        "velk.lsp",
+        "velk.language-server.rust-analyzer",
+        velk_search::DEFAULT_BACKEND,
+    ]
+    .into_iter()
+    .map(|id| PluginSpec {
+        id: id.into(),
+        pack: true,
+        ..artifact.clone()
+    })
+    .collect())
+}
+fn build_standalone(root: &Path, release: bool) -> Result<(), String> {
+    let mut command = cargo();
+    command.current_dir(root).args([
+        "build",
+        "--locked",
+        "--examples",
+        "-p",
+        PLUGIN,
+        "-p",
+        "velk-plugin-lsp",
+        "-p",
+        "velk-plugin-rust-analyzer",
+        "-p",
+        "velk-plugin-search",
+    ]);
+    if release {
+        command.arg("--release");
+    }
+    checked(&mut command)
 }
 fn stage_plugin(
     output: &Path,
@@ -112,6 +140,7 @@ fn stage_plugin(
         id: id.into(),
         library: relative,
         digest,
+        pack: false,
     })
 }
 fn publish(directory: &Path, plugins: Vec<PluginSpec>) -> Result<(), String> {
@@ -173,21 +202,7 @@ fn run() -> Result<(), String> {
     }
     build(&root, release, action != "plugins")?;
     let directory = output.join("plugins");
-    let spec = stage(&output, &directory)?;
-    let lsp = stage_plugin(&output, &directory, "velk.lsp", "velk_plugin_lsp")?;
-    let rust = stage_plugin(
-        &output,
-        &directory,
-        "velk.language-server.rust-analyzer",
-        "velk_plugin_rust_analyzer",
-    )?;
-    let search = stage_plugin(
-        &output,
-        &directory,
-        velk_search::DEFAULT_BACKEND,
-        "velk_plugin_search",
-    )?;
-    publish(&directory, vec![spec, lsp, rust, search])?;
+    publish(&directory, stage_builtins(&output, &directory)?)?;
     println!("Built plugins: {}", directory.display());
     if action == "run" {
         checked(
@@ -205,6 +220,11 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     let directory = directory.path();
     let mut manager = Manager::new(directory.into());
     build(root, release, false)?;
+    pack_smoke::run(root, output, release)?;
+    build_standalone(root, release)?;
+    let profile_output = output;
+    let standalone = output.join("examples");
+    let output = standalone.as_path();
     let first = stage(output, directory)?;
     publish(directory, vec![first.clone()])?;
     // SAFETY: these artifacts were built locally from the bundled SDK plugin.
@@ -276,6 +296,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
             id: ID.into(),
             library: "invalid-library".into(),
             digest: blake3::hash(b"not a dynamic library").to_hex().to_string(),
+            pack: false,
         }],
     )?;
     assert!(matches!(
@@ -297,7 +318,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     assert_eq!(manager.plugins().count(), 0);
     markdown_smoke(output)?;
     lsp_smoke::run(root, output)?;
-    hooks_smoke::run(root, output, release)?;
+    hooks_smoke::run(root, profile_output, release)?;
     search_smoke::run(output)?;
     println!(
         "Native plugin smoke passed: load, no automatic replacement, explicit unload/load of restaged code, repeated cleanup, retained host data, rejected artifacts, malformed manifest."

@@ -38,7 +38,7 @@ impl RustAnalyzer {
         Ok(Some(config.definition()))
     }
 }
-velk_plugin_sdk::export_plugin!(RustAnalyzer);
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Configuration {
