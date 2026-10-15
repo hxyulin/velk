@@ -1,6 +1,7 @@
 mod document;
 mod file;
 mod plugins;
+mod session;
 mod settings;
 mod theme;
 
@@ -56,7 +57,35 @@ fn open(path: &Path) -> Result<(file::FileState, Editor), Error> {
 
 fn run() -> Result<(), Error> {
     let path = file_argument(std::env::args_os().skip(1))?;
-    let (file, editor) = open(&path)?;
+    let restored = std::env::var_os(session::SNAPSHOT_ENV)
+        .map(|snapshot| session::Session::read(snapshot.into(), &path))
+        .transpose()
+        .map_err(|message| Error::Open {
+            path: path.clone(),
+            source: io::Error::other(message),
+        })?;
+    let (file, mut editor) = if let Some(session) = &restored {
+        (
+            session.file.clone(),
+            session.editor().map_err(|message| Error::Open {
+                path: path.clone(),
+                source: io::Error::other(message),
+            })?,
+        )
+    } else {
+        open(&path)?
+    };
+    if restored.is_some() {
+        editor
+            .set_language(Language::for_path(&path))
+            .map_err(|error| Error::Open {
+                path: path.clone(),
+                source: io::Error::other(error.to_string()),
+            })?;
+    }
+    let size = restored
+        .as_ref()
+        .map_or([1280., 800.], |session| session.size);
     let title = format!("Velk — {}", path.display());
     let plugins = plugins::start();
     let settings = settings::Store::load();
@@ -65,12 +94,43 @@ fn run() -> Result<(), Error> {
     let created = document.clone();
     let closing = document.clone();
     let quitting = document.clone();
+    let focus_restoring = document.clone();
+    let mut reload_frames = if std::env::var_os(session::READY_ENV).is_some() {
+        2
+    } else {
+        0
+    };
     Application::new()
         .theme(theme::dark())
         .window_created(move |_, cx| {
             if let Some(document) = created.borrow().as_ref().and_then(WeakEntity::upgrade) {
                 document.read(cx).title();
             }
+        })
+        .prepare_graphics(move |_, cx| {
+            if let Some(document) = focus_restoring
+                .borrow()
+                .as_ref()
+                .and_then(WeakEntity::upgrade)
+            {
+                let action = document.read(cx).focus_restoration();
+                if let Some(action) = action {
+                    let _ = action.invoke(cx);
+                }
+            }
+            Ok(())
+        })
+        .render_graphics(move |window, _, _| {
+            if reload_frames > 0 {
+                reload_frames -= 1;
+                if reload_frames == 0 {
+                    session::acknowledge()
+                        .map_err(|error| ApplicationError::Native(Box::new(error)))?;
+                } else if let Some(native) = window.native_window() {
+                    native.request_redraw();
+                }
+            }
+            Ok(())
         })
         .close_requested(move |_, cx| {
             if let Some(document) = closing.borrow().as_ref().and_then(WeakEntity::upgrade) {
@@ -94,7 +154,18 @@ fn run() -> Result<(), Error> {
             let root = cx.new(|cx| document::Document::new(editor, file, path, cx));
             root.update(cx, |this, _| this.configure_shell(settings));
             if let Some(client) = plugin_client.clone() {
-                root.update(cx, |this, cx| this.enable_plugins(client, cx));
+                if let Some(session) = &restored {
+                    root.update(cx, |this, cx| {
+                        this.enable_selected_plugins(
+                            client,
+                            Some(session.ui.plugins.clone()),
+                            session.plugin_states.clone(),
+                            cx,
+                        )
+                    });
+                } else {
+                    root.update(cx, |this, cx| this.enable_plugins(client, cx));
+                }
             }
             if rust {
                 root.update(cx, |this, cx| {
@@ -108,11 +179,22 @@ fn run() -> Result<(), Error> {
                     }
                 });
             }
+            let options = if let Some(session) = &restored {
+                WindowOptions::new()
+                    .title(title)
+                    .geometry(rxui::WindowGeometry {
+                        inner_size: size,
+                        outer_position: session.position,
+                        maximized: session.maximized,
+                    })
+            } else {
+                WindowOptions::new().title(title).size(size[0], size[1])
+            };
+            if let Some(session) = restored {
+                root.update(cx, |this, _| this.restore_ui(session.ui));
+            }
             *document.borrow_mut() = Some(root.downgrade());
-            let window = cx.open_window(
-                WindowOptions::new().title(title).size(1280., 800.),
-                root.clone(),
-            )?;
+            let window = cx.open_window(options, root.clone())?;
             root.update(cx, |this, _| this.window = Some(window));
             Ok(())
         })

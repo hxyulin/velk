@@ -1,5 +1,6 @@
 mod palette;
 mod plugins;
+pub(crate) mod reload;
 mod search;
 mod semantic;
 mod shell;
@@ -38,6 +39,9 @@ pub struct Document {
     dirty: bool,
     status: Option<String>,
     saving: Option<Task>,
+    reload: Option<Task>,
+    restore_focus_pending: bool,
+    restore_focus_action: std::cell::RefCell<Option<rxui::CommandAction<reload::RestoreFocus>>>,
     dialog: Option<DialogTask>,
     _subscription: Subscription,
     semantic: Option<semantic::State>,
@@ -77,6 +81,9 @@ impl Document {
             dirty,
             status: None,
             saving: None,
+            reload: None,
+            restore_focus_pending: false,
+            restore_focus_action: Default::default(),
             dialog: None,
             _subscription: subscription,
             semantic: None,
@@ -98,7 +105,7 @@ impl Document {
         }
     }
     fn busy(&self) -> bool {
-        self.saving.is_some() || self.dialog.is_some()
+        self.saving.is_some() || self.dialog.is_some() || self.reloading()
     }
     fn save(&mut self, then: Option<Intent>, cx: &mut Context<'_, Self>) {
         if self.busy() {
@@ -195,6 +202,11 @@ impl Document {
 }
 impl View for Document {
     fn view(&self, cx: &mut ViewContext<'_, Self>) -> impl IntoElement {
+        if self.restore_focus_pending {
+            *self.restore_focus_action.borrow_mut() =
+                Some(cx.command(reload::RestoreFocus, |this, _, cx| this.restore_focus(cx)));
+            cx.request_animation_frame();
+        }
         let save = cx
             .command(Save, |this, _, cx| this.save(None, cx))
             .label("Save")
@@ -265,6 +277,18 @@ impl View for Document {
         let activity = self.activity_bar(toggle_settings.clone(), toggle_plugins.clone());
         let (find, search_bar) = self.search_bar(cx);
         let status_bar = self.status_bar(status, toggle_settings.clone(), toggle_plugins.clone());
+        let restart_plugins = cx
+            .command(reload::RestartPlugins, |this, _, cx| {
+                this.plugin_operation(plugins::Operation::Restart(None), cx)
+            })
+            .label("Plugins: Restart active plugins")
+            .enabled(!self.plugins_busy() && !self.reloading());
+        let reload_window = cx
+            .command(reload::ReloadWindow, |this, _, cx| this.reload_window(cx))
+            .label("Reload window")
+            .enabled(self.can_reload(cx))
+            .allow_in_modal(true)
+            .shortcut(Shortcut::primary("r").alt());
         let (toggle_palette, palette) = self.command_palette(
             cx,
             if self.palette.open {
@@ -308,6 +332,16 @@ impl View for Document {
                             .enabled(!self.busy()),
                         palette::primary("Q"),
                     ),
+                    palette::Entry::new("velk.plugins.restart", restart_plugins.clone(), ""),
+                    palette::Entry::new(
+                        "velk.window.reload",
+                        reload_window.clone(),
+                        if cfg!(target_os = "macos") {
+                            "⌘⌥R"
+                        } else {
+                            "Ctrl+Alt+R"
+                        },
+                    ),
                 ]
             } else {
                 Vec::new()
@@ -316,6 +350,8 @@ impl View for Document {
         column()
             .fill_width()
             .fill_height()
+            .on_command(restart_plugins)
+            .on_command(reload_window)
             .on_command(toggle_palette)
             .on_command(load_plugins)
             .on_command(unload_plugins)
@@ -327,6 +363,13 @@ impl View for Document {
             .children(palette)
             .children(plugin_menu)
             .children(settings_menu)
+            .children(self.reloading().then(|| {
+                modal(label("Reloading window…").padding(20.))
+                    .key("reload-progress")
+                    .width(320.)
+                    .accessibility_label("Reloading window")
+                    .into_element()
+            }))
             .child(search_bar)
             .child(
                 row()

@@ -13,6 +13,7 @@ pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
 pub mod hook_kind {
     pub use velk_plugin_api::{CONTRIBUTION, EVENT, REQUEST, SERVICE};
 }
+pub type PluginStates = Vec<(String, Vec<u8>)>;
 pub const MANIFEST: &str = "plugins.json";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,6 +81,8 @@ enum Operation {
     Load,
     UnloadAll,
     Unload(String),
+    Restart(Option<String>),
+    LoadSelected(Vec<String>, PluginStates),
 }
 enum Request {
     Lifecycle {
@@ -109,6 +112,10 @@ enum Request {
         name: String,
         input: Vec<u8>,
         reply: async_channel::Sender<Result<usize, String>>,
+    },
+    Snapshot {
+        ids: Vec<String>,
+        reply: async_channel::Sender<Result<PluginStates, String>>,
     },
     Stop,
 }
@@ -193,6 +200,40 @@ impl Client {
     ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
         self.request(Operation::Unload(id))
     }
+    /// Load only the requested manifest IDs, preserving a restored enabled set.
+    pub fn load_selected(
+        &self,
+        ids: Vec<String>,
+    ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
+        self.load_restored(ids, Vec::new())
+    }
+    pub fn load_restored(
+        &self,
+        ids: Vec<String>,
+        states: PluginStates,
+    ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
+        if states
+            .iter()
+            .any(|(id, bytes)| !ids.contains(id) || bytes.len() > velk_plugin_api::MAX_INPUT_BYTES)
+        {
+            return Err("invalid plugin session state".into());
+        }
+        self.request(Operation::LoadSelected(ids, states))
+    }
+    pub async fn snapshot_plugins(&self, ids: Vec<String>) -> Result<PluginStates, String> {
+        let (reply, receive) = async_channel::bounded(1);
+        self.sender
+            .try_send(Request::Snapshot { ids, reply })
+            .map_err(|e| e.to_string())?;
+        receive.recv().await.map_err(|e| e.to_string())?
+    }
+    /// Restart one active plugin, or all active plugins, in one serialized operation.
+    pub fn restart(
+        &self,
+        id: Option<String>,
+    ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
+        self.request(Operation::Restart(id))
+    }
     /// The returned future is local Rust scheduling, not a future across the ABI.
     /// Dropping it closes the result channel, allowing queued work to be skipped.
     pub async fn render_markdown(&self, source: String) -> Result<velk_markup::Document, String> {
@@ -244,6 +285,10 @@ impl Runtime {
                 while let Ok(request) = receive.recv() {
                     let (operation, reply) = match request {
                         Request::Stop => break,
+                        Request::Snapshot { ids, reply } => {
+                            let _ = reply.try_send(manager.snapshot_plugins(&ids));
+                            continue;
+                        }
                         Request::Bind {
                             plugin,
                             name,
@@ -291,6 +336,13 @@ impl Runtime {
                     let events = match operation {
                         // SAFETY: start's caller guarantees all artifacts obey v1.
                         Operation::Load => unsafe { manager.load() },
+                        Operation::LoadSelected(ids, states) => {
+                            unsafe { manager.load_selected(&ids) }.map(|mut events| {
+                                events.extend(manager.restore_plugins(states));
+                                events
+                            })
+                        }
+                        Operation::Restart(id) => unsafe { manager.restart(id.as_deref()) },
                         Operation::UnloadAll => Ok(manager.unload_all()),
                         Operation::Unload(id) => Ok(manager.unload(&id).into_iter().collect()),
                     };

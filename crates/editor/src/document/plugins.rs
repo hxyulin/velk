@@ -1,27 +1,41 @@
 use super::{Document, LoadPlugins, UnloadPlugins};
 use rxui::{Element, prelude::*};
 use velk_plugin_host::{Client, Event};
-enum Operation {
+pub(super) enum Operation {
     Load,
     UnloadAll,
     Unload(String),
+    Restart(Option<String>),
+    LoadSelected(Vec<String>, Vec<(String, Vec<u8>)>),
 }
 
 pub(super) struct State {
     pub(super) client: Client,
     task: Option<Task>,
     pub status: String,
-    loaded: Vec<velk_plugin_host::PluginInfo>,
+    pub(super) loaded: Vec<velk_plugin_host::PluginInfo>,
 }
 impl Document {
     pub fn enable_plugins(&mut self, client: Client, cx: &mut Context<'_, Self>) {
+        self.enable_selected_plugins(client, None, Vec::new(), cx);
+    }
+    pub fn enable_selected_plugins(
+        &mut self,
+        client: Client,
+        selected: Option<Vec<String>>,
+        states: Vec<(String, Vec<u8>)>,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.plugins = Some(State {
             client,
             task: None,
             status: String::new(),
             loaded: Vec::new(),
         });
-        self.change_plugins(true, cx);
+        self.plugin_operation(
+            selected.map_or(Operation::Load, |ids| Operation::LoadSelected(ids, states)),
+            cx,
+        );
     }
     pub(super) fn markup_renderer(&self) -> std::sync::Arc<dyn velk_markup::Renderer> {
         self.plugins.as_ref().map_or_else(
@@ -48,7 +62,7 @@ impl Document {
             cx,
         );
     }
-    fn plugin_operation(&mut self, operation: Operation, cx: &mut Context<'_, Self>) {
+    pub(super) fn plugin_operation(&mut self, operation: Operation, cx: &mut Context<'_, Self>) {
         let Some(state) = &mut self.plugins else {
             return;
         };
@@ -58,6 +72,10 @@ impl Document {
         }
         let receiver = match &operation {
             Operation::Load => state.client.load(),
+            Operation::LoadSelected(ids, states) => {
+                state.client.load_restored(ids.clone(), states.clone())
+            }
+            Operation::Restart(id) => state.client.restart(id.clone()),
             Operation::UnloadAll => state.client.unload_all(),
             Operation::Unload(id) => state.client.unload(id.clone()),
         };
@@ -68,8 +86,10 @@ impl Document {
                 return;
             }
         };
-        state.status = if matches!(operation, Operation::Load) {
+        state.status = if matches!(operation, Operation::Load | Operation::LoadSelected(..)) {
             "Loading plugins…"
+        } else if matches!(operation, Operation::Restart(_)) {
+            "Restarting plugins…"
         } else {
             "Unloading plugins…"
         }
@@ -100,6 +120,7 @@ impl Document {
                 _ => "Plugin worker unavailable".into(),
             };
             if this.search.open {
+                this.search.preserve_selection = true;
                 this.restart_search(cx);
             }
         }) {
@@ -200,6 +221,19 @@ impl Document {
                                     "{} · {} · generation {}",
                                     plugin.id, plugin.version, plugin.generation
                                 )))
+                                .child(
+                                    button("Restart")
+                                        .disabled(self.plugins_busy() || self.reloading())
+                                        .on_click(cx.listener({
+                                            let id = id.clone();
+                                            move |this, _, cx| {
+                                                this.plugin_operation(
+                                                    Operation::Restart(Some(id.clone())),
+                                                    cx,
+                                                )
+                                            }
+                                        })),
+                                )
                                 .child(button("Unload").disabled(self.plugins_busy()).on_click(
                                     cx.listener(move |this, _, cx| {
                                         this.plugin_operation(Operation::Unload(id.clone()), cx);

@@ -7,7 +7,7 @@ use rxui::{Element, prelude::*};
 pub(super) struct State {
     pub store: Store,
     pub open: bool,
-    saving: Option<Task>,
+    pub(super) saving: Option<Task>,
 }
 
 impl Document {

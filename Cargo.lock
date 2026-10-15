@@ -3081,6 +3081,8 @@ dependencies = [
  "pollster",
  "ropey",
  "rxui",
+ "serde",
+ "serde_json",
  "unicode-bidi",
  "unicode-ident",
  "unicode-segmentation",

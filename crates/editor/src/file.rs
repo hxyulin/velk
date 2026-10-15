@@ -7,7 +7,7 @@ use std::{
 };
 use velk_editor_widget::Editor;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LineEnding {
     Lf,
     CrLf,
@@ -49,10 +49,12 @@ impl<R: Read> Read for TrackingReader<R> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileState {
     /// Resolve the opened symlink once, so replacement updates its target.
+    #[serde(with = "crate::session::path")]
     path: PathBuf,
+    #[serde(with = "hash")]
     hash: blake3::Hash,
     ending: LineEnding,
 }
@@ -210,5 +212,17 @@ mod tests {
         while reader.read(&mut byte).unwrap() != 0 {}
         assert_eq!(reader.endings, [1, 2, 1]);
         assert_eq!(reader.hash.finalize(), blake3::hash(b"a\r\nb\rc\nd\r\n"));
+    }
+}
+
+mod hash {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(hash: &blake3::Hash, serializer: S) -> Result<S::Ok, S::Error> {
+        hash.as_bytes().serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<blake3::Hash, D::Error> {
+        <[u8; 32]>::deserialize(deserializer).map(blake3::Hash::from_bytes)
     }
 }

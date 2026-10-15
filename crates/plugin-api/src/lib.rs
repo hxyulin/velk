@@ -152,3 +152,8 @@ pub struct HookInfo {
     pub kind: u32,
     pub table_size: usize,
 }
+
+/// Optional paired request hooks for owned, plugin-versioned restart state.
+/// Snapshot accepts empty input; restore accepts the snapshot (at most 1 MiB).
+pub const LIFECYCLE_SNAPSHOT_HOOK: &str = "velk.lifecycle.snapshot.v1";
+pub const LIFECYCLE_RESTORE_HOOK: &str = "velk.lifecycle.restore.v1";

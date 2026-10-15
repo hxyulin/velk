@@ -131,6 +131,51 @@ fn probe(root: &Path, output: &Path, release: bool) -> Result<(), String> {
         assert!(manager.plugins().all(|p| p.loaded_path == image));
         let reloaded = manager.bind_hook("test.pack.first", "test.pack.increment")?;
         assert_eq!(manager.call_hook(&reloaded, b"")?, vec![1]);
+        // Coordinated restart preserves opt-in state, retires old handles, and
+        // leaves sibling generations unchanged when one plugin restarts.
+        let sibling_generation = manager
+            .plugins()
+            .find(|p| p.id == "test.pack.second")
+            .unwrap()
+            .generation;
+        manager.restart(Some("test.pack.first"))?;
+        assert!(manager.call_hook(&reloaded, b"").is_err());
+        let restarted = manager.bind_hook("test.pack.first", "test.pack.increment")?;
+        assert_eq!(manager.call_hook(&restarted, b"")?, vec![2]);
+        assert_eq!(
+            manager
+                .plugins()
+                .find(|p| p.id == "test.pack.second")
+                .unwrap()
+                .generation,
+            sibling_generation
+        );
+        let set = manager.bind_hook("test.pack.first", "test.pack.set")?;
+        manager.call_hook(&set, &[250])?;
+        assert!(
+            manager.restart(None).is_err(),
+            "capture failure aborts before any teardown"
+        );
+        assert_eq!(manager.plugins().count(), 2);
+        assert_eq!(
+            manager
+                .plugins()
+                .find(|p| p.id == "test.pack.second")
+                .unwrap()
+                .generation,
+            sibling_generation
+        );
+        manager.call_hook(&set, &[251])?;
+        let events = manager.restart(None)?;
+        assert!(events.iter().any(|event| matches!(event, Event::Rejected { id, message } if id == "test.pack.first" && message.contains("restore"))));
+        assert_eq!(manager.plugins().count(), 1);
+        assert_eq!(manager.plugins().next().unwrap().id, "test.pack.second");
+        manager.restart(None)?;
+        assert_eq!(
+            manager.plugins().count(),
+            1,
+            "restart must not enable an inactive plugin"
+        );
         manager.unload_all();
         assert!(
             !image.exists(),
@@ -149,6 +194,49 @@ fn probe(root: &Path, output: &Path, release: bool) -> Result<(), String> {
             manager.load()?.as_slice(),
             [Event::Rejected { .. }]
         ));
+    }
+    // Exercise the same worker endpoints used by process handoff. A fresh
+    // runtime receives owned state, without inheriting handles or enabled IDs.
+    publish(temp.path(), specs[..2].to_vec())?;
+    unsafe {
+        let runtime = velk_plugin_host::Runtime::start(temp.path().into())?;
+        let client = runtime.client();
+        let ids = vec!["test.pack.first".to_string()];
+        let report = pollster::block_on(client.load_selected(ids.clone())?.recv())
+            .map_err(|e| e.to_string())??;
+        assert_eq!(report.loaded, 1);
+        let handle = pollster::block_on(
+            client
+                .bind_hook(ids[0].clone(), "test.pack.increment".into())?
+                .recv(),
+        )
+        .map_err(|e| e.to_string())??;
+        assert_eq!(
+            pollster::block_on(client.call_hook(handle.clone(), vec![]))?,
+            vec![1]
+        );
+        let states = pollster::block_on(client.snapshot_plugins(ids.clone()))?;
+        drop(runtime);
+        let replacement = velk_plugin_host::Runtime::start(temp.path().into())?;
+        let client = replacement.client();
+        let report = pollster::block_on(client.load_restored(ids.clone(), states)?.recv())
+            .map_err(|e| e.to_string())??;
+        assert_eq!(report.loaded, 1);
+        assert!(pollster::block_on(client.call_hook(handle, vec![])).is_err());
+        let handle = pollster::block_on(
+            client
+                .bind_hook(ids[0].clone(), "test.pack.increment".into())?
+                .recv(),
+        )
+        .map_err(|e| e.to_string())??;
+        assert_eq!(
+            pollster::block_on(client.call_hook(handle.clone(), vec![]))?,
+            vec![2]
+        );
+        let report =
+            pollster::block_on(client.restart(None)?.recv()).map_err(|e| e.to_string())??;
+        assert_eq!(report.loaded, 1);
+        assert!(pollster::block_on(client.call_hook(handle, vec![])).is_err());
     }
     let mut build = cargo();
     build.current_dir(root).args([

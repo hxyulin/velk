@@ -21,7 +21,9 @@ pub use annotations::{
     AnnotationError, Annotations, Color, EditorAppearance, HoverCard, LinePattern, OverlayKind,
     OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
 };
-pub use buffer::{Buffer, Checkpoint, Selection, TextEdit, Transaction, TransactionError};
+pub use buffer::{
+    Buffer, BufferSnapshot, Checkpoint, Selection, TextEdit, Transaction, TransactionError,
+};
 pub use hover::{HoverSource, HoverTarget};
 use rxui::{prelude::*, standard_commands as commands};
 use std::sync::Arc;
@@ -68,6 +70,24 @@ impl Editor {
         })
     }
 
+    /// Recreate document state; rendering, syntax and semantic caches start fresh.
+    pub fn from_session(bytes: &[u8], scroll: [f32; 2]) -> Result<Self, String> {
+        if scroll.iter().any(|v| !v.is_finite() || *v < 0.) {
+            return Err("invalid scroll position".into());
+        }
+        let editor = Self {
+            buffer: Buffer::restore(bytes)?,
+            ..Self::default()
+        };
+        editor.geometry.borrow_mut().offset = scroll;
+        Ok(editor)
+    }
+    pub fn has_composition(&self) -> bool {
+        self.composition.is_some()
+    }
+    pub fn scroll_offset(&self) -> [f32; 2] {
+        self.geometry.borrow().offset
+    }
     /// Enable an in-process language parser. Parsing runs off the UI thread.
     pub fn set_language(
         &mut self,

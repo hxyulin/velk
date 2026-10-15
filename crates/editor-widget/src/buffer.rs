@@ -1,4 +1,6 @@
+mod session;
 use ropey::{Rope, RopeBuilder};
+pub use session::BufferSnapshot;
 use std::{
     cell::RefCell,
     collections::VecDeque,

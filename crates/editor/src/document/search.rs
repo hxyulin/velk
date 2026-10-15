@@ -16,20 +16,22 @@ impl Command for Previous {}
 
 pub(super) struct State {
     pub open: bool,
-    query: Query,
+    pub(super) preserve_selection: bool,
+    pub(super) query: Query,
     id: u64,
     revision: u64,
     results: Option<Results>,
     selected: Option<usize>,
     notice: String,
     task: Option<Task>,
-    focus: rxui::FocusHandle,
+    pub(super) focus: rxui::FocusHandle,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
             open: false,
+            preserve_selection: false,
             query: Query::default(),
             id: 0,
             revision: 0,
@@ -130,7 +132,7 @@ async fn run(
 }
 
 impl Document {
-    fn cancel_search(&mut self, cx: &mut Context<'_, Self>) {
+    pub(super) fn cancel_search(&mut self, cx: &mut Context<'_, Self>) {
         self.search.task = None;
         if let Some(state) = &self.plugins {
             let client = state.client.clone();
@@ -215,7 +217,23 @@ impl Document {
                             .unwrap_or(0);
                         this.search.results = Some(results);
                         this.search.selected = None;
-                        this.select_search_match(selected, cx);
+                        if this.search.preserve_selection {
+                            this.search.preserve_selection = false;
+                            let range = this.editor.read(cx).buffer().selection().range();
+                            let results = this.search.results.as_ref().unwrap();
+                            this.search.selected = results
+                                .matches
+                                .iter()
+                                .position(|m| m.start == range.start && m.end == range.end);
+                            this.search.notice = match this.search.selected {
+                                Some(index) => {
+                                    format!("{} of {}", index + 1, results.matches.len())
+                                }
+                                None => format!("{} matches", results.matches.len()),
+                            };
+                        } else {
+                            this.select_search_match(selected, cx);
+                        }
                     }
                     Ok(Err(error)) => this.search.notice = format!("Search unavailable: {error}"),
                     Err(error) => this.search.notice = format!("Search failed: {error}"),
@@ -353,6 +371,7 @@ impl Document {
                             .flex_grow(1.)
                             .min_width(0.)
                             .on_change(cx.listener(|this, event: &TextChangeEvent, cx| {
+                                this.search.preserve_selection = false;
                                 this.search.query.text = event.value.clone();
                                 this.restart_search(cx);
                             })),

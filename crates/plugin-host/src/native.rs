@@ -311,9 +311,35 @@ impl Manager {
             return Ok(vec![]);
         }
         let manifest = read_manifest(&self.directory)?;
+        unsafe { self.load_specs(manifest.plugins) }
+    }
+    /// # Safety
+    /// Same trusted native-code requirements as `load`.
+    pub unsafe fn load_selected(&mut self, ids: &[String]) -> Result<Vec<Event>, String> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let manifest = read_manifest(&self.directory)?;
+        let mut events: Vec<_> = ids
+            .iter()
+            .filter(|id| !manifest.plugins.iter().any(|p| &p.id == *id))
+            .map(|id| Event::Rejected {
+                id: id.clone(),
+                message: "requested plugin is missing from plugins.json".into(),
+            })
+            .collect();
+        let specs = manifest
+            .plugins
+            .into_iter()
+            .filter(|spec| ids.contains(&spec.id))
+            .collect();
+        events.extend(unsafe { self.load_specs(specs)? });
+        Ok(events)
+    }
+    unsafe fn load_specs(&mut self, specs: Vec<PluginSpec>) -> Result<Vec<Event>, String> {
         let mut events = Vec::new();
         let mut verified = BTreeMap::new();
-        for spec in manifest.plugins {
+        for spec in specs {
             let id = spec.id.clone();
             if self.blocked.contains(&id) {
                 events.push(Event::Rejected {
@@ -365,6 +391,81 @@ impl Manager {
             }
         }
         Ok(events)
+    }
+    /// Recreate active instances as one worker operation. Inactive plugins stay
+    /// inactive. Optional named hooks transfer owned bytes, never native handles.
+    /// # Safety
+    /// As with `load`, all selected native libraries must obey the v1 contract.
+    pub unsafe fn restart(&mut self, id: Option<&str>) -> Result<Vec<Event>, String> {
+        let ids: Vec<_> = self
+            .plugins
+            .keys()
+            .filter(|key| id.is_none_or(|id| id == key.as_str()))
+            .cloned()
+            .collect();
+        if id.is_some() && ids.is_empty() {
+            return Err("plugin is not loaded".into());
+        }
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let manifest = read_manifest(&self.directory)?;
+        let specs: Vec<_> = manifest
+            .plugins
+            .into_iter()
+            .filter(|spec| ids.contains(&spec.id))
+            .collect();
+        if specs.len() != ids.len() {
+            return Err("an active plugin is missing from plugins.json; restart cancelled".into());
+        }
+        let states = self.snapshot_plugins(&ids)?;
+        let mut events: Vec<_> = ids.iter().filter_map(|id| self.unload(id)).collect();
+        events.extend(unsafe { self.load_specs(specs)? });
+        events.extend(self.restore_plugins(states));
+        Ok(events)
+    }
+    pub(crate) fn snapshot_plugins(
+        &mut self,
+        ids: &[String],
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let mut states = Vec::new();
+        // Capture every state before retiring anything. A failed capture leaves
+        // all existing instances and sessions alive.
+        for id in ids {
+            let hooks = self.hooks(id)?;
+            let snapshot = hooks.iter().any(|h| h.name == LIFECYCLE_SNAPSHOT_HOOK);
+            let restore = hooks.iter().any(|h| h.name == LIFECYCLE_RESTORE_HOOK);
+            if snapshot != restore {
+                return Err(format!(
+                    "{id}: lifecycle snapshot and restore hooks must be paired"
+                ));
+            }
+            if snapshot {
+                let handle = self.bind_hook(id, LIFECYCLE_SNAPSHOT_HOOK)?;
+                let state = self.call_hook(&handle, &[])?;
+                if state.len() > MAX_INPUT_BYTES {
+                    return Err(format!("{id}: lifecycle state exceeds 1 MiB"));
+                }
+                states.push((id.clone(), state));
+            }
+        }
+        Ok(states)
+    }
+    pub(crate) fn restore_plugins(&mut self, states: Vec<(String, Vec<u8>)>) -> Vec<Event> {
+        let mut events = Vec::new();
+        for (id, state) in states {
+            let result = self
+                .bind_hook(&id, LIFECYCLE_RESTORE_HOOK)
+                .and_then(|handle| self.call_hook(&handle, &state));
+            if let Err(message) = result {
+                events.extend(self.unload(&id));
+                events.push(Event::Rejected {
+                    id,
+                    message: format!("state restore failed: {message}"),
+                });
+            }
+        }
+        events
     }
     pub fn unload(&mut self, id: &str) -> Option<Event> {
         let sessions_retired = self.retire_semantics(id);

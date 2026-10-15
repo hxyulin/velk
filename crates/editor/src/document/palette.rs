@@ -21,8 +21,8 @@ impl Command for Quit {}
 #[derive(Default)]
 pub(super) struct State {
     pub open: bool,
-    query: String,
-    selected: usize,
+    pub(super) query: String,
+    pub(super) selected: usize,
 }
 
 #[derive(Clone)]
@@ -125,6 +125,7 @@ impl Document {
                 this.set_palette(!this.palette.open, cx)
             })
             .label("Command palette")
+            .enabled(!self.reloading())
             .allow_in_modal(true)
             .shortcut(Shortcut::primary("p").shift())
             .shortcut(Shortcut::new(
@@ -423,7 +424,7 @@ mod tests {
         );
         assert!(
             ui.elements()
-                .any(|e| e.key == Some(&rxui::Key::from("velk.app.quit")))
+                .any(|e| e.key == Some(&rxui::Key::from("velk.window.reload")))
         );
         key(
             &mut ui,

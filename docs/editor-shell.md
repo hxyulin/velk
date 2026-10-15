@@ -79,7 +79,7 @@ per keystroke. The catalogue is only built while the palette is open; at most
 eight results are constructed, following keyboard selection through longer lists.
 
 Stable command IDs are separate from captions. These are host commands for now;
-plugin command contributions and plugin/window reload are not implemented by the
-palette. A future contribution contract can expose owned command descriptors and
+plugin command contributions are not implemented by the palette. Plugin restart
+and Reload Window are described in [reloading.md](reloading.md). A future contribution contract can expose owned command descriptors and
 route invocation through the plugin worker, without passing plugin callbacks
 onto the UI thread or changing the native plugin ABI.
