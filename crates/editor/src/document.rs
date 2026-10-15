@@ -1,4 +1,5 @@
 mod plugins;
+mod search;
 mod semantic;
 mod shell;
 use crate::file::FileState;
@@ -43,6 +44,7 @@ pub struct Document {
     plugin_menu_open: bool,
     editor_focus: rxui::FocusHandle,
     shell: shell::State,
+    search: search::State,
 }
 impl Document {
     pub fn new(
@@ -56,10 +58,11 @@ impl Document {
             .observe(&editor, |this, editor, cx| {
                 let dirty = editor.read(cx).buffer().is_dirty();
                 let semantic_changed = this.sync_semantics(cx);
+                let search_changed = this.sync_search(cx);
                 if this.dirty != dirty {
                     this.dirty = dirty;
                     this.title();
-                } else if !semantic_changed {
+                } else if !semantic_changed && !search_changed {
                     cx.unchanged();
                 }
             })
@@ -79,6 +82,7 @@ impl Document {
             plugin_menu_open: false,
             editor_focus: rxui::FocusHandle::new(),
             shell: shell::State::default(),
+            search: search::State::default(),
         }
     }
     pub fn title(&self) {
@@ -249,6 +253,7 @@ impl View for Document {
             None => status.to_owned(),
         };
         let activity = self.activity_bar(toggle_settings.clone(), toggle_plugins.clone());
+        let (find, search_bar) = self.search_bar(cx);
         let status_bar = self.status_bar(status, toggle_settings.clone(), toggle_plugins.clone());
         column()
             .fill_width()
@@ -257,8 +262,10 @@ impl View for Document {
             .on_command(hover)
             .on_command(toggle_plugins)
             .on_command(toggle_settings)
+            .on_command(find)
             .children(plugin_menu)
             .children(settings_menu)
+            .child(search_bar)
             .child(
                 row()
                     .fill_width()

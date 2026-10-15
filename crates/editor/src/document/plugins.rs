@@ -8,7 +8,7 @@ enum Operation {
 }
 
 pub(super) struct State {
-    client: Client,
+    pub(super) client: Client,
     task: Option<Task>,
     pub status: String,
     loaded: Vec<velk_plugin_host::PluginInfo>,
@@ -74,7 +74,7 @@ impl Document {
             "Unloading plugins…"
         }
         .into();
-        match cx.try_spawn(async move { receiver.recv().await }, |this, result, _| {
+        match cx.try_spawn(async move { receiver.recv().await }, |this, result, cx| {
             let Some(state) = &mut this.plugins else {
                 return;
             };
@@ -99,6 +99,9 @@ impl Document {
                 Ok(Ok(Err(error))) => format!("Plugins: {error}"),
                 _ => "Plugin worker unavailable".into(),
             };
+            if this.search.open {
+                this.restart_search(cx);
+            }
         }) {
             Ok(task) => state.task = Some(task),
             Err(error) => state.status = format!("Plugins: {error}"),

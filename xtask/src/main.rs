@@ -6,6 +6,7 @@ use std::{
 use velk_plugin_host::{MANIFEST, Manifest, PluginSpec};
 mod hooks_smoke;
 mod lsp_smoke;
+mod search_smoke;
 const PLUGIN: &str = "velk-plugin-markdown";
 const ID: &str = "velk.markdown";
 fn main() -> ExitCode {
@@ -62,6 +63,8 @@ fn build(root: &Path, release: bool, editor: bool) -> Result<(), String> {
         "velk-plugin-lsp",
         "-p",
         "velk-plugin-rust-analyzer",
+        "-p",
+        "velk-plugin-search",
     ]);
     if editor {
         command.args(["-p", "velk-editor"]);
@@ -178,7 +181,13 @@ fn run() -> Result<(), String> {
         "velk.language-server.rust-analyzer",
         "velk_plugin_rust_analyzer",
     )?;
-    publish(&directory, vec![spec, lsp, rust])?;
+    let search = stage_plugin(
+        &output,
+        &directory,
+        velk_search::DEFAULT_BACKEND,
+        "velk_plugin_search",
+    )?;
+    publish(&directory, vec![spec, lsp, rust, search])?;
     println!("Built plugins: {}", directory.display());
     if action == "run" {
         checked(
@@ -289,6 +298,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     markdown_smoke(output)?;
     lsp_smoke::run(root, output)?;
     hooks_smoke::run(root, output, release)?;
+    search_smoke::run(output)?;
     println!(
         "Native plugin smoke passed: load, no automatic replacement, explicit unload/load of restaged code, repeated cleanup, retained host data, rejected artifacts, malformed manifest."
     );

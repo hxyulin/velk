@@ -3070,6 +3070,7 @@ dependencies = [
  "velk-editor-widget",
  "velk-markup",
  "velk-plugin-host",
+ "velk-search",
  "velk-semantic",
 ]
 
@@ -3150,6 +3151,23 @@ dependencies = [
  "velk-markup",
  "velk-plugin-api",
  "velk-semantic",
+]
+
+[[package]]
+name = "velk-plugin-search"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "velk-plugin-sdk",
+ "velk-search",
+]
+
+[[package]]
+name = "velk-search"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3978,6 +3996,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "velk-plugin-host",
+ "velk-search",
  "velk-semantic",
 ]
 

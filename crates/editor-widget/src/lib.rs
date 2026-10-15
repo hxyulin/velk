@@ -112,6 +112,25 @@ impl Editor {
         &self.buffer
     }
 
+    /// Select a result from a versioned external service without creating an
+    /// edit or undo entry. Clamp endpoints to the buffer's grapheme boundaries.
+    pub fn select_range(&mut self, range: std::ops::Range<usize>) -> bool {
+        if range.start > range.end || range.end > self.buffer.text().len_chars() {
+            return false;
+        }
+        self.composition = None;
+        self.buffer.set_caret(range.start, false);
+        self.buffer.set_caret(range.end, true);
+        if !range.is_empty() && self.buffer.selection().head < range.end {
+            self.buffer.horizontal(true, true);
+        }
+        self.caret_epoch += 1;
+        self.epoch += 1;
+        self.hide_hover();
+        self.reveal_caret = true;
+        true
+    }
+
     pub fn set_annotations(&mut self, annotations: Annotations) -> Result<(), AnnotationError> {
         annotations.validate(&self.buffer)?;
         self.annotations = Some(Arc::new(annotations));

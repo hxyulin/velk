@@ -7,6 +7,7 @@ use std::{io::Write, path::PathBuf};
 pub struct Preferences {
     pub status_bar: bool,
     pub activity_bar: bool,
+    pub search_backend: String,
     // Preserve settings written by newer versions when changing the shell.
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
@@ -16,6 +17,7 @@ impl Default for Preferences {
         Self {
             status_bar: true,
             activity_bar: false,
+            search_backend: velk_search::DEFAULT_BACKEND.into(),
             extra: Default::default(),
         }
     }
