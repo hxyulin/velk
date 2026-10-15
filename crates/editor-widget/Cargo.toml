@@ -10,6 +10,7 @@ publish.workspace = true
 performance = []
 
 [dependencies]
+velk-syntax.workspace = true
 ropey.workspace = true
 rxui.workspace = true
 unicode-segmentation.workspace = true

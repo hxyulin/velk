@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use velk_editor_widget::Editor;
+use velk_editor_widget::{Editor, Language};
 
 #[derive(Debug)]
 enum Error {
@@ -40,6 +40,15 @@ fn open(path: &Path) -> Result<Editor, Error> {
         .map_err(|source| Error::Open {
             path: path.to_path_buf(),
             source,
+        })
+        .and_then(|mut editor| {
+            editor
+                .set_language(Language::for_path(path))
+                .map_err(|error| Error::Open {
+                    path: path.to_path_buf(),
+                    source: io::Error::other(error),
+                })?;
+            Ok(editor)
         })
 }
 
@@ -90,6 +99,24 @@ mod tests {
                 PathBuf::from(path)
             );
         }
+    }
+
+    #[test]
+    fn rust_extension_enables_in_process_parser_and_other_files_stay_plain() {
+        assert_eq!(
+            Language::for_path(Path::new("main.rs")),
+            Some(Language::Rust)
+        );
+        assert_eq!(
+            Language::for_path(Path::new("MAIN.RS")),
+            Some(Language::Rust)
+        );
+        assert_eq!(Language::for_path(Path::new("notes.txt")), None);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("real.rs");
+        std::fs::write(&path, include_str!("main.rs")).unwrap();
+        let editor = open(&path).unwrap();
+        assert_eq!(editor.buffer().text(), include_str!("main.rs"));
     }
 
     #[cfg(unix)]

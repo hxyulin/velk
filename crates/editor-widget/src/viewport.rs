@@ -307,6 +307,9 @@ impl HorizontalWindow {
 }
 
 struct CachedLine {
+    syntax: Option<crate::syntax::SyntaxKey>,
+    syntax_range: Range<usize>,
+    syntax_spans: Vec<crate::StyledRange>,
     text: String,
     surface: Surface,
     state: SurfaceState,
@@ -413,6 +416,7 @@ impl ViewportState {
                 reveal_caret: false,
                 caret_visible: false,
                 minimum_line_metrics: None,
+                syntax: None,
                 annotations: None,
                 annotation_groups: None,
                 selection_color: surface.selection_color,
@@ -427,6 +431,9 @@ impl ViewportState {
             rich_window: None,
             unicode: None,
             unicode_window: None,
+            syntax: None,
+            syntax_range: 0..0,
+            syntax_spans: Vec::new(),
             hover_ids: Vec::new(),
             metric_safe: false,
             annotation_range: range.clone(),
@@ -543,11 +550,30 @@ impl ViewportState {
                 .as_ref()
                 .map_or(&[], |rich| rich.backgrounds.as_slice()),
         );
-        entry.hover_ids = hover_ids;
-        entry.surface.annotation_groups = surface
-            .annotation_groups
-            .as_ref()
-            .map(|groups| Arc::new(entry.hover_ids.iter().map(|&id| groups[id]).collect()));
+        let syntax_changed = match (&entry.syntax, &surface.syntax) {
+            (Some(a), Some(b)) => !a.matches(b),
+            (None, None) => false,
+            _ => true,
+        };
+        if syntax_changed || entry.syntax_range != annotation_range {
+            entry.syntax_spans = surface.syntax.as_ref().map_or_else(Vec::new, |syntax| {
+                syntax.spans(&surface.rope, annotation_range.clone())
+            });
+            entry.syntax = surface.syntax.as_ref().map(crate::syntax::SyntaxView::key);
+            entry.syntax_range = annotation_range.clone();
+        }
+        let annotations = crate::syntax::merge(&entry.syntax_spans, annotations, surface.revision);
+        entry.hover_ids = vec![usize::MAX; entry.syntax_spans.len()];
+        entry.hover_ids.extend(hover_ids);
+        entry.surface.annotation_groups = surface.annotation_groups.as_ref().map(|groups| {
+            Arc::new(
+                entry
+                    .hover_ids
+                    .iter()
+                    .map(|&id| groups.get(id).copied().unwrap_or(usize::MAX))
+                    .collect(),
+            )
+        });
         entry.annotation_range = annotation_range;
         let clamp = |position: usize| {
             position
@@ -1093,6 +1119,7 @@ impl CpuViewportProbe {
                 reveal_caret: false,
                 caret_visible: true,
                 minimum_line_metrics: None,
+                syntax: None,
                 annotations: None,
                 annotation_groups: None,
                 selection_color: [0.; 4],
@@ -1148,6 +1175,7 @@ mod tests {
             reveal_caret: false,
             caret_visible: true,
             minimum_line_metrics: None,
+            syntax: None,
             annotations: None,
             annotation_groups: None,
             selection_color: [0.; 4],
@@ -1161,6 +1189,198 @@ mod tests {
             Some(fonts)
         }
     }
+    #[test]
+    fn background_syntax_publication_updates_editor_without_caret_activity() {
+        struct Executor;
+        impl rxui::TaskExecutor for Executor {
+            fn spawn(&self, future: rxui::BackgroundFuture) -> Result<(), rxui::SpawnError> {
+                std::thread::spawn(move || pollster::block_on(future));
+                Ok(())
+            }
+        }
+        let Ok(graphics) = pollster::block_on(rxui::astrelis::GraphicsContext::headless()) else {
+            return;
+        };
+        let text = "use std::ffi::OsString;\nfn main() { let name = \"hello\"; }\n";
+        let editor = crate::Editor::new(text);
+        let mut ui = rxui::TestUi::new(&graphics, [640, 240], editor).unwrap();
+        ui.painter_mut().fonts_mut().load_system_fonts();
+        ui.render().unwrap();
+        ui.runtime()
+            .configure_tasks(Arc::new(Executor), || {})
+            .unwrap();
+        let entity = ui.entity().clone();
+        ui.runtime().update(|cx| {
+            entity.update(cx, |editor, _| {
+                editor.set_language(Some(crate::Language::Rust)).unwrap()
+            })
+        });
+        ui.render().unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !ui.read(|e| e.syntax_snapshot.is_some()) {
+            ui.runtime().poll_tasks();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let actual = ui.render().unwrap();
+        let spans = ui.read(|e| {
+            assert_eq!(e.caret_epoch, 0);
+            assert!(!e.reveal_caret);
+            crate::syntax::SyntaxView::new(e.syntax_snapshot.as_ref().unwrap().clone(), &e.buffer)
+                .unwrap()
+                .spans(e.buffer.text(), 0..e.buffer.text().len_chars())
+        });
+        let mut expected_editor = crate::Editor::new(text);
+        expected_editor
+            .set_annotations(Annotations {
+                document_revision: 0,
+                spans,
+                ..Annotations::default()
+            })
+            .unwrap();
+        let mut expected = rxui::TestUi::new(&graphics, [640, 240], expected_editor).unwrap();
+        expected.painter_mut().fonts_mut().load_system_fonts();
+        assert_eq!(actual, expected.render().unwrap());
+    }
+
+    #[test]
+    fn syntax_arriving_after_plain_render_matches_initial_syntax_render() {
+        use rxui::prelude::*;
+        struct Host(Surface);
+        impl View for Host {
+            fn view(&self, _: &mut ViewContext<'_, Self>) -> impl IntoElement {
+                let appearance = crate::EditorAppearance::default();
+                column().fill_width().fill_height().child(
+                    rxui::custom(ViewportSurface(self.0.clone()))
+                        .key("syntax")
+                        .fill_width()
+                        .fill_height()
+                        .background(appearance.background)
+                        .color(appearance.foreground),
+                )
+            }
+        }
+        let Ok(graphics) = pollster::block_on(rxui::astrelis::GraphicsContext::headless()) else {
+            return;
+        };
+        let buffer = crate::Buffer::new(include_str!("../../editor/src/main.rs"));
+        let snapshot = velk_syntax::Engine::new(crate::Language::Rust)
+            .unwrap()
+            .update(0, buffer.text().clone(), &[], || false)
+            .unwrap();
+        let syntax = crate::syntax::SyntaxView::new(snapshot, &buffer);
+        let mut full = surface(&buffer.text().to_string());
+        let mut actual = rxui::TestUi::new(&graphics, [640, 240], Host(full.clone())).unwrap();
+        actual.painter_mut().fonts_mut().load_system_fonts();
+        let plain = actual.render().unwrap();
+        let entity = actual.entity().clone();
+        full.syntax = syntax;
+        let update = full.clone();
+        actual
+            .runtime()
+            .update(|cx| entity.update(cx, |host, _| host.0 = update));
+        let updated = actual.render().unwrap();
+        let mut expected = rxui::TestUi::new(&graphics, [640, 240], Host(full)).unwrap();
+        expected.painter_mut().fonts_mut().load_system_fonts();
+        let initial = expected.render().unwrap();
+        let gold_pixels = updated
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[0] > p[2].saturating_add(20) && p[1] > p[2].saturating_add(10))
+            .count();
+        assert!(
+            gold_pixels > 20,
+            "missing gold Rust type/constructor colors"
+        );
+        assert_ne!(updated, plain);
+        assert_eq!(updated, initial);
+    }
+
+    #[test]
+    fn rust_syntax_keeps_long_lines_horizontally_virtualized() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let text = format!("fn main() {{ {} }}", "let value = 42; ".repeat(10_000));
+        let buffer = crate::Buffer::new(&text);
+        let snapshot = velk_syntax::Engine::new(crate::Language::Rust)
+            .unwrap()
+            .update(0, buffer.text().clone(), &[], || false)
+            .unwrap();
+        let mut full = surface(&text);
+        full.syntax = crate::syntax::SyntaxView::new(snapshot, &buffer);
+        full.geometry.borrow_mut().offset[0] = 50_000.;
+        let mut state = ViewportState::default();
+        state.prepare_cpu(&full, [640., 240.], &mut fonts).unwrap();
+        let entry = &state.cache[&0];
+        assert!(entry.window.is_some());
+        assert!(entry.text.len() < 2_000);
+        assert!(!entry.syntax_spans.is_empty());
+        assert!(entry.syntax_spans.len() < 500);
+        assert!(
+            entry
+                .syntax_spans
+                .iter()
+                .all(|s| s.range.end <= entry.text.len())
+        );
+    }
+
+    #[test]
+    fn syntax_windows_reuse_cached_queries_and_preserve_hover_provider_ids() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let buffer = crate::Buffer::new("fn main() { let value = 42; }\n");
+        let mut full = surface(&buffer.text().to_string());
+        let snapshot = velk_syntax::Engine::new(crate::Language::Rust)
+            .unwrap()
+            .update(0, buffer.text().clone(), &[], || false)
+            .unwrap();
+        full.syntax = crate::syntax::SyntaxView::new(snapshot, &buffer);
+        full.annotations = Some(Arc::new(Annotations {
+            spans: vec![
+                StyledRange::new(
+                    3..7,
+                    SpanStyle {
+                        foreground: Some([1.; 4]),
+                        ..SpanStyle::default()
+                    },
+                )
+                .with_hover("function", "custom"),
+            ],
+            ..Annotations::default()
+        }));
+        let mut state = ViewportState::default();
+        state.prepare_cpu(&full, [640., 240.], &mut fonts).unwrap();
+        let entry = &state.cache[&0];
+        assert!(!entry.syntax_spans.is_empty());
+        assert_eq!(entry.hover_ids.last(), Some(&0));
+        assert!(
+            entry.hover_ids[..entry.syntax_spans.len()]
+                .iter()
+                .all(|id| *id == usize::MAX)
+        );
+        assert_eq!(
+            entry
+                .surface
+                .annotations
+                .as_ref()
+                .unwrap()
+                .spans
+                .last()
+                .unwrap()
+                .style
+                .foreground,
+            Some([1.; 4])
+        );
+        let spans = entry.syntax_spans.as_ptr();
+        full.caret_visible = false;
+        state.prepare_cpu(&full, [640., 240.], &mut fonts).unwrap();
+        assert_eq!(state.cache[&0].syntax_spans.as_ptr(), spans);
+        assert_eq!(state.metrics.shaped_lines, 0);
+    }
+
     #[test]
     fn line_composition_matches_full_layout_and_keeps_other_lines_cached() {
         let Some(mut fonts) = fonts() else {

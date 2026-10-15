@@ -206,6 +206,7 @@ pub(crate) struct Surface {
     pub reveal_caret: bool,
     pub caret_visible: bool,
     pub minimum_line_metrics: Option<TextLineMetrics>,
+    pub syntax: Option<crate::syntax::SyntaxView>,
     pub annotations: Option<Arc<Annotations>>,
     pub annotation_groups: Option<Arc<Vec<usize>>>,
     pub selection_color: Color,
@@ -214,6 +215,11 @@ pub(crate) struct Surface {
 impl PartialEq for Surface {
     fn eq(&self, other: &Self) -> bool {
         self.epoch == other.epoch
+            && match (&self.syntax, &other.syntax) {
+                (Some(a), Some(b)) => a.same(b),
+                (None, None) => true,
+                _ => false,
+            }
             && self.caret_visible == other.caret_visible
             && Rc::ptr_eq(&self.geometry, &other.geometry)
     }
@@ -690,6 +696,7 @@ mod tests {
             reveal_caret: false,
             caret_visible: true,
             minimum_line_metrics: None,
+            syntax: None,
             annotations: None,
             annotation_groups: None,
             selection_color: [0.; 4],

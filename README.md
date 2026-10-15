@@ -47,6 +47,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 - `crates/editor`: the `velk-editor` package and `velk` application binary.
 - `crates/editor-widget`: reusable RXUI editor view and UI-independent rope buffer.
+- `crates/syntax`: in-process Tree-sitter parsing, Rust grammar, and background worker.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 
 RXUI is pinned to commit `96e1f4a833785edbce5885945a8bf8ba0a9e75f7`
@@ -60,6 +61,37 @@ native profiling improvements. All three crates resolve from Git revisions;
 no sibling RXUI or Astrelis checkout or local Cargo patch is required. The
 [Astrelis performance report](docs/performance/astrelis-local.md) records the
 earlier experiments and their measurement revisions.
+
+## Rust syntax highlighting
+
+Files with a `.rs` extension enable Tree-sitter automatically. The official Rust
+bindings (`tree-sitter` 0.27.1) and Rust grammar (`tree-sitter-rust` 0.24.2) are
+linked into Velk. There is no Tree-sitter CLI, language server, or subprocess on
+file open or input. Runtime loading of external grammar libraries is not yet
+implemented; additional languages can use the same in-process service.
+
+Try the app on its own source:
+
+```sh
+cargo run --release --locked -- crates/editor/src/main.rs
+```
+
+One persistent worker per language-enabled editor parses borrowed Rope chunks.
+Edits, undo, and redo provide Tree-sitter byte/point coordinates. Pending work is
+coalesced and obsolete parses are cancelled cooperatively. If the worker falls
+behind the bounded edit log, it performs a fresh parse. While waiting, the UI
+maps existing highlights around edits, leaving inserted text plain until the new
+parse arrives. Multiline syntax changes become accurate when that result arrives.
+
+The renderer queries visible lines and horizontal windows, caches their syntax
+spans, and layers explicit annotations over syntax colors. Syntax does not add
+font metric changes. IME preedit projects existing colors around the temporary
+replacement without parsing uncommitted input. The tree is retained for future
+structural features; semantic information such as resolved types still needs a
+separate provider.
+
+Parser benchmarks: `cargo bench -p velk-syntax --bench syntax --locked`.
+See [initial syntax measurements](docs/performance/syntax.md) for results and limits.
 
 ## Editor widget
 
@@ -93,8 +125,8 @@ deletion is one edit. There is no typing coalescence yet.
 
 Text shaping and GPU text resources are cached per logical line. The renderer
 prepares the viewport plus a small overscan region, retaining unaffected layouts
-on ordinary edits. Active IME composition currently uses the full-document path.
-Soft wrapping, word motions, multiple cursors, an automatic syntax provider, and
+on ordinary edits. IME composition projects syntax and annotations into a temporary Rope without
+changing the source document. Soft wrapping, word motions, multiple cursors, and
 file persistence remain future work.
 Vertical navigation preserves a grapheme column rather than a pixel column.
 RXUI custom text clients currently expose the editor's accessibility role and

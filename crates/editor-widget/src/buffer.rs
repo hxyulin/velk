@@ -35,13 +35,20 @@ struct Snapshot {
     selection: Selection,
 }
 
+#[derive(Clone)]
+struct History {
+    snapshot: Snapshot,
+    edit: velk_syntax::Edit,
+}
+
 /// Rope document and editing state, independent of RXUI and the graphics host.
 /// Newlines are normalized to LF. All caret positions are grapheme boundaries.
 pub struct Buffer {
     current: Snapshot,
-    undo: VecDeque<Snapshot>,
-    redo: Vec<Snapshot>,
+    undo: VecDeque<History>,
+    redo: Vec<History>,
     revision: u64,
+    edits: VecDeque<velk_syntax::Edit>,
     goal_column: Option<usize>,
     boundaries: RefCell<VecDeque<(usize, Arc<Vec<usize>>)>>,
 }
@@ -95,6 +102,7 @@ impl Buffer {
             undo: VecDeque::new(),
             redo: Vec::new(),
             revision: 0,
+            edits: VecDeque::new(),
             goal_column: None,
             boundaries: RefCell::new(VecDeque::new()),
         }
@@ -220,19 +228,45 @@ impl Buffer {
         self.set_caret(if end { self.text().len_chars() } else { 0 }, extend);
     }
 
+    pub(crate) fn edits_since(&self, revision: u64) -> Option<Vec<velk_syntax::Edit>> {
+        let edits: Vec<_> = self
+            .edits
+            .iter()
+            .filter(|e| e.revision > revision)
+            .cloned()
+            .collect();
+        (revision + edits.len() as u64 == self.revision).then_some(edits)
+    }
+
     pub fn undo(&mut self) {
         if let Some(previous) = self.undo.pop_back() {
-            self.redo
-                .push(std::mem::replace(&mut self.current, previous));
+            let edit = previous.edit.inverse(self.revision + 1);
+            self.redo.push(History {
+                snapshot: std::mem::replace(&mut self.current, previous.snapshot),
+                edit: previous.edit,
+            });
+            self.record(edit);
             self.changed();
         }
     }
 
     pub fn redo(&mut self) {
         if let Some(next) = self.redo.pop() {
-            self.undo
-                .push_back(std::mem::replace(&mut self.current, next));
+            let mut edit = next.edit.clone();
+            edit.revision = self.revision + 1;
+            self.undo.push_back(History {
+                snapshot: std::mem::replace(&mut self.current, next.snapshot),
+                edit: next.edit,
+            });
+            self.record(edit);
             self.changed();
+        }
+    }
+
+    fn record(&mut self, edit: velk_syntax::Edit) {
+        self.edits.push_back(edit);
+        if self.edits.len() > HISTORY_LIMIT {
+            self.edits.pop_front();
         }
     }
 
@@ -240,10 +274,7 @@ impl Buffer {
         if range.is_empty() && text.is_empty() {
             return;
         }
-        self.undo.push_back(self.current.clone());
-        if self.undo.len() > HISTORY_LIMIT {
-            self.undo.pop_front();
-        }
+        let previous = self.current.clone();
         self.redo.clear();
         // Cache entries use absolute character offsets and logical line numbers.
         // Entries before the first changed line keep both their contents and
@@ -263,6 +294,21 @@ impl Buffer {
             self.next(end)
         };
         self.current.selection = Selection { anchor: head, head };
+        let edit = velk_syntax::Edit::between(
+            self.revision + 1,
+            &previous.text,
+            self.text(),
+            range,
+            text.chars().count(),
+        );
+        self.undo.push_back(History {
+            snapshot: previous,
+            edit: edit.clone(),
+        });
+        self.record(edit);
+        if self.undo.len() > HISTORY_LIMIT {
+            self.undo.pop_front();
+        }
         self.revision += 1;
         self.goal_column = None;
     }

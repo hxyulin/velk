@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/editor", "crates/editor-widget"]
+members = ["crates/editor", "crates/editor-widget", "crates/syntax"]
 default-members = ["crates/editor"]
 resolver = "3"
 
@@ -10,6 +10,7 @@ rust-version = "1.99.0"
 publish = false
 
 [workspace.dependencies]
+velk-syntax = { path = "crates/syntax" }
 velk-editor-widget = { path = "crates/editor-widget" }
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 unicode-segmentation = "1.13.3"

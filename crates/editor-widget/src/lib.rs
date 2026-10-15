@@ -7,6 +7,7 @@ mod graphemes;
 mod horizontal;
 mod inline;
 mod surface;
+mod syntax;
 mod unicode_window;
 mod viewport;
 #[cfg(feature = "performance")]
@@ -26,12 +27,16 @@ use std::time::Instant;
 use std::{cell::RefCell, rc::Rc};
 use std::{sync::Arc, time::Duration};
 use surface::{Composition, Geometry, HoverHit, Surface};
+pub use velk_syntax::Language;
 
 /// An editor view. Create a separate entity per window; document state can be
 /// accessed through `buffer()` and programmatic inserts through `insert()`.
 #[derive(Default)]
 pub struct Editor {
     buffer: Buffer,
+    syntax_worker: Option<Arc<velk_syntax::Worker>>,
+    syntax_revision: u64,
+    syntax_snapshot: Option<Arc<velk_syntax::Snapshot>>,
     composition: Option<Composition>,
     geometry: Rc<RefCell<Geometry>>,
     epoch: u64,
@@ -60,6 +65,28 @@ impl Editor {
             buffer: Buffer::from_reader(reader)?,
             ..Self::default()
         })
+    }
+
+    /// Enable an in-process language parser. Parsing runs off the UI thread.
+    pub fn set_language(
+        &mut self,
+        language: Option<Language>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.syntax_worker = language
+            .map(velk_syntax::Worker::new)
+            .transpose()?
+            .map(Arc::new);
+        self.syntax_revision = self.buffer.revision();
+        self.syntax_snapshot = None;
+        if let Some(worker) = &self.syntax_worker {
+            worker.request(
+                self.buffer.revision(),
+                self.buffer.text().clone(),
+                Vec::new(),
+            );
+        }
+        self.epoch += 1;
+        Ok(())
     }
 
     /// Preparation diagnostics from the most recent native frame.
@@ -154,6 +181,18 @@ impl Editor {
     }
 
     fn edited(&mut self) {
+        if self.syntax_revision != self.buffer.revision() {
+            self.syntax_revision = self.buffer.revision();
+            if let Some(worker) = &self.syntax_worker {
+                worker.request(
+                    self.buffer.revision(),
+                    self.buffer.text().clone(),
+                    self.buffer
+                        .edits_since(self.buffer.revision().saturating_sub(128))
+                        .unwrap_or_default(),
+                );
+            }
+        }
         self.caret_epoch += 1;
         if self
             .annotations
@@ -299,6 +338,33 @@ impl View for Editor {
         let caret_epoch = self.caret_epoch;
         let blink = cx.use_state(move |cx| blink::Blink::new(blink_geometry, caret_epoch, cx));
         let caret_visible = blink.read(cx).visible(caret_epoch);
+        if let Some(worker) = &self.syntax_worker {
+            let worker = worker.clone();
+            let id = worker.id;
+            let publish = cx.listener(move |this, snapshot: &Arc<velk_syntax::Snapshot>, cx| {
+                if this
+                    .syntax_worker
+                    .as_ref()
+                    .is_none_or(|worker| worker.id != id)
+                    || snapshot.revision > this.buffer.revision()
+                    || this
+                        .syntax_snapshot
+                        .as_ref()
+                        .is_some_and(|old| old.revision >= snapshot.revision)
+                {
+                    cx.unchanged();
+                    return;
+                }
+                this.syntax_snapshot = Some(snapshot.clone());
+                this.epoch += 1;
+                this.reveal_caret = false;
+            });
+            cx.use_keyed_state(id, move |cx| syntax::Monitor::new(worker, publish, cx));
+        }
+        let syntax = self
+            .syntax_snapshot
+            .as_ref()
+            .and_then(|snapshot| syntax::SyntaxView::new(snapshot.clone(), &self.buffer));
         let ime_geometry = self.geometry.clone();
         let copy = cx
             .command(commands::Copy, |this, _, cx| {
@@ -372,6 +438,7 @@ impl View for Editor {
             reveal_caret: self.reveal_caret,
             caret_visible,
             minimum_line_metrics: None,
+            syntax,
             annotations: self.annotations.clone(),
             annotation_groups: None,
             selection_color: self.appearance.selection,

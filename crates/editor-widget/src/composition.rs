@@ -105,6 +105,10 @@ impl ProjectedComposition {
             .text
             .floor_char_boundary(cursor_byte.min(composition.text.len()));
         let head = replaced.start + composition.text[..cursor_byte].chars().count();
+        self.surface.0.syntax = source
+            .syntax
+            .as_ref()
+            .map(|syntax| syntax.project(replaced.clone(), inserted));
         self.surface.0.selection = Selection { anchor: head, head };
         self.surface.0.preedit = Some(replaced.start..replaced.start + inserted);
         self.surface.0.caret_visible = source.caret_visible && composition.cursor.is_some();
@@ -218,6 +222,7 @@ mod tests {
         actual.parts().1.focus(id);
         let pixels = actual.render().unwrap();
         let reference = actual.read(|e| Surface {
+            syntax: None,
             rope: e.buffer.text().clone(),
             revision: e.buffer.revision(),
             selection: e.buffer.selection(),
