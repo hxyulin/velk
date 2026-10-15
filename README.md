@@ -8,6 +8,20 @@ The application opens a single UTF-8 file in a native rope-backed text editor.
 Install [rustup](https://rustup.rs/). The repository pins Rust 1.99.0 in
 `rust-toolchain.toml`; rustup installs the toolchain when needed.
 
+Install [prek](https://prek.j178.dev/) and enable the Git pre-commit hook for each
+checkout:
+
+```sh
+prek install
+prek run --all-files
+```
+
+The hooks normalize text files to LF, strip trailing whitespace, remove extra
+blank lines at EOF, and ensure one final newline in nonempty files. Rust/TOML
+changes also run `cargo fmt --all` using the pinned toolchain. Fixers run in order;
+if they change staged files, review and stage those changes before committing
+again. `.gitattributes` also enforces LF for Git text-file normalization.
+
 Run the editor:
 
 ```sh

@@ -1,0 +1,21 @@
+# Text fixers run in order, then Rust formatting runs once for the workspace.
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "mixed-line-ending", args = ["--fix=lf"], priority = 0 },
+  { id = "trailing-whitespace", priority = 10 },
+  { id = "end-of-file-fixer", priority = 20 },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt --all"
+entry = "cargo fmt --all"
+language = "system"
+types_or = ["rust", "toml"]
+pass_filenames = false
+require_serial = true
+priority = 30
