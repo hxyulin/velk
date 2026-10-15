@@ -937,9 +937,16 @@ impl CustomElement for ViewportSurface {
         let started_gpu = Instant::now();
         for line in state.visible.clone() {
             let entry = state.cache.get_mut(&line).unwrap();
+            let top = state.heights.top(line);
+            let origin = [
+                element.bounds.x + PADDING + entry.left() - geometry.offset[0],
+                element.bounds.y + PADDING + top - geometry.offset[1],
+            ];
             #[cfg(any(test, feature = "performance"))]
-            let gpu_dirty = entry.gpu_dirty || entry.last_raster() != cx.raster_scale;
-            entry.surface.prepare(&mut entry.state, element, cx)?;
+            let gpu_dirty = entry.gpu_dirty || entry.state.needs_raster(cx.raster_scale, origin);
+            entry
+                .surface
+                .prepare_at(&mut entry.state, element, cx, Some(origin))?;
             #[cfg(any(test, feature = "performance"))]
             {
                 if gpu_dirty {
@@ -1122,12 +1129,6 @@ impl CustomElement for ViewportSurface {
             }
         }
         Ok(())
-    }
-}
-impl CachedLine {
-    #[cfg(any(test, feature = "performance"))]
-    fn last_raster(&self) -> f32 {
-        self.state.raster_scale()
     }
 }
 

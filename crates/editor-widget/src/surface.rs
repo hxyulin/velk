@@ -7,7 +7,7 @@ use crate::{
 use ropey::Rope;
 use rxui::astrelis::{
     FontFamily, FontSlant, LineDraw, PaintSession, PreparedText, Rect, TextBuffer, TextDraw,
-    TextLayout, TextLineMetrics, TextPosition, TextRasterOptions, TextShaping, TextStyle, TextWrap,
+    TextLayout, TextLineMetrics, TextPosition, TextShaping, TextStyle, TextWrap,
 };
 use rxui::{Bounds, CustomElement, CustomPrepare, ElementInfo, UiError};
 use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
@@ -364,6 +364,7 @@ pub(crate) struct SurfaceState {
     prepared: Option<PreparedText>,
     layout: Option<Arc<TextLayout>>,
     raster_scale: f32,
+    raster_phase: Option<[f32; 2]>,
     caret: Option<Rect>,
     selection_rects: Vec<Rect>,
     composition_rects: Vec<Rect>,
@@ -380,9 +381,10 @@ impl SurfaceState {
     pub(super) fn project_caret(&self, byte: usize) -> usize {
         self.projection.display_offset(byte, true)
     }
-    #[cfg(any(test, feature = "performance"))]
-    pub(super) fn raster_scale(&self) -> f32 {
-        self.raster_scale
+    pub(super) fn needs_raster(&self, scale: f32, origin: [f32; 2]) -> bool {
+        self.prepared.is_none()
+            || self.raster_scale != scale
+            || self.raster_phase != Some(raster_phase(origin, scale))
     }
     pub(super) fn content_width(&self) -> f32 {
         let width = self.layout.as_ref().map_or(0., |layout| layout.size()[0]);
@@ -543,14 +545,17 @@ impl Surface {
     }
 }
 
-impl CustomElement for Surface {
-    type State = SurfaceState;
-
-    fn prepare(
+fn raster_phase(origin: [f32; 2], scale: f32) -> [f32; 2] {
+    origin.map(|v| (v * scale).rem_euclid(1.))
+}
+impl Surface {
+    /// Optional absolute logical origin used by the virtualized line renderer.
+    pub(super) fn prepare_at(
         &self,
         state: &mut SurfaceState,
         element: &ElementInfo<'_>,
         cx: &mut CustomPrepare<'_>,
+        origin: Option<[f32; 2]>,
     ) -> Result<(), UiError> {
         let range = self.rope.char_to_byte(self.selection.range().start)
             ..self.rope.char_to_byte(self.selection.range().end);
@@ -576,13 +581,6 @@ impl CustomElement for Surface {
         state.selection = self.selection;
         state.preedit = self.preedit.clone();
         let raster_changed = state.raster_scale != cx.raster_scale;
-        if layout_changed || raster_changed {
-            state.prepared = Some(cx.painter.prepare_text(
-                &layout,
-                TextRasterOptions::new().raster_scale(cx.raster_scale),
-            )?);
-            state.raster_scale = cx.raster_scale;
-        }
         state.caret = self.candidate_caret(state);
         let candidate_caret = state.caret;
         if self
@@ -649,9 +647,49 @@ impl CustomElement for Surface {
         }
         geometry.clamp_scroll();
         geometry.epoch = Some(self.epoch);
+        let origin = origin.unwrap_or([
+            element.bounds.x + PADDING - geometry.offset[0],
+            element.bounds.y + PADDING - geometry.offset[1],
+        ]);
+        drop(geometry);
+        if layout_changed || state.needs_raster(cx.raster_scale, origin) {
+            state.prepared = Some(
+                cx.painter
+                    .prepare_text(&layout, cx.text_raster_options(origin))?,
+            );
+            state.raster_scale = cx.raster_scale;
+            state.raster_phase = Some(raster_phase(origin, cx.raster_scale));
+        }
+        for overlay in &mut state.decorations.overlays {
+            let origin = [
+                origin[0] + overlay.rect.x + 6.,
+                origin[1] + overlay.rect.y + 3.,
+            ];
+            let phase = raster_phase(origin, cx.raster_scale);
+            if overlay.prepared.is_none() || raster_changed || overlay.phase != Some(phase) {
+                overlay.prepared = Some(
+                    cx.painter
+                        .prepare_text(&overlay.layout, cx.text_raster_options(origin))?,
+                );
+                overlay.phase = Some(phase);
+            }
+        }
         state.prepared_layout = Some(layout.clone());
         state.layout = Some(layout);
         Ok(())
+    }
+}
+
+impl CustomElement for Surface {
+    type State = SurfaceState;
+
+    fn prepare(
+        &self,
+        state: &mut SurfaceState,
+        element: &ElementInfo<'_>,
+        cx: &mut CustomPrepare<'_>,
+    ) -> Result<(), UiError> {
+        self.prepare_at(state, element, cx, None)
     }
 
     fn paint(
@@ -710,7 +748,7 @@ impl Surface {
                 paint.fill_rounded_rect(rect, 4., color)?;
             }
             paint.draw_text(
-                &overlay.prepared,
+                overlay.prepared.as_ref().ok_or(UiError::InvalidGeometry)?,
                 TextDraw::new([rect.x + 6., rect.y + 3.]).color(overlay.foreground),
             )?;
         }
@@ -783,6 +821,122 @@ pub(super) fn editor_text_style() -> TextStyle {
 mod tests {
     use super::*;
     use rxui::astrelis::TextSystem;
+
+    #[test]
+    fn phased_surface_and_overlays_follow_scroll_without_reshaping() {
+        use rxui::prelude::*;
+        #[derive(Clone)]
+        struct Probe(Surface, Rc<RefCell<Option<Arc<TextLayout>>>>);
+        impl PartialEq for Probe {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0 && Rc::ptr_eq(&self.1, &other.1)
+            }
+        }
+        impl CustomElement for Probe {
+            type State = SurfaceState;
+            fn prepare(
+                &self,
+                state: &mut SurfaceState,
+                element: &ElementInfo<'_>,
+                cx: &mut CustomPrepare<'_>,
+            ) -> Result<(), UiError> {
+                self.0.prepare(state, element, cx)?;
+                let geometry = self.0.geometry.borrow();
+                let origin = [
+                    element.bounds.x + PADDING - geometry.offset[0],
+                    element.bounds.y + PADDING - geometry.offset[1],
+                ];
+                assert_eq!(
+                    state.raster_phase,
+                    Some(raster_phase(origin, cx.raster_scale))
+                );
+                assert!(!state.decorations.overlays.is_empty());
+                for overlay in &state.decorations.overlays {
+                    assert_eq!(
+                        overlay.phase,
+                        Some(raster_phase(
+                            [
+                                origin[0] + overlay.rect.x + 6.,
+                                origin[1] + overlay.rect.y + 3.
+                            ],
+                            cx.raster_scale
+                        ))
+                    );
+                    assert!(overlay.prepared.is_some());
+                }
+                let layout = state.layout.as_ref().unwrap().clone();
+                if let Some(previous) = self.1.borrow().as_ref() {
+                    assert!(Arc::ptr_eq(previous, &layout));
+                }
+                *self.1.borrow_mut() = Some(layout);
+                Ok(())
+            }
+        }
+        struct Host(Probe);
+        impl View for Host {
+            fn view(&self, _: &mut ViewContext<'_, Self>) -> impl IntoElement {
+                rxui::custom(self.0.clone()).width(160.).height(100.)
+            }
+        }
+        let graphics = pollster::block_on(rxui::astrelis::GraphicsContext::headless()).unwrap();
+        let mut annotations = Annotations::default();
+        annotations.overlays.push(crate::TextOverlay {
+            anchor: 2,
+            text: "hint".into(),
+            kind: OverlayKind::InlayHint,
+            placement: OverlayPlacement::AtAnchor,
+            foreground: [1.; 4],
+            background: None,
+            hover: None,
+        });
+        let surface = Surface {
+            rope: Rope::from_str(&format!("{}\n{}", "a".repeat(300), "line\n".repeat(60))),
+            revision: 0,
+            selection: Selection::default(),
+            composition: None,
+            preedit: None,
+            geometry: Rc::new(RefCell::new(Geometry::default())),
+            epoch: 0,
+            input_started: None,
+            reveal_caret: false,
+            caret_visible: true,
+            minimum_line_metrics: None,
+            syntax: None,
+            syntax_demand: None,
+            annotations: Some(Arc::new(annotations)),
+            annotation_groups: None,
+            selection_color: [0.; 4],
+        };
+        let geometry = surface.geometry.clone();
+        let mut runtime = rxui::Runtime::new();
+        let root = runtime.update(|cx| cx.new(|_| Host(Probe(surface, Rc::default()))));
+        let mut ui = rxui::Ui::new(&mut runtime, root.clone()).unwrap();
+        let mut painter = rxui::UiPainter::new(&graphics);
+        assert!(!painter.fonts_mut().load_system_fonts().is_empty());
+        let target = graphics
+            .create_framebuffer(rxui::astrelis::FramebufferOptions::new(320, 200))
+            .unwrap();
+        for (offset, scale, changed) in [
+            ([0., 0.], 1., true),
+            ([0., 1.], 1., false),
+            ([0.25, 1.25], 1., true),
+            ([0.25, 1.25], 2., true),
+            ([0.25, 1.25], 2., false),
+        ] {
+            runtime.update(|cx| root.update(cx, |_, _| geometry.borrow_mut().offset = offset));
+            ui.prepare(&mut runtime, [160., 100.], &mut painter)
+                .unwrap();
+            let before = painter.painter().text().stats().geometry_bytes;
+            painter
+                .prepare(&ui, &target.render_format(), scale)
+                .unwrap();
+            assert_eq!(
+                painter.painter().text().stats().geometry_bytes > before,
+                changed
+            );
+            assert_eq!(geometry.borrow().offset, offset);
+        }
+    }
 
     #[test]
     fn editor_fonts_shape_unicode_and_supply_selection_geometry() {
@@ -958,7 +1112,9 @@ struct DecorationLine {
 }
 struct PreparedOverlay {
     rect: Rect,
-    prepared: PreparedText,
+    layout: Arc<TextLayout>,
+    prepared: Option<PreparedText>,
+    phase: Option<[f32; 2]>,
     foreground: Color,
     background: Option<Color>,
 }
@@ -1131,13 +1287,11 @@ fn prepare_annotations(
         line_ends[caret.line_index] = line_ends[caret.line_index].max(rect.x + rect.width);
         cache.content_size[0] = cache.content_size[0].max(rect.x + rect.width);
         cache.content_size[1] = cache.content_size[1].max(rect.y + rect.height);
-        let prepared = cx.painter.prepare_text(
-            &text,
-            TextRasterOptions::new().raster_scale(cx.raster_scale),
-        )?;
         cache.overlays.push(PreparedOverlay {
             rect,
-            prepared,
+            layout: text,
+            prepared: None,
+            phase: None,
             foreground: overlay.foreground,
             background: overlay.background,
         });
