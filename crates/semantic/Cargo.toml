@@ -1,0 +1,25 @@
+[package]
+name = "velk-semantic"
+description = "Transport-independent asynchronous semantic services for Velk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+lsp = ["dep:lsp-types", "dep:serde_json", "dep:url", "tokio/process", "tokio/io-util", "tokio/sync"]
+
+[dependencies]
+ropey.workspace = true
+async-channel = "2.5.0"
+tokio = { version = "1.53.3", features = ["rt", "time", "macros"] }
+lsp-types = { version = "0.97.0", optional = true }
+serde_json = { version = "1.0", optional = true }
+url = { version = "2.5", optional = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

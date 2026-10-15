@@ -52,6 +52,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 - `crates/editor`: the `velk-editor` package and `velk` application binary.
 - `crates/editor-widget`: reusable RXUI editor view and UI-independent rope buffer.
 - `crates/syntax`: in-process Tree-sitter parsing, Rust grammar, and background worker.
+- `crates/semantic`: transport-independent semantic services and the optional LSP backend.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 
 RXUI is pinned to commit `96e1f4a833785edbce5885945a8bf8ba0a9e75f7`
@@ -102,8 +103,8 @@ API, selection mapping, revision rules, and dirty-state semantics.
 
 Files with a `.rs` extension enable Tree-sitter automatically. The official Rust
 bindings (`tree-sitter` 0.27.1) and Rust grammar (`tree-sitter-rust` 0.24.2) are
-linked into Velk. There is no Tree-sitter CLI, language server, or subprocess on
-file open or input. Runtime loading of external grammar libraries is not yet
+linked into Velk. Tree-sitter does not spawn a parser process. Rust files also start the
+separate semantic service described below. Runtime loading of external grammar libraries is not yet
 implemented; additional languages can use the same in-process service.
 
 Try the app on its own source:
@@ -131,16 +132,42 @@ excluding uncommitted text and the replaced selection.
 
 The pinned RXUI host already supplies shared pools with two async and two blocking
 workers. Async result delivery reuses that executor; the persistent syntax CPU
-worker is separate. No second runtime or Tokio dependency is required for this
-pipeline. Input handling, immediate Rope edits, viewport layout and GPU work
+worker is separate. Syntax delivery requires no second runtime. The separate semantic service
+uses Tokio for asynchronous language-server I/O. Input handling, immediate Rope edits, viewport layout and GPU work
 remain UI responsibilities. File loading currently finishes before the native
 event loop starts; an in-window asynchronous loading flow is not implemented.
 The syntax tree remains on the worker for future structural features; resolved
-types and other semantic information still need a separate provider.
+types and other semantic information come from the separate semantic provider.
 
 Parser benchmarks: `cargo bench -p velk-syntax --bench syntax --locked`.
 See [initial syntax measurements](docs/performance/syntax.md) and the
 [async syntax audit](docs/performance/async-syntax.md) for results and limits.
+
+## Semantic services and Rust LSP
+
+Rust files start a persistent rust-analyzer connection through the new
+`velk-semantic` service. The UI submits Rope snapshots; the service handles
+initialization, position encoding, document synchronization, diagnostics, hover,
+and shutdown on its own worker. The public semantic interface uses document
+revisions and scalar offsets, so another backend can provide the same results
+without LSP.
+
+The pinned development toolchain includes `rust-analyzer` and `rust-src`.
+For a packaged/local executable, ensure `rust-analyzer` is on PATH, or set
+`VELK_RUST_ANALYZER` to its absolute path. A missing or failed server appears in
+the status line; plain editing and syntax highlighting keep working.
+
+Diagnostics appear as colored wavy underlines with message cards. Press **F1**
+with the caret on a symbol for semantic hover. The status line shows availability
+and diagnostic count. Compiler checking on save is initially disabled; native
+rust-analyzer diagnostics still work, but this does not replace `cargo check`.
+Cargo/project/build-script/proc-macro helpers may still run. Python 3 is needed
+only for scripted LSP integration tests, not to run Velk.
+
+This first service manages one open document. Completion, navigation, formatting,
+inlay hints, code actions, and automatic restart are deferred. See
+[semantic services](docs/semantic-services.md) for the backend contract, queue and
+revision policy, supported LSP behavior, and real-server validation.
 
 ## Editor widget
 
@@ -169,14 +196,14 @@ Click to focus and place the caret; drag or Shift-click to select. Supported key
 
 The view supports native IME preedit/commit/cancellation, a blinking caret,
 horizontal and vertical wheel scrolling, and scrolling to reveal the caret.
-Undo history retains up to 128 edits; each native text insertion, paste, or
-deletion is one edit. There is no typing coalescence yet.
+Undo history retains up to 128 transactions; each native text insertion, paste,
+or deletion currently creates one transaction. There is no typing coalescence yet.
 
 Text shaping and GPU text resources are cached per logical line. The renderer
 prepares the viewport plus a small overscan region, retaining unaffected layouts
 on ordinary edits. IME composition projects syntax and annotations into a temporary Rope without
-changing the source document. Soft wrapping, word motions, multiple cursors, and
-file persistence remain future work.
+changing the source document. Soft wrapping, word motions, and multiple cursors remain future work.
+The application supplies asynchronous file persistence around the widget.
 Vertical navigation preserves a grapheme column rather than a pixel column.
 RXUI custom text clients currently expose the editor's accessibility role and
 label, but do not publish document text or selection to assistive technology.
@@ -202,8 +229,8 @@ It demonstrates foreground and range backgrounds, a full-line debugger
 background, bold/italic and mixed font sizes, solid/dashed/wavy underlines,
 overlines, strikethroughs, delayed hover cards, and document-anchored inlay hints,
 diagnostic badges, debugger values, and ghost text. The toolbar switches editor
-appearance and toggles decorations/overlays. LSP and debugger content is mocked;
-no language server or debugger is connected.
+appearance and toggles decorations/overlays. In this example, LSP and debugger
+content is mocked; no language server or debugger is connected.
 
 Applications can call `Editor::set_annotations(Annotations { ... })` to apply a
 snapshot for `editor.buffer().revision()`. `StyledRange` ranges and `TextOverlay`

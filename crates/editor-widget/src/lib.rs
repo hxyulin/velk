@@ -140,6 +140,25 @@ impl Editor {
         Ok(())
     }
 
+    /// Present a semantic hover requested at the current caret. The caller must
+    /// validate its document revision, request identity, and caret before use.
+    pub fn show_hover_at_caret(&mut self, card: HoverCard) {
+        self.hide_hover();
+        let geometry = self.geometry.borrow();
+        let caret = geometry.caret_area();
+        self.hovered = Some(HoverHit {
+            id: usize::MAX,
+            card,
+            anchor: [
+                geometry.origin[0] + caret.x,
+                geometry.origin[1] + caret.y + caret.height,
+            ],
+        });
+        self.tooltip_visible = true;
+        self.reveal_caret = false;
+        self.epoch += 1;
+    }
+
     fn hide_hover(&mut self) {
         if self.hovered.is_some() || self.tooltip_visible {
             self.epoch += 1;

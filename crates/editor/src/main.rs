@@ -83,7 +83,18 @@ fn run() -> Result<(), Error> {
         })
         .run(move |cx| {
             let editor = cx.new(|_| editor);
+            let rust = Language::for_path(&path) == Some(Language::Rust);
             let root = cx.new(|cx| document::Document::new(editor, file, path, cx));
+            if rust {
+                root.update(cx, |this, cx| {
+                    match velk_semantic::Service::start(
+                        velk_semantic::lsp::LspBackend::rust_analyzer(),
+                    ) {
+                        Ok(service) => this.enable_semantics(service, cx),
+                        Err(error) => eprintln!("velk: cannot start semantic service: {error}"),
+                    }
+                });
+            }
             *document.borrow_mut() = Some(root.downgrade());
             let window = cx.open_window(
                 WindowOptions::new().title(title).size(1280., 800.),

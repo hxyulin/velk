@@ -1,0 +1,288 @@
+//! LSP adapter. Wire types, URIs, encoding negotiation, and child processes stay
+//! here; the editor and other semantic backends do not depend on them.
+mod positions;
+mod transport;
+use self::{positions::Encoding, transport::Connection};
+use crate::{
+    Backend, BackendFuture, Capabilities, Diagnostic, DocumentSnapshot, Event, Hover, HoverRequest,
+    Input, Session, Severity, Status, text::difference,
+};
+use lsp_types::{
+    HoverContents, InitializeResult, MarkedString, PublishDiagnosticsParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind,
+};
+use serde_json::{Value, json};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tokio::time::{Instant, interval};
+use url::Url;
+
+pub struct LspBackend {
+    pub executable: OsString,
+    pub arguments: Vec<OsString>,
+    pub initialization_options: Value,
+    /// Full settings object addressed by workspace/configuration sections.
+    pub configuration: Value,
+    pub root: Option<PathBuf>,
+}
+impl LspBackend {
+    pub fn rust_analyzer() -> Self {
+        Self {
+            executable: std::env::var_os("VELK_RUST_ANALYZER")
+                .unwrap_or_else(|| "rust-analyzer".into()),
+            arguments: Vec::new(),
+            root: None,
+            // Keep compiler checks explicit initially. Analysis and Cargo project
+            // discovery still work; Cargo/build-script/proc-macro helpers may run.
+            initialization_options: json!({"checkOnSave":false}),
+            configuration: json!({"rust-analyzer":{"checkOnSave":false}}),
+        }
+    }
+}
+impl Backend for LspBackend {
+    fn run(self: Box<Self>, session: Session) -> BackendFuture {
+        Box::pin(async move {
+            let first = loop {
+                match session.next().await {
+                    Some(Input::Document(document)) => break document,
+                    Some(_) => continue,
+                    None => return Ok(()),
+                }
+            };
+            let root = self
+                .root
+                .clone()
+                .unwrap_or_else(|| project_root(&first.path));
+            let mut connection = Connection::spawn(
+                &self.executable,
+                &self.arguments,
+                &root,
+                self.configuration.clone(),
+            )?;
+            let result = tokio::select! {
+                result = drive(&mut connection, &session, first, &root, self.initialization_options) => result,
+                _ = session.cancelled() => Ok(()),
+            };
+            connection.shutdown().await;
+            result
+        })
+    }
+}
+
+fn project_root(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    parent
+        .ancestors()
+        .find(|p| p.join("Cargo.toml").is_file())
+        .unwrap_or(parent)
+        .to_path_buf()
+}
+fn uri(path: &Path) -> Result<String, String> {
+    Url::from_file_path(path)
+        .map(|url| url.to_string())
+        .map_err(|_| "LSP requires an absolute file path".into())
+}
+
+async fn drive(
+    connection: &mut Connection,
+    session: &Session,
+    first: DocumentSnapshot,
+    root: &Path,
+    options: Value,
+) -> Result<(), String> {
+    let root_uri = uri(root)?;
+    let initialize = json!({
+        "processId":std::process::id(), "clientInfo":{"name":"Velk","version":env!("CARGO_PKG_VERSION")},
+        "rootUri":root_uri, "workspaceFolders":[{"uri":root_uri,"name":root.file_name().unwrap_or_default().to_string_lossy()}],
+        "capabilities": {
+            "general":{"positionEncodings":["utf-8","utf-16","utf-32"]},
+            "workspace":{"configuration":true,"workspaceFolders":true,"applyEdit":false},
+            "textDocument":{
+                "synchronization":{"dynamicRegistration":false,"didSave":true},
+                "hover":{"dynamicRegistration":false,"contentFormat":["plaintext"]},
+                "publishDiagnostics":{"versionSupport":true,"relatedInformation":false}
+            }
+        }, "initializationOptions":options
+    });
+    connection.root_uri = root_uri;
+    connection.request(1, "initialize", initialize).await?;
+    let initialized = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let message = connection.read().await?;
+            if message.get("id") == Some(&json!(1)) && message.get("method").is_none() {
+                if let Some(error) = message.get("error") {
+                    return Err(format!("LSP initialization failed: {error}"));
+                }
+                return serde_json::from_value::<InitializeResult>(message["result"].clone())
+                    .map_err(|e| e.to_string());
+            }
+            connection.handle_server_request(&message).await?;
+        }
+    })
+    .await
+    .map_err(|_| "LSP initialization timed out".to_string())??;
+    let encoding = Encoding::negotiate(initialized.capabilities.position_encoding.as_ref())?;
+    let capabilities = Capabilities {
+        diagnostics: true,
+        hover: initialized
+            .capabilities
+            .hover_provider
+            .as_ref()
+            .is_some_and(|cap| match cap {
+                lsp_types::HoverProviderCapability::Simple(value) => *value,
+                lsp_types::HoverProviderCapability::Options(_) => true,
+            }),
+    };
+    let (sync, save) = match initialized.capabilities.text_document_sync {
+        Some(TextDocumentSyncCapability::Kind(kind)) => (kind, None),
+        Some(TextDocumentSyncCapability::Options(options)) => (
+            options.change.unwrap_or(TextDocumentSyncKind::NONE),
+            options.save,
+        ),
+        None => (TextDocumentSyncKind::NONE, None),
+    };
+    connection.notify("initialized", json!({})).await?;
+    let mut document = first;
+    let document_uri = uri(&document.path)?;
+    connection.document_uri = Some(document_uri.clone());
+    let mut version = 1i32;
+    connection.notify("textDocument/didOpen", json!({"textDocument":{"uri":document_uri,"languageId":document.language,"version":version,"text":document.text.to_string()}})).await?;
+    session
+        .events()
+        .publish(Event::Status(Status::Ready(capabilities)));
+    let mut pending: Option<(u64, HoverRequest, Instant)> = None;
+    let mut next_id = 2u64;
+    let mut tick = interval(Duration::from_millis(250));
+    loop {
+        tokio::select! {
+            input = session.next() => match input {
+                None => return Ok(()),
+                Some(Input::Document(next)) => {
+                    if next.path != document.path || next.language != document.language { return Err("semantic service document identity changed".into()); }
+                    if next.revision <= document.revision { continue; }
+                    cancel_hover(connection, session, &mut pending, None).await?;
+                    if sync == TextDocumentSyncKind::NONE {
+                        return Err("language server does not support document changes".into());
+                    }
+                    let change = if sync == TextDocumentSyncKind::INCREMENTAL {
+                        difference(&document.text, &next.text).map(|(range,text)| json!({"range":encoding.range(&document.text, range),"text":text}))
+                    } else { Some(json!({"text":next.text.to_string()})) };
+                    // Equal-content undo/redo still changes identity. An empty
+                    // incremental edit advances the version without copying text.
+                    let change = change.unwrap_or_else(|| json!({"range":encoding.range(&document.text,0..0),"text":""}));
+                    version = version.checked_add(1).ok_or("LSP document version overflow")?;
+                    connection.notify("textDocument/didChange", json!({"textDocument":{"uri":document_uri,"version":version},"contentChanges":[change]})).await?;
+                    document = next;
+                }
+                Some(Input::Saved(saved)) => {
+                    if saved.path != document.path { continue; }
+                    if let Some(ref support) = save {
+                        let include = matches!(support, lsp_types::TextDocumentSyncSaveOptions::SaveOptions(options) if options.include_text == Some(true));
+                        if !matches!(support, lsp_types::TextDocumentSyncSaveOptions::Supported(false)) {
+                            let mut params = json!({"textDocument":{"uri":document_uri}});
+                            if include { params["text"] = json!(saved.text.to_string()); }
+                            connection.notify("textDocument/didSave", params).await?;
+                        }
+                    }
+                }
+                Some(Input::CancelHover) => {
+                    cancel_hover(connection, session, &mut pending, None).await?;
+                }
+                Some(Input::Hover(request)) => {
+                    cancel_hover(connection, session, &mut pending, None).await?;
+                    if request.revision != document.revision || request.position > document.text.len_chars() || !capabilities.hover {
+                        session.events().publish(Event::Hover { request, hover:None }); continue;
+                    }
+                    if next_id >= i32::MAX as u64 { return Err("LSP request ID space exhausted".into()); }
+                    let id = next_id; next_id += 1;
+                    connection.request(id,"textDocument/hover", json!({"textDocument":{"uri":document_uri},"position":encoding.position(&document.text, request.position)})).await?;
+                    pending = Some((id,request,Instant::now()+Duration::from_secs(5)));
+                }
+            },
+            message = connection.read() => {
+                let message = message?;
+                if message.get("method").is_some() {
+                    if message["method"] == "textDocument/publishDiagnostics" {
+                        if let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(message["params"].clone()) {
+                            if params.uri.as_str() != document_uri || !(params.version == Some(version) || params.version.is_none() && version == 1) { continue; }
+                            let diagnostics = params.diagnostics.into_iter().take(10_000).filter_map(|d| {
+                                let range = encoding.decode_range(&document.text,d.range)?;
+                                Some(Diagnostic { range, severity: match d.severity {
+                                    Some(lsp_types::DiagnosticSeverity::ERROR) => Severity::Error,
+                                    Some(lsp_types::DiagnosticSeverity::WARNING) => Severity::Warning,
+                                    Some(lsp_types::DiagnosticSeverity::HINT) => Severity::Hint,
+                                    _ => Severity::Information,
+                                }, message:d.message, source:d.source, code:d.code.map(|code| match code { lsp_types::NumberOrString::Number(n) => n.to_string(), lsp_types::NumberOrString::String(s) => s }) })
+                            }).collect();
+                            session.events().publish(Event::Diagnostics { revision:document.revision, diagnostics });
+                        }
+                    } else { connection.handle_server_request(&message).await?; }
+                } else if let Some((id,request,_)) = pending {
+                    if message.get("id") != Some(&json!(id)) { continue; }
+                    pending = None;
+                    if let Some(error) = message.get("error") {
+                        session.events().publish(Event::RequestFailed { request, message:format!("Hover failed: {error}") });
+                    } else if message["result"].is_null() {
+                        session.events().publish(Event::Hover {request,hover:None});
+                    } else {
+                        match serde_json::from_value::<lsp_types::Hover>(message["result"].clone()) {
+                            Ok(result) => {
+                                let (contents, markdown) = hover_text(result.contents);
+                                let range = result.range.and_then(|range| encoding.decode_range(&document.text,range));
+                                session.events().publish(Event::Hover { request, hover:Some(Hover { request, contents, markdown, range }) });
+                            }
+                            Err(error) => session.events().publish(Event::RequestFailed { request, message:error.to_string() }),
+                        }
+                    }
+                }
+            },
+            _ = tick.tick() => {
+                if pending.is_some_and(|(_,_,deadline)| Instant::now() >= deadline) {
+                    cancel_hover(connection, session, &mut pending, Some("Hover request timed out")).await?;
+                }
+            }
+        }
+    }
+}
+async fn cancel_hover(
+    connection: &mut Connection,
+    session: &Session,
+    pending: &mut Option<(u64, HoverRequest, Instant)>,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    if let Some((id, request, _)) = pending.take() {
+        connection
+            .notify("$/cancelRequest", json!({"id":id}))
+            .await?;
+        if let Some(message) = reason {
+            session.events().publish(Event::RequestFailed {
+                request,
+                message: message.into(),
+            });
+        }
+    }
+    Ok(())
+}
+fn hover_text(contents: HoverContents) -> (String, bool) {
+    let marked = |s: MarkedString| match s {
+        MarkedString::String(s) => s,
+        MarkedString::LanguageString(s) => format!("{}\n{}", s.language, s.value),
+    };
+    match contents {
+        HoverContents::Markup(markup) => {
+            (markup.value, markup.kind == lsp_types::MarkupKind::Markdown)
+        }
+        HoverContents::Scalar(s) => (marked(s), true),
+        HoverContents::Array(strings) => (
+            strings
+                .into_iter()
+                .map(marked)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            true,
+        ),
+    }
+}

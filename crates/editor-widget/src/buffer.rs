@@ -176,6 +176,21 @@ impl Buffer {
         position <= self.text().len_chars() && graphemes::is_boundary(self.text(), position)
     }
 
+    /// Expand a semantic scalar range to complete graphemes for decoration.
+    /// Invalid offsets are rejected, rather than clamped onto unrelated text.
+    pub fn grapheme_range(&self, range: Range<usize>) -> Option<Range<usize>> {
+        if range.start > range.end || range.end > self.text().len_chars() {
+            return None;
+        }
+        let start = self.snap(range.start);
+        let end = if self.is_grapheme_boundary(range.end) {
+            range.end
+        } else {
+            self.next(range.end)
+        };
+        Some(start..end)
+    }
+
     pub fn selection(&self) -> Selection {
         self.current.selection
     }

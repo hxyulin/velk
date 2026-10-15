@@ -1,3 +1,4 @@
+mod semantic;
 use crate::file::FileState;
 use rxui::{Subscription, prelude::*};
 use std::path::PathBuf;
@@ -5,6 +6,8 @@ use velk_editor_widget::Editor;
 
 struct Save;
 impl Command for Save {}
+struct Hover;
+impl Command for Hover {}
 #[derive(Clone, Copy)]
 pub enum Intent {
     Close,
@@ -21,6 +24,7 @@ pub struct Document {
     saving: Option<Task>,
     dialog: Option<DialogTask>,
     _subscription: Subscription,
+    semantic: Option<semantic::State>,
 }
 impl Document {
     pub fn new(
@@ -33,12 +37,13 @@ impl Document {
         let subscription = cx
             .observe(&editor, |this, editor, cx| {
                 let dirty = editor.read(cx).buffer().is_dirty();
-                if this.dirty == dirty {
+                let semantic_changed = this.sync_semantics(cx);
+                if this.dirty != dirty {
+                    this.dirty = dirty;
+                    this.title();
+                } else if !semantic_changed {
                     cx.unchanged();
-                    return;
                 }
-                this.dirty = dirty;
-                this.title();
             })
             .expect("editor entity is live");
         Self {
@@ -51,6 +56,7 @@ impl Document {
             saving: None,
             dialog: None,
             _subscription: subscription,
+            semantic: None,
         }
     }
     pub fn title(&self) {
@@ -73,6 +79,7 @@ impl Document {
             let editor = self.editor.read(cx);
             (editor.buffer().text().clone(), editor.buffer().checkpoint())
         };
+        let saved_snapshot = self.semantic.as_ref().map(|_| self.semantic_snapshot(cx));
         let file = self.file.clone();
         self.status = Some("Saving…".into());
         match cx.try_spawn_blocking(
@@ -82,6 +89,9 @@ impl Document {
                 match result {
                     Ok(Ok(file)) => {
                         this.file = file;
+                        if let (Some(state), Some(snapshot)) = (&this.semantic, saved_snapshot) {
+                            state.service.saved(snapshot);
+                        }
                         this.editor.update(cx, |editor, _| {
                             editor.mark_saved(checkpoint);
                         });
@@ -142,6 +152,9 @@ impl Document {
         }
     }
     fn finish(&mut self, intent: Intent, cx: &mut Context<'_, Self>) {
+        if let Some(state) = &self.semantic {
+            state.service.shutdown();
+        }
         let result = match intent {
             Intent::Close => cx.close_window(self.window.as_ref().expect("native document window")),
             Intent::Quit => cx.exit(),
@@ -158,15 +171,36 @@ impl View for Document {
             .label("Save")
             .enabled(!self.busy() && self.dirty)
             .shortcut(Shortcut::primary("s"));
+        let hover = cx
+            .command(Hover, |this, _, cx| this.request_hover(cx))
+            .label("Show hover")
+            .enabled(self.semantic.as_ref().is_some_and(
+                |state| matches!(state.status, velk_semantic::Status::Ready(c) if c.hover),
+            ))
+            .shortcut(Shortcut::new(
+                KeyboardKey::Other("F1".into()),
+                Default::default(),
+            ))
+            // The pinned native host preserves Winit's debug spelling for
+            // otherwise-unmapped named keys. Custom hosts may use plain F1.
+            .shortcut(Shortcut::new(
+                KeyboardKey::Other("Named(F1)".into()),
+                Default::default(),
+            ));
         let status = self.status.as_deref().unwrap_or(if self.dirty {
             "Unsaved changes"
         } else {
             "Saved"
         });
+        let status = match self.semantic_status() {
+            Some(semantic) => format!("{status} · {semantic}"),
+            None => status.to_owned(),
+        };
         column()
             .fill_width()
             .fill_height()
             .on_command(save)
+            .on_command(hover)
             .child(
                 self.editor
                     .clone()

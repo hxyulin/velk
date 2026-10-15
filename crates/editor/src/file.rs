@@ -57,6 +57,9 @@ pub struct FileState {
     ending: LineEnding,
 }
 impl FileState {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
     pub fn open(path: &Path) -> io::Result<(Self, Editor)> {
         let path = fs::canonicalize(path)?;
         let file = File::open(&path)?;
