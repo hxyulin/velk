@@ -169,6 +169,10 @@ Unicode/preedit region with retained shaping context can be windowed inside a
 verified monospace ASCII line. RTL, large/dispersed Unicode regions, and rich
 metric styles keep full-line shaping. See [Unicode/composition windows](docs/performance/composition-windows.md)
 for current eligibility, first-preedit timings, reference checks and remaining limits.
+The [native redraw experiment](docs/performance/native-input-redraw.md) compares
+rendering after input callbacks with the normal scheduler. It retains the normal
+policy after finding burst acquisition pressure, and adds the
+`long_line_unicode_typing` benchmark for remaining application-side input cost.
 See [the responsiveness report](docs/performance/responsiveness.md) for controlled
 submission timings, native event latency, limits and reproduction commands.
 Set `VELK_BENCH_GPU_WAIT=1` on the responsiveness benchmark to additionally wait

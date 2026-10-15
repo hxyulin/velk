@@ -1,0 +1,156 @@
+diff --git a/crates/astrelis-winit/src/runner.rs b/crates/astrelis-winit/src/runner.rs
+index 81139ac..462f00d 100644
+--- a/crates/astrelis-winit/src/runner.rs
++++ b/crates/astrelis-winit/src/runner.rs
+@@ -269,6 +269,8 @@ impl<Message: 'static> Runner<Message> {
+             },
+             failure: None,
+             shut_down: false,
++            input_redraw_experiment: std::env::var_os("ASTRELIS_EXPERIMENT_INPUT_REDRAW")
++                .is_some_and(|value| value == "1"),
+         };
+         let result = self.event_loop.run_app(&mut driver);
+         if let Some(error) = driver.failure {
+@@ -285,6 +287,7 @@ struct Driver<'a, H: Handler> {
+     state: State,
+     failure: Option<RunError>,
+     shut_down: bool,
++    input_redraw_experiment: bool,
+ }
+ impl<H: Handler> Driver<'_, H> {
+     fn fail(&mut self, event_loop: &ActiveEventLoop, error: RunError) {
+@@ -529,22 +532,20 @@ impl<H: Handler> ApplicationHandler<H::Message> for Driver<'_, H> {
+         if self.failure.is_some() || event_loop.exiting() {
+             return;
+         }
+-        let trace_input = self
+-            .state
+-            .windows
+-            .get(&id)
+-            .filter(|w| w.trace.is_some())
+-            .and_then(|w| {
+-                matches!(
+-                    &event,
+-                    WindowEvent::KeyboardInput { .. }
+-                        | WindowEvent::Ime(_)
+-                        | WindowEvent::MouseInput { .. }
+-                        | WindowEvent::MouseWheel { .. }
+-                        | WindowEvent::CursorMoved { .. }
+-                )
+-                .then(|| (Instant::now(), w.schedule.invalidations))
+-            });
++        let input = matches!(
++            &event,
++            WindowEvent::KeyboardInput { .. }
++                | WindowEvent::Ime(_)
++                | WindowEvent::MouseInput { .. }
++                | WindowEvent::MouseWheel { .. }
++                | WindowEvent::CursorMoved { .. }
++        );
++        let input_state = self.state.windows.get(&id).filter(|_| input).map(|w| {
++            (
++                w.schedule.invalidations,
++                w.trace.as_ref().map(|_| Instant::now()),
++            )
++        });
+         let redraw = matches!(event, WindowEvent::RedrawRequested);
+         let close = matches!(event, WindowEvent::CloseRequested);
+         let destroyed = matches!(event, WindowEvent::Destroyed);
+@@ -578,13 +579,36 @@ impl<H: Handler> ApplicationHandler<H::Message> for Driver<'_, H> {
+         if self.failure.is_some() || event_loop.exiting() {
+             return;
+         }
+-        if let Some((start, serial)) = trace_input
+-            && let Some(w) = self.state.windows.get_mut(&id)
+-            && w.schedule.invalidations != serial
+-            && let Some(trace) = &mut w.trace
++        let invalidating_input = input_state.is_some_and(|(serial, _)| {
++            self.state
++                .windows
++                .get(&id)
++                .is_some_and(|w| w.schedule.invalidations != serial)
++        });
++        if invalidating_input
++            && let Some((_, Some(start))) = input_state
++            && let Some(trace) = self
++                .state
++                .windows
++                .get_mut(&id)
++                .and_then(|w| w.trace.as_mut())
+         {
+             trace.input(start, Instant::now());
+         }
++        // Opt-in experiment: render only after the input handler and deferred
++        // operations return. Keep availability, pending-request and retry guards.
++        // This deliberately gives up batching separate invalidating input events.
++        if self.input_redraw_experiment && invalidating_input && self.ready(id, event_loop) {
++            let now = Instant::now();
++            let w = self.state.windows.get_mut(&id).expect("ready window");
++            if w.schedule.request_native(now, true) {
++                w.schedule.begin_redraw();
++                if let Some(trace) = &mut w.trace {
++                    trace.inline_redraw(now);
++                }
++                self.redraw(event_loop, id);
++            }
++        }
+         if close && self.state.windows.get(&id).is_some_and(|w| !w.closing) {
+             let decision = self.call(event_loop, Callback::CloseRequested, Some(id), |h, cx| {
+                 h.close_requested(cx, id)
+diff --git a/crates/astrelis-winit/src/trace.rs b/crates/astrelis-winit/src/trace.rs
+index 45bb5c5..83b8814 100644
+--- a/crates/astrelis-winit/src/trace.rs
++++ b/crates/astrelis-winit/src/trace.rs
+@@ -12,11 +12,13 @@ pub(crate) struct FrameTrace {
+     frame: u64,
+     retries: u32,
+     availability_changes: u32,
++    inline_redraws: u32,
+ }
+ #[derive(Debug, PartialEq)]
+ struct Report {
+     acquisition_retries: u32,
+     availability_changes: u32,
++    inline_redraws: u32,
+     frame: u64,
+     inputs: u32,
+     input_to_prepare_ms: Option<f64>,
+@@ -54,6 +56,10 @@ impl FrameTrace {
+     pub fn availability_changed(&mut self) {
+         self.availability_changes = self.availability_changes.saturating_add(1);
+     }
++    pub fn inline_redraw(&mut self, now: Instant) {
++        self.inline_redraws += 1;
++        self.received = Some(now);
++    }
+     pub fn received(&mut self, now: Instant) {
+         self.received = Some(now);
+     }
+@@ -68,6 +74,7 @@ impl FrameTrace {
+         self.frame += 1;
+         let report = Report {
+             acquisition_retries: self.retries,
++            inline_redraws: self.inline_redraws,
+             availability_changes: self.availability_changes,
+             frame: self.frame,
+             inputs: self.inputs,
+@@ -85,6 +92,7 @@ impl FrameTrace {
+             last_input_to_submit_ms: self.last_input.map(|at| ms(at, submitted)),
+         };
+         self.retries = 0;
++        self.inline_redraws = 0;
+         self.availability_changes = 0;
+         self.first_input = None;
+         self.last_input = None;
+@@ -111,9 +119,10 @@ impl fmt::Display for Report {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         write!(
+             f,
+-            "frame={}, inputs={}, acquisition_retries={}, availability_changes={}, input_to_prepare_ms={:?}, last_input_to_prepare_ms={:?}, event_cpu_ms={:.6}, request_to_redraw_ms={:?}, input_to_request_ms={:?}, redraw_to_prepare_ms={:?}, prepare_ms={:.6}, acquire_ms={:.6}, record_ms={:.6}, submit_ms={:.6}, input_to_submit_ms={:?}, last_input_to_submit_ms={:?}",
++            "frame={}, inputs={}, inline_redraws={}, acquisition_retries={}, availability_changes={}, input_to_prepare_ms={:?}, last_input_to_prepare_ms={:?}, event_cpu_ms={:.6}, request_to_redraw_ms={:?}, input_to_request_ms={:?}, redraw_to_prepare_ms={:?}, prepare_ms={:.6}, acquire_ms={:.6}, record_ms={:.6}, submit_ms={:.6}, input_to_submit_ms={:?}, last_input_to_submit_ms={:?}",
+             self.frame,
+             self.inputs,
++            self.inline_redraws,
+             self.acquisition_retries,
+             self.availability_changes,
+             self.input_to_prepare_ms,

@@ -76,6 +76,7 @@ fn main() {
         "plain_navigation",
         "rich_navigation",
         "large_document_typing",
+        "long_line_unicode_typing",
         "ime_preedit",
         "large_document_ime",
         "long_line_ime",
@@ -91,6 +92,10 @@ fn main() {
             "plain_navigation" => Editor::new(&"x".repeat(100_000)),
             "rich_navigation" => rich(),
             "large_document_typing" => Editor::new(&"let count = 42; // value\n".repeat(100_000)),
+            "long_line_unicode_typing" => Editor::new(&format!(
+                "{}日本語 café é 👩‍💻 🇭🇰",
+                " abcdefghij".repeat(10_000)
+            )),
             "large_document_ime" => Editor::new(&"let count = 42; // value\n".repeat(10_000)),
             "long_line_ime" | "long_line_emoji_ime" | "long_line_rtl_ime" => {
                 Editor::new(&"x".repeat(100_000))
@@ -119,7 +124,10 @@ fn main() {
         }
         if matches!(
             case,
-            "long_line_ime" | "long_line_emoji_ime" | "long_line_rtl_ime"
+            "long_line_ime"
+                | "long_line_emoji_ime"
+                | "long_line_rtl_ime"
+                | "long_line_unicode_typing"
         ) {
             key(&mut test, KeyboardKey::End);
             frame(&mut test, &mut target, clock);
@@ -172,6 +180,10 @@ fn main() {
                         KeyboardKey::Home
                     },
                 ),
+                "long_line_unicode_typing" if i % 2 == 0 => {
+                    test.text_input(TextInputEvent::Insert("é".into())).unwrap();
+                }
+                "long_line_unicode_typing" => key(&mut test, KeyboardKey::Backspace),
                 "large_document_typing" if i % 2 == 0 => {
                     test.text_input(TextInputEvent::Insert("x".into())).unwrap();
                 }

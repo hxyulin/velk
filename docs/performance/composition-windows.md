@@ -2,6 +2,8 @@
 
 2026-10-15, Apple M3 Pro, macOS 27.0.1, Rust 1.99.0, release builds.
 This follows [the responsiveness pass](responsiveness.md), Velk `5822a9b`.
+The follow-up [native redraw experiment](native-input-redraw.md) tests callback
+rendering, records its burst regression, and isolates remaining long-line edit cost.
 RXUI remains pinned to `fc331afca247579cde12a480ed01c687abb1ff5d`; the local
 Astrelis patch remains `4801b66` on `perf/editor-text`. No backend API changes
 were needed for this pass. `unicode-bidi 0.3.18`, already in the dependency graph,
