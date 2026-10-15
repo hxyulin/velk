@@ -1,7 +1,9 @@
 #![allow(unsafe_code)]
 use crate::{Event, PluginSpec, read_manifest};
+mod hooks;
 mod language_server;
 mod semantic;
+pub use hooks::{HookDescriptor, HookHandle};
 use libloading::Library;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -35,6 +37,10 @@ struct Generation {
     api: PluginApi,
     instance: NonNull<c_void>,
     destroyed: bool,
+    hooks: Vec<hooks::Hook>,
+    markdown: Option<MarkupApi>,
+    language: Option<LanguageApi>,
+    semantic: Option<SemanticApi>,
     // Explicit drop order: instance, library, then its on-disk copy.
     library: Option<Arc<Code>>,
 }
@@ -100,14 +106,13 @@ impl Generation {
             return Err(format!("expected {}, library reports {id}", spec.id));
         }
         let create = api.create.ok_or("missing create function")?;
-        let semantic_count = usize::from(api.semantic_create.is_some())
-            + usize::from(api.semantic_input.is_some())
-            + usize::from(api.semantic_destroy.is_some());
-        if semantic_count != 0 && semantic_count != 3 {
-            return Err("incomplete semantic session interface".into());
-        }
-        if api.destroy.is_none() || api.describe.is_none() {
-            return Err("missing lifecycle function".into());
+        if api.destroy.is_none()
+            || api.describe.is_none()
+            || api.hook_count.is_none()
+            || api.hook_info.is_none()
+            || api.get_hook.is_none()
+        {
+            return Err("missing lifecycle or registry function".into());
         }
         let mut instance = std::ptr::null_mut();
         // SAFETY: validated function table; output storage remains live for the call.
@@ -128,8 +133,13 @@ impl Generation {
             api,
             instance,
             destroyed: false,
+            hooks: vec![],
+            markdown: None,
+            language: None,
+            semantic: None,
             library: Some(code),
         };
+        loaded.discover_hooks()?;
         loaded.info.description = loaded.describe()?;
         Ok(loaded)
     }
@@ -227,10 +237,9 @@ unsafe extern "C" fn collect_runs(
 }
 impl Generation {
     fn render_markdown(&mut self, source: &str) -> Result<velk_markup::Document, String> {
-        let render = self
-            .api
-            .render_markdown
-            .ok_or("provider has no Markdown capability")?;
+        let api = self
+            .markdown
+            .ok_or("provider has no Markdown registration")?;
         let mut output = Output {
             document: Default::default(),
             emitted: false,
@@ -239,8 +248,8 @@ impl Generation {
         // SAFETY: exclusive live instance, borrowed UTF-8 input, synchronous callback;
         // the library remains owned by self until all output has been copied.
         let status = unsafe {
-            render(
-                self.instance.as_ptr(),
+            (api.render)(
+                api.context,
                 source.as_ptr(),
                 source.len(),
                 collect_runs,
@@ -295,7 +304,9 @@ fn metadata(bytes: &[u8]) -> Result<String, String> {
 }
 /// Serial, worker-owned lifecycle manager. It exposes no raw function pointers or
 /// plugin-owned values. Session producers are joined before instance destruction.
+static NEXT_MANAGER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 pub struct Manager {
+    owner: u64,
     directory: PathBuf,
     plugins: BTreeMap<String, Generation>,
     next_generation: u64,
@@ -306,6 +317,7 @@ pub struct Manager {
 impl Manager {
     pub fn new(directory: PathBuf) -> Self {
         Self {
+            owner: NEXT_MANAGER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             directory,
             plugins: BTreeMap::new(),
             next_generation: 1,
@@ -333,7 +345,7 @@ impl Manager {
         let count = self
             .plugins
             .values()
-            .filter(|p| !p.destroyed && p.api.render_markdown.is_some())
+            .filter(|p| !p.destroyed && p.markdown.is_some())
             .count();
         if count > 1 {
             return Err(
@@ -344,7 +356,7 @@ impl Manager {
         match self
             .plugins
             .values_mut()
-            .find(|p| !p.destroyed && p.api.render_markdown.is_some())
+            .find(|p| !p.destroyed && p.markdown.is_some())
         {
             Some(provider) => provider.render_markdown(source),
             None => Ok(velk_markup::Document::plain(source)),
@@ -451,15 +463,17 @@ mod tests {
                     create: None,
                     destroy: Some(fails_to_destroy),
                     describe: None,
-                    render_markdown: None,
-                    language_server: None,
-                    semantic_create: None,
-                    semantic_input: None,
-                    semantic_destroy: None,
+                    hook_count: None,
+                    hook_info: None,
+                    get_hook: None,
                 },
                 // This local test destructor never dereferences the opaque instance.
                 instance: NonNull::dangling(),
                 destroyed: false,
+                hooks: vec![],
+                markdown: None,
+                language: None,
+                semantic: None,
                 library: None,
             },
         );
@@ -566,17 +580,24 @@ pub(super) mod test_provider {
                     create: None,
                     destroy: Some(destroy),
                     describe: None,
-                    render_markdown: Some(render),
-                    language_server: None,
-                    semantic_create: None,
-                    semantic_input: None,
-                    semantic_destroy: None,
+                    hook_count: None,
+                    hook_info: None,
+                    get_hook: None,
                 },
                 instance: NonNull::new(Box::into_raw(Box::new(control)).cast()).unwrap(),
                 destroyed: false,
+                hooks: vec![],
+                markdown: None,
+                language: None,
+                semantic: None,
                 library: None,
             },
         );
+        let plugin = manager.plugins.get_mut("test.markdown").unwrap();
+        plugin.markdown = Some(MarkupApi {
+            context: plugin.instance.as_ptr(),
+            render,
+        });
         manager
     }
 }

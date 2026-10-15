@@ -345,13 +345,16 @@ impl HostSink {
 struct OwnedSession {
     service: Arc<model::Service>,
 }
-pub(super) unsafe extern "C" fn create<P: Plugin>(
+pub(super) unsafe extern "C" fn create<P: Plugin, F>(
     instance: *mut c_void,
     definition: *const LanguageServerDefinition,
     sink: SemanticSink,
     context: *mut c_void,
     output: *mut *mut c_void,
-) -> i32 {
+) -> i32
+where
+    F: FnMut(&mut P, crate::LanguageServer) -> Box<dyn model::Backend> + 'static,
+{
     if instance.is_null() || definition.is_null() || output.is_null() {
         return INVALID;
     }
@@ -360,7 +363,8 @@ pub(super) unsafe extern "C" fn create<P: Plugin>(
         let Ok(definition) = (unsafe { super::language_server::decode(&*definition) }) else {
             return INVALID;
         };
-        let backend = unsafe { (&mut *instance.cast::<P>()).semantic_backend(definition) };
+        let binding = unsafe { &mut *instance.cast::<super::registry::Binding<P, F>>() };
+        let backend = (binding.handler)(unsafe { &mut *binding.plugin }, definition);
         let host = HostSink {
             callback: sink,
             context,

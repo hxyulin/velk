@@ -1,7 +1,13 @@
 //! Safe author-facing lifecycle. Raw ABI operations are confined to `ffi`.
+pub use ffi::registry::{Provider, Registrar};
 pub use velk_markup as markup;
 pub use velk_plugin_api as api;
 pub use velk_semantic as semantic;
+pub mod hooks {
+    pub use crate::ffi::registry::{
+        Event, LanguageDefinition, RenderMarkdown, Request, SemanticSessions,
+    };
+}
 /// Owned definition copied independently into each library's allocator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LanguageServer {
@@ -16,23 +22,11 @@ pub struct LanguageServer {
 pub trait Plugin: Default + 'static {
     const ID: &'static str;
     const VERSION: &'static str;
-    const MARKDOWN: bool = false;
-    const SEMANTIC: bool = false;
-    const LANGUAGE_SERVER: bool = false;
-    fn language_server(&mut self, _language: &str) -> Result<Option<LanguageServer>, String> {
-        Ok(None)
-    }
     const RESIDENT_CODE: bool = false;
-    /// Each returned backend owns one independent session. The SDK cancels and
-    /// joins its reactor before native session destruction returns.
-    fn semantic_backend(&mut self, _definition: LanguageServer) -> Box<dyn semantic::Backend> {
-        panic!("plugin does not provide semantics")
+    fn register(_reg: &mut Registrar<Self>) -> Result<(), String> {
+        Ok(())
     }
     fn describe(&mut self) -> String;
-    /// Executed on a host worker; implementations retain no input or callbacks.
-    fn render_markdown(&mut self, source: &str) -> markup::Document {
-        markup::Document::plain(source)
-    }
 }
 #[doc(hidden)]
 pub mod ffi;

@@ -131,13 +131,16 @@ fn with_error<R>(error: &str, call: impl FnOnce(&LanguageServerDefinition) -> R)
         error: bytes(error),
     })
 }
-pub(super) unsafe extern "C" fn query<P: Plugin>(
+pub(super) unsafe extern "C" fn query<P: Plugin, F>(
     instance: *mut c_void,
     language: *const u8,
     length: usize,
     sink: LanguageServerSink,
     context: *mut c_void,
-) -> i32 {
+) -> i32
+where
+    F: FnMut(&mut P, &str) -> Result<Option<LanguageServer>, String> + 'static,
+{
     if instance.is_null() || length > 64 || (length != 0 && language.is_null()) {
         return INVALID;
     }
@@ -150,7 +153,8 @@ pub(super) unsafe extern "C" fn query<P: Plugin>(
             return INVALID;
         };
         // SAFETY: serialized call on a live instance; only explicit sink borrows.
-        match unsafe { (&mut *instance.cast::<P>()).language_server(&language) } {
+        let binding = unsafe { &mut *instance.cast::<super::registry::Binding<P, F>>() };
+        match (binding.handler)(unsafe { &mut *binding.plugin }, &language) {
             Ok(None) => NOT_FOUND,
             Ok(Some(d)) => match with_definition(&d, |raw| unsafe { sink(context, raw) }) {
                 Ok(status) => status,

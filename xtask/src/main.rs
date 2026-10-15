@@ -4,6 +4,7 @@ use std::{
     process::{Command, ExitCode},
 };
 use velk_plugin_host::{MANIFEST, Manifest, PluginSpec};
+mod hooks_smoke;
 mod lsp_smoke;
 const PLUGIN: &str = "velk-plugin-markdown";
 const ID: &str = "velk.markdown";
@@ -287,6 +288,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     assert_eq!(manager.plugins().count(), 0);
     markdown_smoke(output)?;
     lsp_smoke::run(root, output)?;
+    hooks_smoke::run(root, output, release)?;
     println!(
         "Native plugin smoke passed: load, no automatic replacement, explicit unload/load of restaged code, repeated cleanup, retained host data, rejected artifacts, malformed manifest."
     );

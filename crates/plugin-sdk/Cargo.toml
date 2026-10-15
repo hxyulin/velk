@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+[[example]]
+name = "hooks-probe"
+path = "tests/fixtures/hooks-probe.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 ropey.workspace = true
 velk-semantic.workspace = true

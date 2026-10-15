@@ -1,5 +1,13 @@
 //! Experimental native ABI. No Rust containers or trait objects cross it.
 use std::ffi::c_void;
+pub mod contracts;
+pub use contracts::*;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Bytes {
+    pub data: *const u8,
+    pub length: usize,
+}
 pub const ABI_VERSION: u32 = 1;
 pub const ENTRY_SYMBOL: &[u8] = b"velk_plugin_entry_v1\0";
 pub const OK: i32 = 0;
@@ -30,118 +38,13 @@ pub struct PluginApi {
     /// Copy UTF-8 into caller storage. Set required length even on insufficient
     /// capacity. The returned bytes contain no terminator and no plugin pointers.
     pub describe: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize, *mut usize) -> i32>,
-    /// Optional Markdown capability. The input and sink context are borrowed for
-    /// this call only. Emit one batch synchronously; no callback may escape.
-    pub render_markdown: Option<RenderMarkdown>,
-    /// Synchronous, borrowed definition query. The host copies the result.
-    pub language_server: Option<QueryLanguageServer>,
-    pub semantic_create: Option<CreateSemantic>,
-    pub semantic_input: Option<SendSemantic>,
-    pub semantic_destroy: Option<DestroySemantic>,
+    /// Registration discovery is fixed; feature tables live behind named contracts.
+    pub hook_count: Option<unsafe extern "C" fn(*mut c_void) -> usize>,
+    pub hook_info: Option<unsafe extern "C" fn(*mut c_void, usize, *mut HookInfo) -> i32>,
+    pub get_hook:
+        Option<unsafe extern "C" fn(*mut c_void, usize, Bytes, u32, usize, *mut c_void) -> i32>,
 }
 pub type Entry = unsafe extern "C" fn(u32, *mut PluginApi, usize) -> i32;
-
-pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
-pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_RUNS: usize = 65_536;
-pub const BOLD: u32 = 1;
-pub const ITALIC: u32 = 2;
-pub const CODE: u32 = 4;
-pub const STRIKETHROUGH: u32 = 8;
-pub const LINK: u32 = 16;
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Bytes {
-    pub data: *const u8,
-    pub length: usize,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct StyledRun {
-    pub text: Bytes,
-    pub link: Bytes,
-    pub flags: u32,
-    pub heading: u8,
-}
-pub type RunSink = unsafe extern "C" fn(*mut c_void, *const StyledRun, usize) -> i32;
-pub type RenderMarkdown =
-    unsafe extern "C" fn(*mut c_void, *const u8, usize, RunSink, *mut c_void) -> i32;
-
-// Internal v1 semantic session protocol. All views are borrowed for their call.
-pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
-pub const DOCUMENT: u32 = 1;
-pub const SAVED: u32 = 2;
-pub const HOVER: u32 = 3;
-pub const CANCEL_HOVER: u32 = 4;
-pub const STATUS: u32 = 1;
-pub const DIAGNOSTICS: u32 = 2;
-pub const HOVER_RESULT: u32 = 3;
-pub const REQUEST_FAILED: u32 = 4;
-pub const STARTING: u32 = 1;
-pub const READY: u32 = 2;
-pub const FAILED: u32 = 3;
-pub const STOPPED: u32 = 4;
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct SemanticRequest {
-    pub id: u64,
-    pub revision: u64,
-    pub position: usize,
-}
-#[repr(C)]
-/// Path is native Unix bytes on Unix, UTF-8 elsewhere. Other views are UTF-8.
-pub struct SemanticDocument {
-    pub path: Bytes,
-    pub language: Bytes,
-    pub text: Bytes,
-    pub revision: u64,
-}
-#[repr(C)]
-pub struct SemanticInput {
-    pub kind: u32,
-    pub document: *const SemanticDocument,
-    pub request: SemanticRequest,
-}
-#[repr(C)]
-pub struct SemanticDiagnostic {
-    pub start: usize,
-    pub end: usize,
-    pub severity: u32,
-    pub message: Bytes,
-    pub source: Bytes,
-    pub code: Bytes,
-}
-#[repr(C)]
-pub struct SemanticEvent {
-    pub kind: u32,
-    pub status: u32,
-    pub capabilities: u32,
-    pub revision: u64,
-    pub request: SemanticRequest,
-    pub text: Bytes,
-    pub start: usize,
-    pub end: usize,
-    pub has_range: u32,
-    pub has_hover: u32,
-    pub markdown: u32,
-    pub diagnostics: *const SemanticDiagnostic,
-    pub diagnostic_count: usize,
-}
-/// May run on a plugin reactor thread. Host must synchronously copy borrowed
-/// event data. Context stays valid through successful semantic_destroy, which
-/// must join producers and finish all callbacks before returning.
-pub type SemanticSink = unsafe extern "C" fn(*mut c_void, *const SemanticEvent) -> i32;
-/// On success, return one non-null session. Failure must leave no retained sink
-/// or running producer. Session functions are serialized by the host.
-pub type CreateSemantic = unsafe extern "C" fn(
-    *mut c_void,
-    *const LanguageServerDefinition,
-    SemanticSink,
-    *mut c_void,
-    *mut *mut c_void,
-) -> i32;
-pub type SendSemantic = unsafe extern "C" fn(*mut c_void, *const SemanticInput) -> i32;
-pub type DestroySemantic = unsafe extern "C" fn(*mut c_void) -> i32;
 
 /// Borrowed interpretation of author.[namespace.]name. Namespace may contain dots;
 /// nesting has no implicit dependency, permissions, or ownership semantics.
@@ -172,25 +75,6 @@ pub fn parse_plugin_id(id: &str) -> Option<PluginId<'_>> {
         name: &id[last + 1..],
     })
 }
-/// UTF-8 configuration borrowed only for query callback / session creation.
-#[repr(C)]
-pub struct LanguageServerDefinition {
-    pub transport: Bytes,
-    pub language: Bytes,
-    pub executable: Bytes,
-    pub arguments: *const Bytes,
-    pub argument_count: usize,
-    pub root: Bytes,
-    pub initialization_options: Bytes,
-    pub configuration: Bytes,
-    /// Nonempty only for a failed definition query; other fields are then empty.
-    pub error: Bytes,
-}
-pub type LanguageServerSink =
-    unsafe extern "C" fn(*mut c_void, *const LanguageServerDefinition) -> i32;
-pub type QueryLanguageServer =
-    unsafe extern "C" fn(*mut c_void, *const u8, usize, LanguageServerSink, *mut c_void) -> i32;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,4 +120,19 @@ mod tests {
         }
         assert!(parse_plugin_id(&format!("velk.{}", "a".repeat(59))).is_none());
     }
+}
+
+pub const REQUEST: u32 = 1;
+pub const EVENT: u32 = 2;
+pub const SERVICE: u32 = 3;
+pub const CONTRIBUTION: u32 = 4;
+pub const MAX_HOOKS: usize = 256;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HookInfo {
+    pub name: [u8; 128],
+    pub contract: [u8; 128],
+    pub version: u32,
+    pub kind: u32,
+    pub table_size: usize,
 }

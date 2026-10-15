@@ -7,14 +7,19 @@ pub struct Lsp;
 impl Plugin for Lsp {
     const ID: &'static str = "velk.lsp";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const SEMANTIC: bool = true;
+
     // Tokio process signal handlers can outlive their reactor on Unix.
     const RESIDENT_CODE: bool = true;
     fn describe(&mut self) -> String {
         "Generic LSP transport".into()
     }
-    fn semantic_backend(&mut self, definition: LanguageServer) -> Box<dyn Backend> {
-        Box::new(Configured(definition))
+    fn register(reg: &mut velk_plugin_sdk::Registrar<Self>) -> Result<(), String> {
+        reg.provide(
+            velk_plugin_sdk::hooks::SemanticSessions,
+            |_: &mut Self, definition: LanguageServer| -> Box<dyn Backend> {
+                Box::new(Configured(definition))
+            },
+        )
     }
 }
 velk_plugin_sdk::export_plugin!(Lsp);

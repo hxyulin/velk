@@ -1,7 +1,12 @@
 #![allow(unsafe_code)]
 use crate::{Plugin, api::*};
 pub mod language_server;
+pub mod registry;
 pub mod semantic;
+pub(super) struct Instance<P: Plugin> {
+    registry: registry::Registrar<P>,
+    plugin: Box<P>,
+}
 use std::{
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -41,15 +46,9 @@ pub unsafe fn entry<P: Plugin>(abi: u32, output: *mut PluginApi, size: usize) ->
             create: Some(create::<P>),
             destroy: Some(destroy::<P>),
             describe: Some(describe::<P>),
-            language_server: P::LANGUAGE_SERVER.then_some(language_server::query::<P>),
-            semantic_create: P::SEMANTIC.then_some(semantic::create::<P>),
-            semantic_input: P::SEMANTIC.then_some(semantic::input),
-            semantic_destroy: P::SEMANTIC.then_some(semantic::destroy),
-            render_markdown: if P::MARKDOWN {
-                Some(render_markdown::<P>)
-            } else {
-                None
-            },
+            hook_count: Some(registry::count::<P>),
+            hook_info: Some(registry::info::<P>),
+            get_hook: Some(registry::get::<P>),
         };
         // SAFETY: required writable storage was supplied by the caller.
         unsafe {
@@ -63,7 +62,12 @@ unsafe extern "C" fn create<P: Plugin>(output: *mut *mut c_void) -> i32 {
         return INVALID;
     }
     guard(|| {
-        let instance = Box::into_raw(Box::new(P::default())).cast();
+        let mut plugin = Box::new(P::default());
+        let mut registry = registry::Registrar::new(&mut *plugin);
+        if P::register(&mut registry).is_err() {
+            return INVALID;
+        }
+        let instance = Box::into_raw(Box::new(Instance { registry, plugin })).cast();
         // SAFETY: ABI requires writable output storage.
         unsafe {
             output.write(instance);
@@ -78,7 +82,7 @@ unsafe extern "C" fn destroy<P: Plugin>(instance: *mut c_void) -> i32 {
     guard(|| {
         // SAFETY: the instance came from create<P>, and is destroyed exactly once.
         unsafe {
-            drop(Box::from_raw(instance.cast::<P>()));
+            drop(Box::from_raw(instance.cast::<Instance<P>>()));
         }
         OK
     })
@@ -94,7 +98,7 @@ unsafe extern "C" fn describe<P: Plugin>(
     }
     guard(|| {
         // SAFETY: caller exclusively owns this live instance for this call.
-        let text = unsafe { (&mut *instance.cast::<P>()).describe() };
+        let text = unsafe { (&mut *instance.cast::<Instance<P>>()).plugin.describe() };
         // SAFETY: ABI requires writable length storage and an output of capacity bytes.
         unsafe {
             length.write(text.len());
@@ -108,13 +112,16 @@ unsafe extern "C" fn describe<P: Plugin>(
         OK
     })
 }
-unsafe extern "C" fn render_markdown<P: Plugin>(
+unsafe extern "C" fn render_markdown<P: Plugin, F>(
     instance: *mut c_void,
     source: *const u8,
     length: usize,
     sink: RunSink,
     context: *mut c_void,
-) -> i32 {
+) -> i32
+where
+    F: FnMut(&mut P, &str) -> crate::markup::Document + 'static,
+{
     if instance.is_null() || source.is_null() || length > MAX_INPUT_BYTES {
         return INVALID;
     }
@@ -125,7 +132,8 @@ unsafe extern "C" fn render_markdown<P: Plugin>(
             return INVALID;
         };
         // SAFETY: the host exclusively owns this live instance for the call.
-        let document = unsafe { (&mut *instance.cast::<P>()).render_markdown(source) };
+        let binding = unsafe { &mut *instance.cast::<registry::Binding<P, F>>() };
+        let document = (binding.handler)(unsafe { &mut *binding.plugin }, source);
         if document.runs.len() > MAX_RUNS {
             return INVALID;
         }

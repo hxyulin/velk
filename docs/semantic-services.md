@@ -7,6 +7,79 @@ loadable `plugins/lsp` library. Rust policy lives separately in
 typed definition naming its `velk.lsp` dependency. The editor routes Rust documents
 to a neutral plugin-host endpoint. There is no built-in LSP or Rust-analyzer fallback.
 
+## Named plugin registrations
+
+`Plugin` now contains metadata, registration, and lifecycle policy only. Plugins
+implement `register(&mut Registrar<Self>)`; Markdown, language definitions, and
+semantic backends are registered handlers, not methods or boolean flags on the
+root trait. The root C table discovers registration count/descriptors/tables and
+has no feature-specific entry points. Built-in wire contracts live separately in
+`velk-plugin-api::contracts`.
+
+Each registration has a name, explicit contract identifier, contract version,
+kind (request/event/service/contribution), and C table size. The host copies
+metadata and checks the contract, kind, version, and size before copying known
+function tables. Unknown contracts are discoverable but are not reinterpreted.
+Tables and their opaque contexts remain owned by the plugin instance; strings and
+results copied out are host-owned. Rust `Any` is used only inside the SDK's own
+library, never across the ABI. Names are unique within an instance; different
+plugins can provide the same operation, with adapter-specific selection rules.
+The existing Markdown conflict check and language-definition conflict check stay
+in effect.
+
+The three built-in registrations are:
+
+- `velk.markup.render`: typed request, registered using `hooks::RenderMarkdown`.
+- `velk.language-server.definition`: typed contribution query, using
+  `hooks::LanguageDefinition`.
+- `velk.semantic.session`: typed long-lived service, using `hooks::SemanticSessions`.
+
+For example, the Markdown plugin registers its existing method through a closure:
+
+```rust
+fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+    reg.provide(hooks::RenderMarkdown, |plugin: &mut Self, source: &str| {
+        plugin.render(source)
+    })
+}
+```
+
+Plugins can also register new operation names with `hooks::Request("author.echo")`
+and `reg.on(hooks::Event("author.notice"), handler)`. These safe adapters use
+opaque bounded byte payloads, with no required JSON encoding. Typed contract
+packages can build further safe adapters over the documented unsafe
+`register_raw` C-table boundary without changing the root ABI. Adding host support
+for a new typed service still requires its contract adapter; the byte request and
+event paths already accept arbitrary registered names.
+
+`Manager::hooks` exposes owned descriptors. `Client::bind_hook` resolves a byte
+request to an opaque plugin-generation/slot handle; `call_hook` rejects retired
+handles, including after the same ID is reloaded or when used with a different
+runtime. Calls use a bounded queue and
+asynchronous reply channels. Dropping a request future skips queued work; active
+calls finish before unload, and their unwanted replies are discarded.
+`Client::emit_hook` sends ordered notifications, returning the number delivered.
+Accepted events still execute if their acknowledgement is dropped. Subscribers
+are selected when the worker processes the event. Errors are collected while
+remaining subscribers are still invoked; no rollback or retry is implied.
+
+All current handlers share the existing serial plugin worker, so event callbacks
+must return promptly. Slow callbacks delay other plugin work, although they never
+execute on the UI. Existing semantic services use their separately joined reactor.
+Registrations are fixed for one plugin instance and automatically dropped on its
+destruction; dynamic per-registration unsubscribe, generic plugin-to-plugin
+service clients, and broad editor lifecycle event publication are future work.
+This first pass exposes the generic registry/host dispatch plus the three existing
+typed adapters, rather than introducing a new unbounded executor or event bus.
+
+The test-only `hooks-probe` cdylib example is built by `cargo xtask test-plugins`.
+It is never staged as a bundled plugin. It proves custom names, binary payloads,
+ordered notifications, dropped acknowledgements, reply ownership, contained
+errors/panics, library-copy cleanup, and stale handles after unload/reload. SDK
+unit tests reject duplicate/malformed names and wrong contract/version/layout
+queries. The internal ABI and current contract versions remain 1; rebuild the
+editor and bundled plugins together after this internal layout change.
+
 ## Public boundary
 
 - `DocumentSnapshot`: path, language identifier, monotonic buffer revision, and an
@@ -40,7 +113,7 @@ exercises the same API with no LSP types.
 Source editing and immediate Tree-sitter highlighting never wait for semantics.
 The RXUI executor delivers semantic events to the document entity. The host's
 existing plugin worker drains coalesced snapshots after each command/wake; no
-polling timer or second host semantic reactor is required. Native session input
+polling timer or second host semantic reactor is required. Registered native session input
 copies typed borrowed data into plugin-owned queues, and the plugin reactor owns
 protocol I/O. No future, Rust container, trait object, or shared allocator crosses
 the C ABI. Unload cancels/joins session reactors before dropping host callback
@@ -180,7 +253,7 @@ responses and diagnostic text are never parsed as Markdown.
 
 Interpretation is submitted asynchronously through `velk_plugin_host::Client`.
 A bounded host queue sends work to the plugin worker, which calls the optional
-Markdown C ABI capability synchronously. Input is borrowed for the call, and a
+Markdown request table synchronously. Input is borrowed for the call, and a
 single callback batch copies text/style/link data into host-owned runs before
 returning. Dropping the future closes its result channel; the worker skips
 cancelled queued requests. Active parsing completes normally and never outlives

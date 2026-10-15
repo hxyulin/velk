@@ -34,7 +34,7 @@ unsafe extern "C" fn collect(
 }
 impl Generation {
     fn language_server(&mut self, language: &str) -> Result<Option<LanguageServer>, String> {
-        let Some(query) = self.api.language_server else {
+        let Some(api) = self.language else {
             return Ok(None);
         };
         let mut output = Output {
@@ -44,8 +44,8 @@ impl Generation {
         // SAFETY: serialized live instance, synchronous callback with stack-owned
         // context, and all result strings copied before this call returns.
         let status = unsafe {
-            query(
-                self.instance.as_ptr(),
+            (api.query)(
+                api.context,
                 language.as_ptr(),
                 language.len(),
                 collect,
@@ -75,7 +75,7 @@ impl Manager {
         let profiles: Vec<_> = self
             .plugins
             .values()
-            .filter(|p| !p.destroyed && p.api.language_server.is_some())
+            .filter(|p| !p.destroyed && p.language.is_some())
             .map(|p| p.info.id.clone())
             .collect();
         let mut selected = None;
@@ -102,7 +102,7 @@ impl Manager {
             && !self
                 .plugins
                 .get(&definition.transport)
-                .is_some_and(|p| !p.destroyed && p.api.semantic_create.is_some())
+                .is_some_and(|p| !p.destroyed && p.semantic.is_some())
         {
             return Err(format!(
                 "{id} requires {} (not loaded or not a semantic transport)",
@@ -156,14 +156,19 @@ mod tests {
                 create: None,
                 destroy: Some(destroy),
                 describe: None,
-                render_markdown: None,
-                language_server: Some(query),
-                semantic_create: None,
-                semantic_input: None,
-                semantic_destroy: None,
+                hook_count: None,
+                hook_info: None,
+                get_hook: None,
             },
             instance: NonNull::dangling(),
             destroyed: false,
+            hooks: vec![],
+            markdown: None,
+            language: Some(LanguageApi {
+                context: NonNull::<c_void>::dangling().as_ptr(),
+                query,
+            }),
+            semantic: None,
             library: None,
         }
     }
@@ -186,12 +191,7 @@ mod tests {
         manager
             .plugins
             .insert("velk.lsp.other".into(), profile("velk.lsp.other"));
-        manager
-            .plugins
-            .get_mut("velk.lsp.other")
-            .unwrap()
-            .api
-            .language_server = None;
+        manager.plugins.get_mut("velk.lsp.other").unwrap().language = None;
         assert!(
             manager
                 .resolve_language_server("rust")

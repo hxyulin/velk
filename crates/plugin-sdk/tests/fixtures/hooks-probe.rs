@@ -1,0 +1,36 @@
+//! Test-only native probe, never staged among bundled application plugins.
+use velk_plugin_sdk::{
+    Plugin, Registrar,
+    hooks::{Event, Request},
+};
+#[derive(Default)]
+struct Probe {
+    last: Vec<u8>,
+}
+impl Plugin for Probe {
+    const ID: &'static str = "test.hooks";
+    const VERSION: &'static str = "1";
+    fn describe(&mut self) -> String {
+        "Named registry probe".into()
+    }
+    fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+        reg.provide(Request("test.echo"), |_: &mut Self, input: &[u8]| {
+            Ok(input.to_vec())
+        })?;
+        reg.provide(Request("test.state"), |p: &mut Self, _: &[u8]| {
+            Ok(p.last.clone())
+        })?;
+        reg.on(Event("test.notice"), |p: &mut Self, input: &[u8]| {
+            p.last = input.to_vec();
+            Ok(())
+        })?;
+        reg.provide(Request("test.error"), |_: &mut Self, _: &[u8]| {
+            Err("test error".into())
+        })?;
+        reg.provide(Request("test.panic"), |_: &mut Self, _: &[u8]| {
+            panic!("contained test request panic")
+        })?;
+        Ok(())
+    }
+}
+velk_plugin_sdk::export_plugin!(Probe);

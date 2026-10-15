@@ -140,11 +140,7 @@ impl Manager {
                     plugins: self
                         .plugins
                         .values()
-                        .filter(|p| {
-                            !p.destroyed
-                                && (p.api.language_server.is_some()
-                                    || p.api.semantic_create.is_some())
-                        })
+                        .filter(|p| !p.destroyed && (p.language.is_some() || p.semantic.is_some()))
                         .map(|p| (p.info.id.clone(), p.info.generation))
                         .collect(),
                 };
@@ -171,6 +167,7 @@ impl Manager {
                                     return Ok(None);
                                 };
                                 let plugin = self.plugins.get_mut(&definition.transport).unwrap();
+                                let api = plugin.semantic.unwrap();
                                 let mut callback = Box::new(Callback {
                                     active: AtomicBool::new(true),
                                     events: doc.session.events(),
@@ -186,8 +183,8 @@ impl Manager {
                                             // SAFETY: live transport, copied definition borrowed
                                             // for this call, stable callback retained until join.
                                             unsafe {
-                                                plugin.api.semantic_create.unwrap()(
-                                                    plugin.instance.as_ptr(),
+                                                (api.create)(
+                                                    api.context,
                                                     raw,
                                                     emit,
                                                     (&mut *callback as *mut Callback).cast(),
@@ -206,8 +203,8 @@ impl Manager {
                                     provider: definition.transport,
                                     profile,
                                     instance: NonNull::new(instance).unwrap(),
-                                    input: plugin.api.semantic_input.unwrap(),
-                                    destroy: plugin.api.semantic_destroy.unwrap(),
+                                    input: api.input,
+                                    destroy: api.destroy,
                                     callback,
                                 }))
                             })
@@ -337,14 +334,16 @@ mod tests {
                     create: None,
                     destroy: Some(destroy_instance),
                     describe: None,
-                    render_markdown: None,
-                    language_server: None,
-                    semantic_create: None,
-                    semantic_input: None,
-                    semantic_destroy: None,
+                    hook_count: None,
+                    hook_info: None,
+                    get_hook: None,
                 },
                 instance: NonNull::dangling(),
                 destroyed: false,
+                hooks: vec![],
+                markdown: None,
+                language: None,
+                semantic: None,
                 library: None,
             },
         );
@@ -359,6 +358,10 @@ mod tests {
             api: transport.api,
             instance: NonNull::dangling(),
             destroyed: false,
+            hooks: vec![],
+            markdown: None,
+            language: None,
+            semantic: None,
             library: None,
         };
         manager.plugins.insert("test.profile".into(), profile);

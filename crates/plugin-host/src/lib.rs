@@ -8,8 +8,11 @@ use std::{
     thread,
 };
 mod native;
-pub use native::{Manager, PluginInfo};
+pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
 
+pub mod hook_kind {
+    pub use velk_plugin_api::{CONTRIBUTION, EVENT, REQUEST, SERVICE};
+}
 pub const MANIFEST: &str = "plugins.json";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,6 +86,21 @@ enum Request {
         session: velk_semantic::Session,
     },
     WakeSemantic,
+    Bind {
+        plugin: String,
+        name: String,
+        reply: async_channel::Sender<Result<HookHandle, String>>,
+    },
+    Call {
+        handle: HookHandle,
+        input: Vec<u8>,
+        reply: async_channel::Sender<Result<Vec<u8>, String>>,
+    },
+    Emit {
+        name: String,
+        input: Vec<u8>,
+        reply: async_channel::Sender<Result<usize, String>>,
+    },
     Stop,
 }
 /// Safe command endpoint. Lifecycle work is serialized on a sleeping worker.
@@ -92,6 +110,50 @@ pub struct Client {
     next_session: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Client {
+    pub fn bind_hook(
+        &self,
+        plugin: String,
+        name: String,
+    ) -> Result<async_channel::Receiver<Result<HookHandle, String>>, String> {
+        let (reply, receive) = async_channel::bounded(1);
+        self.sender
+            .try_send(Request::Bind {
+                plugin,
+                name,
+                reply,
+            })
+            .map_err(|e| format!("plugin queue unavailable: {e}"))?;
+        Ok(receive)
+    }
+    pub async fn call_hook(&self, handle: HookHandle, input: Vec<u8>) -> Result<Vec<u8>, String> {
+        if input.len() > velk_plugin_api::MAX_INPUT_BYTES {
+            return Err("hook input exceeds 1 MiB".into());
+        }
+        let (reply, receive) = async_channel::bounded(1);
+        self.sender
+            .try_send(Request::Call {
+                handle,
+                input,
+                reply,
+            })
+            .map_err(|e| format!("plugin queue unavailable: {e}"))?;
+        receive.recv().await.map_err(|e| e.to_string())?
+    }
+    pub fn emit_hook(
+        &self,
+        name: String,
+        input: Vec<u8>,
+    ) -> Result<async_channel::Receiver<Result<usize, String>>, String> {
+        if input.len() > velk_plugin_api::MAX_INPUT_BYTES {
+            return Err("hook event exceeds 1 MiB".into());
+        }
+        let (reply, receive) = async_channel::bounded(1);
+        self.sender
+            .try_send(Request::Emit { name, input, reply })
+            .map_err(|e| format!("plugin queue unavailable: {e}"))?;
+        Ok(receive)
+    }
+
     /// Queue-only frontend: no reactor/thread or native call on the UI.
     /// Open documents remain attached to this host endpoint across provider unload/load.
     pub fn semantic_service(&self) -> Result<std::sync::Arc<velk_semantic::Service>, String> {
@@ -173,6 +235,31 @@ impl Runtime {
                 while let Ok(request) = receive.recv() {
                     let (operation, reply) = match request {
                         Request::Stop => break,
+                        Request::Bind {
+                            plugin,
+                            name,
+                            reply,
+                        } => {
+                            let _ = reply.try_send(manager.bind_hook(&plugin, &name));
+                            manager.drive_semantics();
+                            continue;
+                        }
+                        Request::Call {
+                            handle,
+                            input,
+                            reply,
+                        } => {
+                            if !reply.is_closed() {
+                                let _ = reply.try_send(manager.call_hook(&handle, &input));
+                            }
+                            manager.drive_semantics();
+                            continue;
+                        }
+                        Request::Emit { name, input, reply } => {
+                            let _ = reply.try_send(manager.emit_hook(&name, &input));
+                            manager.drive_semantics();
+                            continue;
+                        }
                         Request::OpenSemantic { id, session } => {
                             manager.open_semantics(id, session);
                             manager.drive_semantics();

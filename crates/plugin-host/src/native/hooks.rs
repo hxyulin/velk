@@ -1,0 +1,249 @@
+//! Discovery validates named contracts once; hot paths use copied typed tables.
+use super::*;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HookDescriptor {
+    pub name: String,
+    pub contract: String,
+    pub version: u32,
+    pub kind: u32,
+}
+#[derive(Clone, Debug)]
+pub struct HookHandle {
+    owner: u64,
+    plugin: String,
+    generation: u64,
+    slot: usize,
+}
+pub(super) struct Hook {
+    info: HookDescriptor,
+    bytes: Option<BytesApi>,
+    event: Option<EventApi>,
+}
+impl Generation {
+    unsafe fn table<T: Copy>(
+        &self,
+        index: usize,
+        contract: &str,
+        version: u32,
+    ) -> Result<T, String> {
+        let mut output = std::mem::MaybeUninit::<T>::uninit();
+        // SAFETY: trusted contract fixes T's C layout and signatures; the SDK
+        // verifies contract/version/size before writing the caller-owned table.
+        let status = unsafe {
+            self.api.get_hook.unwrap()(
+                self.instance.as_ptr(),
+                index,
+                Bytes {
+                    data: contract.as_ptr(),
+                    length: contract.len(),
+                },
+                version,
+                std::mem::size_of::<T>(),
+                output.as_mut_ptr().cast(),
+            )
+        };
+        if status != OK {
+            return Err(format!("hook table query failed ({status})"));
+        }
+        Ok(unsafe { output.assume_init() })
+    }
+    pub(super) fn discover_hooks(&mut self) -> Result<(), String> {
+        let count = unsafe { self.api.hook_count.unwrap()(self.instance.as_ptr()) };
+        if count > MAX_HOOKS {
+            return Err("too many hook registrations".into());
+        }
+        let mut names = BTreeSet::new();
+        for index in 0..count {
+            let mut info = std::mem::MaybeUninit::<HookInfo>::uninit();
+            let status = unsafe {
+                self.api.hook_info.unwrap()(self.instance.as_ptr(), index, info.as_mut_ptr())
+            };
+            if status != OK {
+                return Err(format!("hook metadata query failed ({status})"));
+            }
+            let info = unsafe { info.assume_init() };
+            let name = metadata(&info.name)?;
+            let contract = metadata(&info.contract)?;
+            if !names.insert(name.clone())
+                || info.version == 0
+                || !(REQUEST..=CONTRIBUTION).contains(&info.kind)
+                || info.table_size == 0
+                || info.table_size > 4096
+            {
+                return Err("invalid hook metadata or duplicate name".into());
+            }
+            let mut hook = Hook {
+                info: HookDescriptor {
+                    name: name.clone(),
+                    contract: contract.clone(),
+                    version: info.version,
+                    kind: info.kind,
+                },
+                bytes: None,
+                event: None,
+            };
+            macro_rules! typed {
+                ($ty:ty,$kind:expr) => {{
+                    if info.version != 1
+                        || info.kind != $kind
+                        || info.table_size != std::mem::size_of::<$ty>()
+                    {
+                        return Err(format!("incompatible hook contract: {name}"));
+                    }
+                    unsafe { self.table::<$ty>(index, &contract, 1)? }
+                }};
+            }
+            match contract.as_str() {
+                MARKUP_CONTRACT if name == MARKUP_HOOK => {
+                    self.markdown = Some(typed!(MarkupApi, REQUEST))
+                }
+                LANGUAGE_CONTRACT if name == LANGUAGE_HOOK => {
+                    self.language = Some(typed!(LanguageApi, CONTRIBUTION))
+                }
+                SEMANTIC_CONTRACT if name == SEMANTIC_HOOK => {
+                    self.semantic = Some(typed!(SemanticApi, SERVICE))
+                }
+                BYTES_CONTRACT => hook.bytes = Some(typed!(BytesApi, REQUEST)),
+                EVENT_CONTRACT => hook.event = Some(typed!(EventApi, EVENT)),
+                _ => {} // Unknown contracts are discoverable, not reinterpreted.
+            }
+            self.hooks.push(hook);
+        }
+        Ok(())
+    }
+}
+struct Reply {
+    result: Option<Result<Vec<u8>, String>>,
+    calls: usize,
+}
+unsafe extern "C" fn collect(context: *mut c_void, bytes: Bytes, status: i32) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() {
+            return INVALID;
+        }
+        let reply = unsafe { &mut *context.cast::<Reply>() };
+        reply.calls += 1;
+        if reply.calls != 1
+            || bytes.length > MAX_OUTPUT_BYTES
+            || (bytes.length != 0 && bytes.data.is_null())
+        {
+            reply.result = Some(Err("invalid request reply".into()));
+            return INVALID;
+        }
+        let value = if bytes.length == 0 {
+            vec![]
+        } else {
+            unsafe { std::slice::from_raw_parts(bytes.data, bytes.length) }.to_vec()
+        };
+        reply.result = Some(if status == OK {
+            Ok(value)
+        } else {
+            Err(String::from_utf8(value)
+                .unwrap_or_else(|_| "request failed with non-UTF-8 error".into()))
+        });
+        OK
+    }))
+    .unwrap_or(PANICKED)
+}
+impl Manager {
+    pub fn hooks(&self, plugin: &str) -> Result<Vec<HookDescriptor>, String> {
+        let plugin = self
+            .plugins
+            .get(plugin)
+            .filter(|p| !p.destroyed)
+            .ok_or("plugin not loaded")?;
+        Ok(plugin.hooks.iter().map(|h| h.info.clone()).collect())
+    }
+    pub fn bind_hook(&self, plugin: &str, name: &str) -> Result<HookHandle, String> {
+        let generation = self
+            .plugins
+            .get(plugin)
+            .filter(|p| !p.destroyed)
+            .ok_or("plugin not loaded")?;
+        let slot = generation
+            .hooks
+            .iter()
+            .position(|h| h.info.name == name && h.bytes.is_some())
+            .ok_or("named request not registered")?;
+        Ok(HookHandle {
+            owner: self.owner,
+            plugin: plugin.into(),
+            generation: generation.info.generation,
+            slot,
+        })
+    }
+    pub fn call_hook(&mut self, handle: &HookHandle, input: &[u8]) -> Result<Vec<u8>, String> {
+        if handle.owner != self.owner {
+            return Err("hook handle belongs to another runtime".into());
+        }
+        if input.len() > MAX_INPUT_BYTES {
+            return Err("hook input exceeds 1 MiB".into());
+        }
+        let generation = self
+            .plugins
+            .get(&handle.plugin)
+            .filter(|p| !p.destroyed && p.info.generation == handle.generation)
+            .ok_or("hook handle has retired")?;
+        let api = generation
+            .hooks
+            .get(handle.slot)
+            .and_then(|h| h.bytes)
+            .ok_or("request hook unavailable")?;
+        let mut reply = Reply {
+            result: None,
+            calls: 0,
+        };
+        let status = unsafe {
+            (api.call)(
+                api.context,
+                Bytes {
+                    data: input.as_ptr(),
+                    length: input.len(),
+                },
+                collect,
+                (&mut reply as *mut Reply).cast(),
+            )
+        };
+        if status != OK {
+            return Err(format!("hook request failed ({status})"));
+        }
+        reply.result.ok_or("hook returned without a reply")?
+    }
+    /// Ordered notification fan-out on the background worker. Accepted events
+    /// are delivered even if their acknowledgement receiver is dropped.
+    pub fn emit_hook(&mut self, name: &str, input: &[u8]) -> Result<usize, String> {
+        if input.len() > MAX_INPUT_BYTES {
+            return Err("hook event exceeds 1 MiB".into());
+        }
+        let mut delivered = 0;
+        let mut errors = vec![];
+        for plugin in self.plugins.values().filter(|p| !p.destroyed) {
+            for hook in plugin.hooks.iter().filter(|h| h.info.name == name) {
+                if let Some(api) = hook.event {
+                    let status = unsafe {
+                        (api.notify)(
+                            api.context,
+                            Bytes {
+                                data: input.as_ptr(),
+                                length: input.len(),
+                            },
+                        )
+                    };
+                    if status == OK {
+                        delivered += 1;
+                    } else {
+                        errors.push(format!(
+                            "{}: event handler failed ({status})",
+                            plugin.info.id
+                        ));
+                    }
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(delivered)
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+}

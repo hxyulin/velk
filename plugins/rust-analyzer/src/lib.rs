@@ -5,10 +5,17 @@ pub struct RustAnalyzer;
 impl Plugin for RustAnalyzer {
     const ID: &'static str = "velk.language-server.rust-analyzer";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const LANGUAGE_SERVER: bool = true;
+    fn register(reg: &mut velk_plugin_sdk::Registrar<Self>) -> Result<(), String> {
+        reg.provide(
+            velk_plugin_sdk::hooks::LanguageDefinition,
+            Self::language_server,
+        )
+    }
     fn describe(&mut self) -> String {
         "Rust support via rust-analyzer · Requires velk.lsp".into()
     }
+}
+impl RustAnalyzer {
     fn language_server(&mut self, language: &str) -> Result<Option<LanguageServer>, String> {
         if language != "rust" {
             return Ok(None);
