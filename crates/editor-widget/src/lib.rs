@@ -31,6 +31,7 @@ pub struct Editor {
     composition: Option<Composition>,
     geometry: Rc<RefCell<Geometry>>,
     epoch: u64,
+    caret_epoch: u64,
     input_started: Option<Instant>,
     reveal_caret: bool,
     annotations: Option<Arc<Annotations>>,
@@ -136,6 +137,7 @@ impl Editor {
     }
 
     fn edited(&mut self) {
+        self.caret_epoch += 1;
         if self
             .annotations
             .as_ref()
@@ -279,8 +281,9 @@ impl View for Editor {
             cx.request_animation_frame();
         }
         let blink_geometry = self.geometry.clone();
-        let blink = cx.use_state(move |cx| blink::Blink::new(blink_geometry, cx));
-        let caret_visible = !blink.read(cx).hidden || geometry.epoch != Some(self.epoch);
+        let caret_epoch = self.caret_epoch;
+        let blink = cx.use_state(move |cx| blink::Blink::new(blink_geometry, caret_epoch, cx));
+        let caret_visible = blink.read(cx).visible(caret_epoch);
         drop(geometry);
         let copy = cx
             .command(commands::Copy, |this, _, cx| {
