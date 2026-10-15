@@ -129,8 +129,9 @@ impl Default for EditorAppearance {
 impl EditorAppearance {
     pub const fn dark() -> Self {
         Self {
-            background: [0.009, 0.014, 0.025, 1.],
-            foreground: [0.76, 0.82, 0.91, 1.],
+            // Graphite #1B1E24 on #D4D2CB, in linear RGB.
+            background: [0.011, 0.013, 0.0176, 1.],
+            foreground: [0.658, 0.644, 0.597, 1.],
             selection: [0.10, 0.28, 0.60, 0.45],
         }
     }
