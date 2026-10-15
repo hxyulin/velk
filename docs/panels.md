@@ -6,106 +6,105 @@ serializable data, validation and bounded encoding/decoding. It has no RXUI,
 plugin-host or filesystem dependency. The root native plugin ABI remains 1;
 `Plugin` has no panel-specific method.
 
-## Try the mock Files plugin
-
-Build and launch with `cargo xtask run --release -- <file>`. The built-in pack now
-includes `velk.demo.files`, an independently unloadable plugin which supplies
-**Files (mock)**. Open Panels from the status/activity bar, the command palette's
-**Panels: Toggle visibility**, or Command+B / Control+B. Panels start hidden.
-
-The demo tree is hard-coded sample data unrelated to the open document. Branches
-expand/collapse; rows can be selected. File rows have no action, and never open,
-read, write or scan files. Refresh requests another snapshot. Unloading the demo
-removes its contribution; loading or restarting it discovers it again. It shares
-the built-in native image without sharing its logical instance/lifecycle.
+The built-in `velk.files` plugin provides a real, lazy filesystem tree. See
+[files.md](files.md) for root selection, behavior and limits. Open Panels with the
+shell button, **Panels: Toggle visibility** in the palette, or Command+B /
+Control+B. Panels start hidden.
 
 ## Contribution contract
 
-Register an ordinary SDK request handler:
+Register an ordinary SDK request handler for `hooks::Request(velk_panels::HOOK)`.
+Decode `velk_panels::Request` and encode a `velk_panels::Reply`:
 
-```rust
-use velk_plugin_sdk::{Plugin, Registrar, hooks};
+- `Describe { context }` requests the complete contribution. Context contains an
+  optional absolute native document path, whether the host has initialized view
+  state, and expanded node IDs retained across refresh/restart.
+- `Expand { panel, revision, node, expanded }` asks for an unloaded branch's
+  contents. Already loaded branches expand and collapse locally. Expanded IDs
+  allow providers to restore previously opened descendants lazily.
+- `Invoke { panel, revision, node, action }` activates a leaf's opaque action.
+- `Poll { id }` collects asynchronous work; `Cancel { id }` retires it.
 
-// Within Plugin::register:
-reg.provide(hooks::Request(velk_panels::HOOK), |plugin, bytes| {
-    match velk_panels::decode::<velk_panels::Request>(bytes)? {
-        velk_panels::Request::Describe => {
-            let snapshot = plugin.panel_snapshot();
-            snapshot.validate()?;
-            velk_panels::encode(&snapshot)
-        }
-        velk_panels::Request::Invoke { panel, revision, node, action } => {
-            plugin.apply_panel_action(panel, revision, node, action)?;
-            velk_panels::encode(&plugin.panel_snapshot())
-        }
-    }
-})
-```
+A handler can return `Reply::Ready { snapshot }` immediately, or
+`Reply::Pending { id }` after queueing owned work. Subsequent polls return the same
+job ID until ready. `Reply::Cancelled` ends the exchange. The host polls at 8 ms
+intervals using its async executor and cancels on a 30-second timeout. A new
+Describe can supersede previous work; providers must reject retired job IDs.
+Lifecycle changes invalidate host tasks and handles. A dropped host task alone
+does not guarantee delivery of Cancel, so providers also need bounded work,
+supersession and unload cancellation.
 
 `Snapshot` describes the provider's complete set of panels. Each panel has a
 provider-local ID, title, preferred `Left`, `Right` or `Bottom` slot, revision and
-content. Content is currently `Text` or `Tree`. A flat tree is a list (all depths
-zero); nested trees use preorder depth and stable node IDs. The first node starts
-at depth zero, depth increases by at most one, and only a branch can have children.
-A node's `expanded` flag initializes host state only. Later snapshots retain the
-user's expansion/selection for surviving IDs, even when the plugin restarts.
+content. Content is `Text` or `Tree`. Trees use preorder depth and stable node
+IDs. The first node starts at depth zero, depth increases by at most one, and
+only a branch can have children. A node's `expanded` flag initializes host state
+only. `lazy` is valid only for a branch, and requests Expand when opened. Later
+snapshots retain expansion/selection for surviving IDs. Unknown expanded IDs
+are retained while lazy branches exist, so descendants can be restored when a
+collapsed parent is reopened after plugin restart.
 
 The host qualifies panel IDs with plugin ID, so two providers can both call a
 panel `files`. Multiple panels in a slot appear as tabs. Host controls own fonts,
-colors, accessibility, focus, layout and scrolling. Side slots are currently 280
-logical pixels wide and the bottom slot is 180 pixels high; resizing and moving
-panels are not yet exposed. These contributions cannot draw arbitrary native UI
-or run callbacks during rendering.
+colors, accessibility, focus, layout and scrolling. Side slots are 280 logical
+pixels wide and the bottom slot is 180 pixels high; resizing and moving panels
+are not yet exposed. Contributions cannot draw arbitrary native UI or run
+callbacks during rendering.
 
-`Invoke` is optional per leaf, via the node's opaque `action` string. Selecting a
-leaf with an action submits panel ID, snapshot revision, node ID and action.
-The plugin must validate these against its current model before mutating state.
-Its reply replaces its complete set of panels, while preserving other providers.
-A lower revision in an action reply for an existing panel is rejected within the same generation.
-A new generation can restart revision numbering. Leaves without actions only
-select; branches only toggle expansion. Pointer activation and the buttons'
-Enter/Space activation share the host action path. This is a virtual list of
-buttons, not a full accessibility tree navigation implementation.
+The plugin must validate panel ID, revision, node and action against its current
+model before applying a request. Its reply replaces its complete set of panels,
+while preserving other providers. A lower revision within the same generation
+is rejected. A new generation can restart revision numbering. Leaves without
+actions only select; branches toggle expansion. Pointer and Enter/Space button
+activation share the same path. This is a virtual list of buttons, not a full
+accessibility tree navigation implementation.
+
+## Host effects
+
+An Invoke reply can include one-shot `Effect::OpenFile { path }` values. The host
+validates the entire snapshot before applying effects, removes effects before
+storing the contribution, and opens files through its normal asynchronous buffer
+path. Canonical path deduplication and unsaved buffers retain normal behavior.
+Discovery and Expand replies cannot request effects. Refresh, rendering and
+session restoration never replay them.
+
+`NativePath` transports Unix bytes or Windows UTF-16 units without lossy UTF-8
+conversion. Only absolute paths in the receiving platform's encoding are
+accepted, with no NUL and at most 32,768 units. Labels are separate display text;
+never reconstruct a filesystem path from a label. Plugins remain trusted native
+code; this protocol does not sandbox filesystem access.
 
 ## Scheduling, ownership and limits
 
 Discovery happens after plugin lifecycle operations and on explicit refresh.
-Binding, native calls, JSON decoding and structural validation run outside the UI
-thread. The UI holds owned snapshots and a cached list of visible row indices.
-RXUI's fixed-height virtual list constructs only visible rows plus overscan;
-no plugin call is made for a row, a frame, scrolling or folder expansion.
-Expansion rebuilds the bounded visible-index cache once per interaction.
+Binding, native calls, decoding and structural validation run outside the UI
+thread. The UI retains owned snapshots and cached visible row indices. RXUI's
+fixed-height virtual list constructs visible rows plus overscan. Rendering,
+scrolling, collapsing and expanding loaded branches make no plugin calls.
 
-Hook handlers run on the serialized plugin worker and should return quickly.
-A real file provider should do traversal/watching/indexing on its own cancellable
-worker, then return cached snapshots. This first contract is request/reply:
-push updates, deltas, pending/poll responses and arbitrary custom panel content
-are intentionally not implemented yet. Expensive work must not be performed in
-a synchronous handler merely because it is off the UI thread.
+Hook handlers run on the serialized plugin worker and must return quickly.
+Filesystem traversal belongs on the provider's own cancellable worker; returning
+Pending keeps unrelated plugin calls moving. No plugin-owned callback or memory
+is retained in the view. Plugins must stop/join their workers before unload.
+Cooperative cancellation cannot interrupt a blocked operating system syscall.
 
-Every payload is capped at 1 MiB. A provider can return at most 16 panels and
-10,000 total tree nodes, with depth at most 32, IDs/actions at most 128 bytes,
-labels at most 256 bytes and each text panel at most 64 KiB. IDs must be unique
-within their scope. Across providers a window accepts at most 64 panels and
-20,000 tree nodes. Malformed/oversized providers are rejected independently, with
-errors shown in the shell. Full snapshots are suitable for this prototype;
-large real datasets will need a paged/delta contract.
+Every payload is capped at 1 MiB. A provider can return at most 16 panels,
+10,000 total tree nodes, depth 32, IDs/actions of 128 bytes, labels of 256 bytes,
+text panels of 64 KiB and 16 effects. IDs must be unique within their scope.
+Across providers a window accepts at most 64 panels and 20,000 tree nodes.
+The host bounds pending panel actions and file opens to 32 each. Malformed or
+oversized contributions are rejected independently, with errors in the shell.
+Full snapshots are suitable for this prototype; larger datasets will need a
+paged/delta contract. Push updates and custom panel content are not implemented.
 
-Lifecycle submission immediately invalidates outstanding panel tasks and clears
-cached contributions/handles. Completion discovers the current catalog again.
-An epoch check rejects old UI replies, and generation-bound hook handles reject
-retired native instances. Dropping a host task does not reverse a native action
-already executing. No plugin-owned callback or memory is retained in the view;
-plugins still must stop/join their own workers before unload.
+Reload Window preserves visibility, closed slots, selected tabs, expanded
+branches, row selection and the initial document path used as project context.
+Data and handles are rediscovered from new plugin instances. Scroll offsets are
+transient. The host retains view state for up to 64 contributed panels, allowing
+unload/reload/restart to restore expansion without retaining native code.
 
-Reload Window preserves panel visibility, closed slots, selected tabs, expanded
-branches and row selection. Data/handles are rediscovered from new plugin
-instances. Scroll offsets are transient in this initial implementation. The host
-keeps view state for up to 64 contributed panels, allowing unload/reload/restart
-to restore expansion without retaining native code. Bar visibility settings
-remain separate from panel visibility.
-
-Validation includes contract rejection tests, host layout/virtualization/focus
-checks, and the native pack smoke in `cargo xtask test-plugins`, which requests a
-real DLL snapshot, unloads its provider, verifies stale-handle rejection and
-reads the host-owned snapshot after unload.
+Validation covers malformed paths/trees, lazy reads, refresh restoration,
+cancellation, unusual filenames, bounds and host buffer queuing. The native
+pack smoke in `cargo xtask test-plugins` expands a real directory, collects an
+open-file effect, unloads with outstanding work, verifies stale-handle rejection
+and reads host-owned snapshots after unload.

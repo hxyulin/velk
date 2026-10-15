@@ -227,7 +227,15 @@ impl Document {
         }
     }
     pub(super) fn open_path(&mut self, path: PathBuf, cx: &mut Context<'_, Self>) {
-        if self.opening.is_some() || self.closing.is_some() || self.reloading() {
+        if self.closing.is_some() || self.reloading() {
+            return;
+        }
+        if self.opening.is_some() {
+            if self.pending_opens.len() >= 32 {
+                self.buffer.status = Some("Too many queued file opens; please wait".into());
+            } else if !self.pending_opens.contains(&path) {
+                self.pending_opens.push_back(path);
+            }
             return;
         }
         let open: Vec<_> = std::iter::once(&self.buffer)
@@ -260,10 +268,16 @@ impl Document {
                     Ok(Err(error)) => this.buffer.status = Some(format!("Open failed: {error}")),
                     Err(error) => this.buffer.status = Some(format!("Open failed: {error}")),
                 }
+                if let Some(next) = this.pending_opens.pop_front() {
+                    this.open_path(next, cx);
+                }
             },
         ) {
             Ok(task) => self.opening = Some(task),
-            Err(error) => self.buffer.status = Some(format!("Open failed: {error}")),
+            Err(error) => {
+                self.pending_opens.clear();
+                self.buffer.status = Some(format!("Open failed: {error}"));
+            }
         }
     }
     pub(super) fn remove_current_buffer(&mut self, cx: &mut Context<'_, Self>) {
@@ -552,6 +566,38 @@ mod tests {
                 d.buffer.editor.read(cx).buffer().text().to_string(),
                 "second"
             );
+        });
+    }
+    #[test]
+    fn rapid_file_opens_are_drained_after_failures_and_deduplicated() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        std::fs::write(&a, "first").unwrap();
+        std::fs::write(&b, "second").unwrap();
+        let mut runtime = Runtime::new();
+        let executor = Arc::new(QueuedExecutor::default());
+        runtime.configure_tasks(executor.clone(), || {}).unwrap();
+        let document = create(&mut runtime, &a);
+        runtime.update(|cx| {
+            document.update(cx, |d, cx| {
+                d.buffer.editor.update(cx, |e, _| e.insert("unsaved"));
+                d.open_path(dir.path().join("missing"), cx);
+                d.open_path(b.clone(), cx);
+                d.open_path(b.clone(), cx);
+                d.open_path(a.clone(), cx);
+                assert_eq!(d.pending_opens.len(), 2);
+            })
+        });
+        for _ in 0..3 {
+            executor.complete(&mut runtime);
+        }
+        runtime.update(|cx| {
+            let d = document.read(cx);
+            assert_eq!(d.ids().len(), 2);
+            assert_eq!(d.buffer.id, 1);
+            assert!(d.buffer.editor.read(cx).buffer().is_dirty());
+            assert!(d.pending_opens.is_empty() && d.opening.is_none());
         });
     }
 }

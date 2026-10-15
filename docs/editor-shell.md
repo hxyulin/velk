@@ -2,7 +2,7 @@
 
 Velk starts with a buffer tab bar, the editor and a compact bottom status bar. The bar shows save
 and semantic status and provides Settings and Plugins buttons. Enabling the left
-activity bar moves those buttons into it. Panels start hidden, and the mock Files plugin performs no filesystem scanning.
+activity bar moves those buttons into it. Panels start hidden. The Files plugin reads the initial project root and loads subfolders only when opened.
 
 Settings opens as a modal with Command+, on macOS and Control+, elsewhere. It can
 hide either bar, including both; the shortcut remains available. Escape, the
@@ -37,8 +37,8 @@ files, keyboard shortcuts and reload behavior.
 
 Plugins can now contribute host-rendered panels through the named
 `velk.ui.panels.v1` request hook. Left, right and bottom slots support tabbed tree
-or text snapshots. The built-in `velk.demo.files` plugin demonstrates a mock file
-tree; it does not access the filesystem. Panels start hidden. Open them with the
+or text snapshots. The built-in `velk.files` plugin supplies a lazy filesystem
+tree; see [files.md](files.md) for root selection, refresh and limits. Panels start hidden. Open them with the
 Panels button, Command+B / Control+B, or **Panels: Toggle visibility** in the
 palette. Closing a slot restores editing focus. The launcher moves into the
 activity bar when enabled and remains reachable by shortcut with both bars hidden.

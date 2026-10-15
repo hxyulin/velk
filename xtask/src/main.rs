@@ -85,7 +85,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         "velk.lsp",
         "velk.language-server.rust-analyzer",
         velk_search::DEFAULT_BACKEND,
-        "velk.demo.files",
+        "velk.files",
     ]
     .into_iter()
     .map(|id| PluginSpec {

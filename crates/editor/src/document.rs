@@ -43,6 +43,7 @@ pub struct Document {
     background_buffer: bool,
     next_search: u64,
     opening: Option<Task>,
+    pending_opens: std::collections::VecDeque<PathBuf>,
     closing: Option<Intent>,
     close_approved: std::collections::BTreeSet<u64>,
     pub window: Option<WindowHandle>,
@@ -89,6 +90,7 @@ impl Document {
         path: PathBuf,
         cx: &mut Context<'_, Self>,
     ) -> Self {
+        let panel_source = velk_panels::NativePath::new(file.path());
         let buffer = buffers::BufferState::new(1, editor, file, path, cx);
         Self {
             buffer,
@@ -98,6 +100,7 @@ impl Document {
             background_buffer: false,
             next_search: 0,
             opening: None,
+            pending_opens: Default::default(),
             closing: None,
             close_approved: Default::default(),
             window: None,
@@ -111,7 +114,7 @@ impl Document {
             editor_focus: rxui::FocusHandle::new(),
             shell: shell::State::default(),
             palette: palette::State::default(),
-            panels: panels::State::default(),
+            panels: panels::State::new(panel_source),
         }
     }
     pub fn title(&self) {

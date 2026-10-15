@@ -40,7 +40,11 @@ impl Document {
             && !self.buffer.editor.read(cx).has_composition()
     }
     pub fn restore_ui(&mut self, state: UiState) {
+        let panel_source = self.panels.ui.source.clone();
         self.panels.ui = state.panels;
+        if self.panels.ui.source.is_none() {
+            self.panels.ui.source = panel_source;
+        }
         self.shell.store.preferences = state.preferences;
         self.shell.open = state.settings_open;
         self.plugin_menu_open = state.plugins_open;

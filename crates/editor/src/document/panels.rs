@@ -2,8 +2,13 @@
 use super::Document;
 use rxui::{Element, prelude::*};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
-use velk_panels::{Content, Panel, Request, Slot, Snapshot};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    time::{Duration, Instant},
+};
+use velk_panels::{
+    Content, Context as PanelContext, Effect, NativePath, Panel, Reply, Request, Slot, Snapshot,
+};
 use velk_plugin_host::{Client, HookHandle, PluginInfo};
 
 pub(super) struct Toggle;
@@ -15,6 +20,8 @@ pub(super) struct ViewState {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct UiState {
+    #[serde(default)]
+    pub(super) source: Option<NativePath>,
     visible: bool,
     tabs: BTreeMap<Slot, String>,
     closed: BTreeSet<Slot>,
@@ -35,6 +42,23 @@ pub(super) struct State {
     epoch: u64,
     task: Option<Task>,
     error: Option<String>,
+    pending: VecDeque<PendingAction>,
+}
+struct PendingAction {
+    key: String,
+    node: String,
+    expand: bool,
+}
+impl State {
+    pub(super) fn new(source: NativePath) -> Self {
+        Self {
+            ui: UiState {
+                source: Some(source),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 }
 struct Contribution {
     provider: String,
@@ -68,10 +92,50 @@ impl Entry {
         }
     }
 }
+/// Polling is a transport detail; plugin handlers remain short queue operations.
+async fn exchange(
+    client: &Client,
+    handle: &HookHandle,
+    request: Request,
+) -> Result<Snapshot, String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut request = request;
+    let mut job = None;
+    loop {
+        let bytes = client
+            .call_hook(handle.clone(), velk_panels::encode(&request)?)
+            .await?;
+        match velk_panels::decode::<Reply>(&bytes)? {
+            Reply::Ready { snapshot } => {
+                snapshot.validate()?;
+                return Ok(snapshot);
+            }
+            Reply::Pending { id } => {
+                if job.is_some_and(|current| current != id) {
+                    return Err("panel provider changed job identity".into());
+                }
+                job = Some(id);
+                if Instant::now() >= deadline {
+                    let _ = client
+                        .call_hook(
+                            handle.clone(),
+                            velk_panels::encode(&Request::Cancel { id })?,
+                        )
+                        .await;
+                    return Err("panel request timed out".into());
+                }
+                rxui::sleep(Duration::from_millis(8)).await;
+                request = Request::Poll { id };
+            }
+            Reply::Cancelled => return Err("panel request cancelled".into()),
+        }
+    }
+}
 #[tracing::instrument(level="debug", skip_all, fields(providers=plugins.len(), async_work=true))]
 async fn discover(
     client: Client,
     plugins: Vec<PluginInfo>,
+    mut contexts: BTreeMap<String, PanelContext>,
 ) -> Result<(Vec<Contribution>, Vec<String>), String> {
     let mut contributions = Vec::new();
     let mut errors = Vec::new();
@@ -87,11 +151,11 @@ async fn discover(
             continue;
         };
         let result: Result<Contribution, String> = async {
-            let bytes = client
-                .call_hook(handle.clone(), velk_panels::encode(&Request::Describe)?)
-                .await?;
-            let snapshot: Snapshot = velk_panels::decode(&bytes)?;
-            snapshot.validate()?;
+            let context = contexts.remove(&plugin.id).unwrap_or_default();
+            let snapshot = exchange(&client, &handle, Request::Describe { context }).await?;
+            if !snapshot.effects.is_empty() {
+                return Err("panel discovery cannot request host effects".into());
+            }
             let count = snapshot
                 .panels
                 .iter()
@@ -124,6 +188,7 @@ impl Document {
     pub(super) fn suspend_panels(&mut self) {
         self.panels.epoch = self.panels.epoch.wrapping_add(1);
         self.panels.task = None;
+        self.panels.pending.clear();
         self.panels.entries.clear();
         self.panels.handles.clear();
         self.panels.error = None;
@@ -132,35 +197,44 @@ impl Document {
         self.panels.epoch = self.panels.epoch.wrapping_add(1);
         let epoch = self.panels.epoch;
         self.panels.task = None;
+        self.panels.pending.clear();
         let Some(plugins) = &self.plugins else { return };
         let client = plugins.client.clone();
         let loaded = plugins.loaded.clone();
-        match cx.try_spawn(discover(client, loaded), move |this, result, _| {
-            if this.panels.epoch != epoch {
-                return;
-            }
-            this.panels.task = None;
-            match result {
-                Ok(Ok((contributions, errors))) => {
-                    this.install_panels(contributions);
-                    this.panels.error = (!errors.is_empty())
-                        .then(|| errors.into_iter().take(4).collect::<Vec<_>>().join("; "));
+        let contexts = loaded
+            .iter()
+            .map(|p| (p.id.clone(), self.panel_context(&p.id)))
+            .collect();
+        match cx.try_spawn(
+            discover(client, loaded, contexts),
+            move |this, result, cx| {
+                if this.panels.epoch != epoch {
+                    return;
                 }
-                Ok(Err(e)) => this.panels.error = Some(e),
-                Err(e) => this.panels.error = Some(e.to_string()),
-            }
-            if let Some(error) = &this.panels.error {
-                this.buffer.status = Some(format!("Panels: {error}"));
-            } else if this
-                .buffer
-                .status
-                .as_deref()
-                .is_some_and(|s| s.starts_with("Panels:"))
-            {
-                this.buffer.status =
-                    Some(format!("Panels: {} available", this.panels.entries.len()));
-            }
-        }) {
+                this.panels.task = None;
+                match result {
+                    Ok(Ok((contributions, errors))) => {
+                        this.install_panels(contributions);
+                        this.panels.error = (!errors.is_empty())
+                            .then(|| errors.into_iter().take(4).collect::<Vec<_>>().join("; "));
+                    }
+                    Ok(Err(e)) => this.panels.error = Some(e),
+                    Err(e) => this.panels.error = Some(e.to_string()),
+                }
+                if let Some(error) = &this.panels.error {
+                    this.buffer.status = Some(format!("Panels: {error}"));
+                } else if this
+                    .buffer
+                    .status
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("Panels:"))
+                {
+                    this.buffer.status =
+                        Some(format!("Panels: {} available", this.panels.entries.len()));
+                }
+                this.start_panel_action(cx);
+            },
+        ) {
             Ok(t) => self.panels.task = Some(t),
             Err(e) => self.panels.error = Some(e.to_string()),
         }
@@ -191,7 +265,12 @@ impl Document {
                 if let Content::Tree(nodes) = &panel.content {
                     let branches: BTreeSet<_> =
                         nodes.iter().filter(|n| n.branch).map(|n| &n.id).collect();
-                    view.expanded.retain(|id| branches.contains(id));
+                    if !nodes.iter().any(|n| n.lazy) {
+                        view.expanded.retain(|id| branches.contains(id));
+                    }
+                    while view.expanded.len() > velk_panels::MAX_NODES {
+                        view.expanded.pop_last();
+                    }
                     if view
                         .selected
                         .as_ref()
@@ -258,6 +337,7 @@ impl Document {
                 provider: e.provider.clone(),
                 handle: self.panels.handles[&e.provider].clone(),
                 snapshot: Snapshot {
+                    effects: Vec::new(),
                     panels: vec![e.panel.clone()],
                 },
             })
@@ -284,6 +364,32 @@ impl Document {
         self.install_panels(contributions);
         Ok(())
     }
+    fn panel_context(&self, provider: &str) -> PanelContext {
+        let prefix = format!("{provider}:");
+        let views: Vec<_> = self
+            .panels
+            .ui
+            .views
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .collect();
+        PanelContext {
+            document: self
+                .panels
+                .ui
+                .source
+                .clone()
+                .or_else(|| Some(NativePath::new(self.buffer.file.path()))),
+            initialized: !views.is_empty(),
+            expanded: views
+                .into_iter()
+                .flat_map(|(_, v)| v.expanded.iter().cloned())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .take(velk_panels::MAX_NODES)
+                .collect(),
+        }
+    }
     fn activate_panel_row(&mut self, key: &str, node: &str, cx: &mut Context<'_, Self>) {
         let Some(entry) = self.panels.entries.iter_mut().find(|e| e.key == key) else {
             return;
@@ -296,65 +402,130 @@ impl Document {
         };
         let view = self.panels.ui.views.entry(key.into()).or_default();
         view.selected = Some(node.id.clone());
+        let expand = node.branch;
+        let node_id = node.id.clone();
         if node.branch {
-            if !view.expanded.remove(&node.id) {
+            let opening = !view.expanded.remove(&node.id);
+            if opening {
                 view.expanded.insert(node.id.clone());
             }
+            let lazy = node.lazy;
             entry.rebuild(view);
+            if !opening || !lazy {
+                return;
+            }
+        } else if node.action.is_none() {
             return;
         }
-        let Some(action) = node.action.clone() else {
+        if self.panels.pending.len() >= 32 {
+            self.panels.error = Some("Too many queued panel actions; please wait".into());
             return;
-        };
+        }
+        self.panels.pending.push_back(PendingAction {
+            key: key.into(),
+            node: node_id,
+            expand,
+        });
+        self.start_panel_action(cx);
+    }
+    fn start_panel_action(&mut self, cx: &mut Context<'_, Self>) {
         if self.panels.task.is_some() {
             return;
         }
-        let Some(plugins) = &self.plugins else { return };
+        let Some(pending) = self.panels.pending.pop_front() else {
+            return;
+        };
+        let Some(entry) = self.panels.entries.iter().find(|e| e.key == pending.key) else {
+            self.start_panel_action(cx);
+            return;
+        };
+        let Content::Tree(nodes) = &entry.panel.content else {
+            self.start_panel_action(cx);
+            return;
+        };
+        let Some(node) = nodes.iter().find(|n| n.id == pending.node) else {
+            self.start_panel_action(cx);
+            return;
+        };
+        if pending.expand
+            && !self
+                .panels
+                .ui
+                .views
+                .get(&pending.key)
+                .is_some_and(|v| v.expanded.contains(&pending.node))
+        {
+            self.start_panel_action(cx);
+            return;
+        }
+        let Some(plugins) = &self.plugins else {
+            return;
+        };
         let client = plugins.client.clone();
         let Some(handle) = self.panels.handles.get(&entry.provider).cloned() else {
             return;
         };
-        let request = Request::Invoke {
-            panel: entry.panel.id.clone(),
-            revision: entry.panel.revision,
-            node: node.id.clone(),
-            action,
+        let request = if pending.expand {
+            Request::Expand {
+                panel: entry.panel.id.clone(),
+                revision: entry.panel.revision,
+                node: node.id.clone(),
+                expanded: self.panel_context(&entry.provider).expanded,
+            }
+        } else {
+            let Some(action) = node.action.clone() else {
+                self.start_panel_action(cx);
+                return;
+            };
+            Request::Invoke {
+                panel: entry.panel.id.clone(),
+                revision: entry.panel.revision,
+                node: node.id.clone(),
+                action,
+            }
         };
         let provider = entry.provider.clone();
         let epoch = self.panels.epoch;
         let response_handle = handle.clone();
-        let input = match velk_panels::encode(&request) {
-            Ok(b) => b,
-            Err(e) => {
-                self.panels.error = Some(e);
-                return;
-            }
-        };
+        let allow_effects = !pending.expand;
         match cx.try_spawn(
             async move {
-                let bytes = client.call_hook(handle, input).await?;
-                let snapshot: Snapshot = velk_panels::decode(&bytes)?;
-                snapshot.validate()?;
+                let snapshot = exchange(&client, &handle, request).await?;
+                if !allow_effects && !snapshot.effects.is_empty() {
+                    return Err("folder expansion cannot request host effects".into());
+                }
                 Ok::<_, String>(snapshot)
             },
-            move |this, result, _| {
+            move |this, result, cx| {
                 if this.panels.epoch != epoch {
                     return;
                 }
                 this.panels.task = None;
                 match result {
-                    Ok(Ok(snapshot)) => {
+                    Ok(Ok(mut snapshot)) => {
+                        let effects = std::mem::take(&mut snapshot.effects);
                         this.panels.error = this
                             .replace_panel_provider(provider, response_handle, snapshot)
                             .err();
+                        if this.panels.error.is_none() {
+                            for effect in effects {
+                                match effect {
+                                    Effect::OpenFile { path } => match path.to_path() {
+                                        Ok(path) => this.open_path(path, cx),
+                                        Err(error) => this.panels.error = Some(error),
+                                    },
+                                }
+                            }
+                        }
                     }
-                    Ok(Err(e)) => this.panels.error = Some(format!("{provider}: {e}")),
-                    Err(e) => this.panels.error = Some(e.to_string()),
+                    Ok(Err(error)) => this.panels.error = Some(format!("{provider}: {error}")),
+                    Err(error) => this.panels.error = Some(error.to_string()),
                 }
+                this.start_panel_action(cx);
             },
         ) {
-            Ok(t) => self.panels.task = Some(t),
-            Err(e) => self.panels.error = Some(e.to_string()),
+            Ok(task) => self.panels.task = Some(task),
+            Err(error) => self.panels.error = Some(error.to_string()),
         }
     }
     pub(super) fn panels_action(&self, cx: &ViewContext<'_, Self>) -> rxui::CommandAction<Toggle> {
@@ -508,6 +679,9 @@ impl Document {
             .min_height(0.)
             .child(tabs)
             .child(content);
+        if self.panels.task.is_some() {
+            panel = panel.child(label("Loading…").font_size(12.).padding(6.));
+        }
         if let Some(error) = &self.panels.error {
             panel = panel.child(label(error.clone()).font_size(12.).padding(6.));
         }
@@ -540,6 +714,7 @@ mod tests {
             depth,
             branch,
             expanded: false,
+            lazy: false,
             action: None,
         }
     }

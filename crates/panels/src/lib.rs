@@ -1,5 +1,7 @@
 //! Host-rendered panel contributions carried by a named byte request. No UI,
-//! callbacks, plugin-owned memory, or filesystem assumptions cross this boundary.
+//! callbacks, plugin-owned memory or filesystem I/O cross this boundary.
+mod path;
+pub use path::NativePath;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 pub const HOOK: &str = "velk.ui.panels.v1";
@@ -38,25 +40,79 @@ pub struct Node {
     /// Initial expansion only; subsequent snapshots preserve host view state.
     #[serde(default)]
     pub expanded: bool,
-    /// Optional opaque action. Selection and expansion are always host-local.
+    /// Opening this branch requests children from the provider off the UI thread.
+    #[serde(default)]
+    pub lazy: bool,
+    /// Optional opaque action. Selection and loaded-branch expansion are host-local.
     #[serde(default)]
     pub action: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Context {
+    /// The initial window document, independent of the selected buffer.
+    pub document: Option<NativePath>,
+    /// Whether this provider has existing panel view state, even if all closed.
+    #[serde(default)]
+    pub initialized: bool,
+    #[serde(default)]
+    pub expanded: Vec<String>,
+}
+impl Context {
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(path) = &self.document {
+            path.to_path()?;
+        }
+        if self.expanded.len() > MAX_NODES || self.expanded.iter().any(|s| !short(s, 128)) {
+            return Err("invalid panel expansion context".into());
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
-    Describe,
+    Describe {
+        context: Context,
+    },
+    Expand {
+        panel: String,
+        revision: u64,
+        node: String,
+        expanded: Vec<String>,
+    },
     Invoke {
         panel: String,
         revision: u64,
         node: String,
         action: String,
     },
+    Poll {
+        id: u64,
+    },
+    Cancel {
+        id: u64,
+    },
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Reply {
+    Ready { snapshot: Snapshot },
+    Pending { id: u64 },
+    Cancelled,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "effect", rename_all = "snake_case")]
+pub enum Effect {
+    OpenFile { path: NativePath },
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub panels: Vec<Panel>,
+    /// One-shot host requests. Never retained or replayed during discovery/reload.
+    #[serde(default)]
+    pub effects: Vec<Effect>,
 }
+
 fn short(s: &str, limit: usize) -> bool {
     !s.is_empty() && s.len() <= limit && !s.chars().any(char::is_control)
 }
@@ -64,6 +120,16 @@ impl Snapshot {
     pub fn validate(&self) -> Result<(), String> {
         if self.panels.len() > MAX_PANELS {
             return Err("too many panels".into());
+        }
+        if self.effects.len() > 16 {
+            return Err("too many panel effects".into());
+        }
+        for effect in &self.effects {
+            match effect {
+                Effect::OpenFile { path } => {
+                    path.to_path()?;
+                }
+            }
         }
         let mut ids = BTreeSet::new();
         let mut count = 0;
@@ -88,6 +154,7 @@ impl Snapshot {
                             || !short(&n.label, 256)
                             || !ids.insert(&n.id)
                             || n.depth > 32
+                            || (n.lazy && !n.branch)
                             || n.action.as_ref().is_some_and(|s| !short(s, 128))
                             || previous.is_none_or(|p| {
                                 n.depth > p.depth && (!p.branch || n.depth != p.depth + 1)
@@ -126,12 +193,14 @@ mod tests {
             depth,
             branch,
             expanded: false,
+            lazy: false,
             action: None,
         }
     }
     #[test]
     fn validates_tree_structure_unique_ids_and_bounds() {
         let mut s = Snapshot {
+            effects: Vec::new(),
             panels: vec![Panel {
                 id: "files".into(),
                 title: "Files".into(),
@@ -147,6 +216,10 @@ mod tests {
             vec![node("root", 0, true), node("skip", 2, false)],
             vec![node("same", 0, true), node("same", 1, false)],
             vec![node("deep", 33, false)],
+            vec![Node {
+                lazy: true,
+                ..node("leaf", 0, false)
+            }],
         ] {
             s.panels[0].content = Content::Tree(nodes);
             assert!(s.validate().is_err());
@@ -157,5 +230,23 @@ mod tests {
         s.panels.push(s.panels[0].clone());
         assert!(s.validate().is_err());
         assert!(decode::<Snapshot>(&vec![b' '; MAX_BYTES + 1]).is_err());
+    }
+    #[test]
+    fn effects_are_bounded_and_validate_native_paths() {
+        let path = NativePath::new(&std::env::current_dir().unwrap());
+        let effect = Effect::OpenFile { path };
+        let mut snapshot = Snapshot {
+            panels: vec![],
+            effects: vec![effect.clone()],
+        };
+        snapshot.validate().unwrap();
+        let restored: Snapshot = decode(&encode(&snapshot).unwrap()).unwrap();
+        assert_eq!(restored.effects, snapshot.effects);
+        snapshot.effects = vec![effect; 17];
+        assert!(snapshot.validate().is_err());
+        snapshot.effects = vec![Effect::OpenFile {
+            path: NativePath::Unix(b"relative".to_vec()),
+        }];
+        assert!(snapshot.validate().is_err());
     }
 }

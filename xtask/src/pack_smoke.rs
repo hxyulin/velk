@@ -30,24 +30,92 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .any(|r| r.style.bold)
         );
         let search = manager.bind_hook(velk_search::DEFAULT_BACKEND, velk_search::HOOK)?;
-        let panel = manager.bind_hook("velk.demo.files", velk_panels::HOOK)?;
-        let bytes = manager.call_hook(
+        let panel = manager.bind_hook("velk.files", velk_panels::HOOK)?;
+        let project = tempfile::tempdir().map_err(|e| e.to_string())?;
+        std::fs::create_dir(project.path().join(".git")).map_err(|e| e.to_string())?;
+        std::fs::create_dir(project.path().join("src")).map_err(|e| e.to_string())?;
+        let source = project.path().join("src/main.rs");
+        std::fs::write(&source, "fn main() {}\n").map_err(|e| e.to_string())?;
+        let context = velk_panels::Context {
+            document: Some(velk_panels::NativePath::new(&source)),
+            ..Default::default()
+        };
+        let snapshot = panel_request(
+            &mut manager,
             &panel,
-            &velk_panels::encode(&velk_panels::Request::Describe)?,
+            velk_panels::Request::Describe {
+                context: context.clone(),
+            },
         )?;
-        let snapshot: velk_panels::Snapshot = velk_panels::decode(&bytes)?;
         snapshot.validate()?;
-        assert_eq!(snapshot.panels[0].title, "Files (mock)");
+        assert_eq!(snapshot.panels[0].title, "Files");
+        let velk_panels::Content::Tree(rows) = &snapshot.panels[0].content else {
+            panic!("expected filesystem tree")
+        };
+        assert!(!rows.iter().any(|n| n.label == "main.rs"));
+        let folder = rows.iter().find(|n| n.label == "src").unwrap();
+        assert!(folder.lazy);
+        let expanded = panel_request(
+            &mut manager,
+            &panel,
+            velk_panels::Request::Expand {
+                panel: "files".into(),
+                revision: snapshot.panels[0].revision,
+                node: folder.id.clone(),
+                expanded: vec![rows[0].id.clone(), folder.id.clone()],
+            },
+        )?;
+        let velk_panels::Content::Tree(rows) = &expanded.panels[0].content else {
+            panic!("expected expanded tree")
+        };
+        let leaf = rows.iter().find(|n| n.label == "main.rs").unwrap();
+        let opened = panel_request(
+            &mut manager,
+            &panel,
+            velk_panels::Request::Invoke {
+                panel: "files".into(),
+                revision: expanded.panels[0].revision,
+                node: leaf.id.clone(),
+                action: "open".into(),
+            },
+        )?;
+        assert_eq!(
+            opened.effects,
+            vec![velk_panels::Effect::OpenFile {
+                path: velk_panels::NativePath::new(
+                    &std::fs::canonicalize(&source).map_err(|e| e.to_string())?
+                ),
+            }]
+        );
+        // Unload with a queued or completed-but-uncollected job. The plugin joins
+        // its owned worker before its instance can be destroyed.
+        let pending = manager.call_hook(
+            &panel,
+            &velk_panels::encode(&velk_panels::Request::Describe {
+                context: context.clone(),
+            })?,
+        )?;
         assert!(matches!(
-            manager.unload("velk.demo.files"),
+            velk_panels::decode::<velk_panels::Reply>(&pending)?,
+            velk_panels::Reply::Pending { .. }
+        ));
+        assert!(matches!(
+            manager.unload("velk.files"),
             Some(Event::Removed(_))
         ));
         assert!(manager.call_hook(&panel, b"{}").is_err());
         assert_eq!(
-            snapshot.panels[0].title, "Files (mock)",
+            snapshot.panels[0].title, "Files",
             "snapshot remains host owned after unload"
         );
         assert_eq!(manager.load()?.len(), 1);
+        let restarted = manager.bind_hook("velk.files", velk_panels::HOOK)?;
+        let fresh = panel_request(
+            &mut manager,
+            &restarted,
+            velk_panels::Request::Describe { context },
+        )?;
+        assert!(fresh.effects.is_empty());
 
         assert!(matches!(manager.unload(ID), Some(Event::Removed(_))));
         assert!(image.exists());
@@ -284,4 +352,23 @@ fn probe(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     );
     assert_eq!(manager.plugins().count(), 0);
     Ok(())
+}
+
+fn panel_request(
+    manager: &mut Manager,
+    handle: &velk_plugin_host::HookHandle,
+    mut request: velk_panels::Request,
+) -> Result<velk_panels::Snapshot, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let bytes = manager.call_hook(handle, &velk_panels::encode(&request)?)?;
+        match velk_panels::decode::<velk_panels::Reply>(&bytes)? {
+            velk_panels::Reply::Ready { snapshot } => return Ok(snapshot),
+            velk_panels::Reply::Pending { id } if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                request = velk_panels::Request::Poll { id };
+            }
+            _ => return Err("panel smoke request failed or timed out".into()),
+        }
+    }
 }
