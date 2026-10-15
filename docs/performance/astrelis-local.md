@@ -96,3 +96,5 @@ The local path patch is an experiment dependency: Cargo.lock does not pin edits 
 `../astrelis`. To reproduce this version, retain the local backend commit above.
 Moving back to a Git dependency requires publishing and pinning the backend revision
 that supplies `TextShaping`; removing the patch alone will not compile the new API use.
+
+These measurements describe Velk before horizontal virtualization. See the [follow-up report](horizontal-virtualization.md) for the subsequent renderer.

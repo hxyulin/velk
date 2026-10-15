@@ -31,3 +31,26 @@ pub fn editor() -> Editor {
     editor.set_annotations(annotations).unwrap();
     editor
 }
+
+/// Long fixed-grid lines for native horizontal scrolling and caret checks.
+pub fn horizontal_editor() -> Editor {
+    let line = (0..10_000)
+        .map(|index| format!("{index:09} "))
+        .collect::<String>();
+    let source = format!(
+        "{line}\n{line}\nUnicode fallback: café 世界 👩‍💻\nUse Home/End or Command+Left/Right to reveal the full line.\n"
+    );
+    let mut editor = Editor::new(&source);
+    let mut annotations = Annotations::default();
+    for start in (0..line.len()).step_by(1000) {
+        annotations.spans.push(StyledRange::new(
+            line.len() + 1 + start..line.len() + 1 + start + 9,
+            SpanStyle {
+                foreground: Some([0.3, 0.8, 1., 1.]),
+                ..SpanStyle::default()
+            },
+        ));
+    }
+    editor.set_annotations(annotations).unwrap();
+    editor
+}

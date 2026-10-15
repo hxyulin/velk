@@ -189,6 +189,58 @@ fn main() {
         21,
     );
     println!("long_line_edit_layout,1,100000,{median:.6},{p95:.6}");
+    let (median, p95) = sample(
+        || {
+            revision += 1;
+            let mut rope = original.clone();
+            rope.insert(2, if revision % 2 == 0 { "x" } else { "y" });
+            probe.set_document(rope, revision);
+            black_box(probe.prepare([1200., 800.], 0.));
+        },
+        101,
+    );
+    println!("long_line_visible_edit,1,100000,{median:.6},{p95:.6}");
+    let numbered = (0..10_000)
+        .map(|index| format!("{index:09} "))
+        .collect::<String>();
+    let mut scrolling = CpuViewportProbe::new(Rope::from_str(&numbered));
+    scrolling.prepare_at([1200., 800.], [400_000., 0.]);
+    let (median, p95) = sample(
+        || {
+            black_box(scrolling.prepare_at([1200., 800.], [400_000., 0.]));
+        },
+        101,
+    );
+    println!("long_line_warm_middle,1,100000,{median:.6},{p95:.6}");
+    let mut offset = 400_000.;
+    let (median, p95) = sample(
+        || {
+            offset += 1200.;
+            black_box(scrolling.prepare_at([1200., 800.], [offset, 0.]));
+        },
+        101,
+    );
+    println!("long_line_horizontal_scroll,1,100000,{median:.6},{p95:.6}");
+    let mut colored = CpuViewportProbe::new(Rope::from_str(&"a".repeat(100_000)));
+    let mut colors = Annotations::default();
+    for start in (0..100_000).step_by(100) {
+        colors.spans.push(StyledRange::new(
+            start..start + 3,
+            SpanStyle {
+                foreground: Some([0.3, 0.7, 1., 1.]),
+                ..SpanStyle::default()
+            },
+        ));
+    }
+    colored.set_annotations(Some(Arc::new(colors)));
+    let (median, p95) = sample(
+        || {
+            colored.reset_cache();
+            black_box(colored.prepare_at([1200., 800.], [400_000., 0.]));
+        },
+        21,
+    );
+    println!("long_line_1000_colors_cold,1,100000,{median:.6},{p95:.6}");
     let mut probe = CpuViewportProbe::new(Rope::from_str(&"a".repeat(10000)));
     let mut annotations = Annotations::default();
     for hint in 0..1000 {

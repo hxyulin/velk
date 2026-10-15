@@ -1,10 +1,10 @@
 //! Bounded logical-line layout and GPU cache. Document positions stay in the Rope.
 use crate::{
     Annotations, Selection,
-    surface::{Geometry, LINE_HEIGHT, PADDING, Surface, SurfaceState},
+    surface::{Geometry, LINE_HEIGHT, PADDING, Surface, SurfaceState, editor_text_style},
 };
 use ropey::Rope;
-use rxui::astrelis::{PaintSession, Rect, TextSystem};
+use rxui::astrelis::{PaintSession, Rect, TextBuffer, TextLayout, TextShaping, TextSystem};
 use rxui::{CustomElement, CustomPrepare, ElementInfo, UiError};
 use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, time::Instant};
 
@@ -29,11 +29,14 @@ pub struct FrameMetrics {
     /// Native dispatch to completed preparation; excludes GPU execution/presentation.
     pub input_to_prepare_ms: Option<f64>,
     pub composition_fallback: bool,
+    pub horizontal_lines: usize,
 }
 
 pub(super) struct LineHit {
     pub top: f32,
     pub start_char: usize,
+    pub left: f32,
+    pub grid: Option<(f32, usize)>,
     pub geometry: Rc<RefCell<Geometry>>,
 }
 
@@ -218,12 +221,49 @@ impl AnnotationIndex {
     }
 }
 
+/// Fixed-grid windows are aligned to 128-column chunks, with one chunk of
+/// overscan on each side. A small scroll reuses the existing shaped text.
+#[derive(Clone, Debug, PartialEq)]
+struct HorizontalWindow {
+    range: Range<usize>,
+    cell: f32,
+    full_len: usize,
+}
+impl HorizontalWindow {
+    fn new(length: usize, cell: f32, offset: f32, width: f32) -> Self {
+        const CHUNK: usize = 128;
+        let first = ((offset.max(0.) / cell) as usize).min(length);
+        let last = (((offset.max(0.) + width.max(0.)) / cell).ceil() as usize).min(length);
+        let start = (first / CHUNK).saturating_sub(1) * CHUNK;
+        let end = (last / CHUNK + 2).saturating_mul(CHUNK).min(length);
+        Self {
+            range: start..end,
+            cell,
+            full_len: length,
+        }
+    }
+    fn left(&self) -> f32 {
+        self.range.start as f32 * self.cell
+    }
+    fn width(&self) -> f32 {
+        self.full_len as f32 * self.cell
+    }
+}
+
 struct CachedLine {
     text: String,
     surface: Surface,
     state: SurfaceState,
     used: u64,
     gpu_dirty: bool,
+    checked_revision: Option<u64>,
+    checked_annotations: u64,
+    metric_safe: bool,
+    annotation_range: Range<usize>,
+    grid_eligible: bool,
+    window: Option<HorizontalWindow>,
+    source_start: usize,
+    full_len: usize,
 }
 
 pub(crate) struct ViewportSurface(pub Surface);
@@ -243,6 +283,10 @@ pub(crate) struct ViewportState {
     fallback: SurfaceState,
     metrics: FrameMetrics,
     was_composing: bool,
+    grid_probe: TextBuffer,
+    grid_layout: Option<Arc<TextLayout>>,
+    cell: Option<f32>,
+    annotation_epoch: u64,
 }
 impl Default for ViewportState {
     fn default() -> Self {
@@ -256,6 +300,16 @@ impl Default for ViewportState {
             fallback: SurfaceState::default(),
             metrics: FrameMetrics::default(),
             was_composing: false,
+            grid_probe: {
+                let mut buffer = TextBuffer::new();
+                let ascii: String = (b' '..=b'~').map(char::from).collect();
+                buffer.set_text(&ascii, editor_text_style()).unwrap();
+                buffer.set_shaping(TextShaping::Basic);
+                buffer
+            },
+            grid_layout: None,
+            cell: None,
+            annotation_epoch: 0,
         }
     }
 }
@@ -266,17 +320,15 @@ impl ViewportState {
         surface: &Surface,
         line: usize,
         width: f32,
+        offset: f32,
         fonts: &mut TextSystem,
     ) -> Result<(), UiError> {
         let start = surface.rope.line_to_char(line);
         let slice = surface.rope.line(line);
-        let text = slice.to_string();
-        let text = text.strip_suffix('\n').unwrap_or(&text).to_owned();
+        let length = slice.len_chars()
+            - usize::from(slice.get_char(slice.len_chars().saturating_sub(1)) == Some('\n'));
         let range = start..start + slice.len_chars();
-        let annotations = self.index.line(line, range);
         let selection = surface.selection;
-        let length = text.chars().count();
-        let clamp = |position: usize| position.saturating_sub(start).min(length);
         let entry = self.cache.entry(line).or_insert_with(|| CachedLine {
             text: String::new(),
             surface: Surface {
@@ -295,7 +347,65 @@ impl ViewportState {
             state: SurfaceState::default(),
             used: 0,
             gpu_dirty: true,
+            checked_revision: None,
+            checked_annotations: u64::MAX,
+            metric_safe: false,
+            annotation_range: range.clone(),
+            grid_eligible: false,
+            window: None,
+            source_start: start,
+            full_len: length,
         });
+        let changed = entry.checked_revision != Some(surface.revision);
+        if changed {
+            entry.grid_eligible = slice
+                .slice(..length)
+                .chunks()
+                .all(|chunk| chunk.bytes().all(|byte| (b' '..=b'~').contains(&byte)));
+            entry.checked_revision = Some(surface.revision);
+        }
+        if changed || entry.checked_annotations != self.annotation_epoch {
+            entry.metric_safe = self.index.snapshot.as_ref().is_none_or(|a| {
+                self.index.span_ids(&range).into_iter().all(|id| {
+                    let style = &a.spans[id].style;
+                    style.font_size.is_none_or(|size| size == 16.)
+                        && style.weight.is_none_or(|weight| weight == 400)
+                        && !style.italic.unwrap_or(false)
+                        && !style.full_line_background
+                }) && self.index.overlay_ids(line, &range).is_empty()
+            });
+            entry.checked_annotations = self.annotation_epoch;
+        }
+        let window = self
+            .cell
+            .filter(|_| entry.grid_eligible && entry.metric_safe && length > 1024)
+            .map(|cell| HorizontalWindow::new(length, cell, offset, width));
+        let columns = window
+            .as_ref()
+            .map_or(0..length, |window| window.range.clone());
+        let text = slice.slice(columns.clone()).to_string();
+        let annotation_range = if window.is_some() {
+            start + columns.start..start + columns.end
+        } else {
+            range.clone()
+        };
+        let annotations = self.index.line(line, annotation_range.clone());
+        entry.annotation_range = annotation_range;
+        let clamp = |position: usize| {
+            position
+                .saturating_sub(start + columns.start)
+                .min(columns.len())
+        };
+        if entry.window.is_none() && window.is_some() && !entry.text.is_empty() {
+            // A former Unicode/rich fallback can retain whole-line shaping
+            // scratch. Release it when returning to bounded grid preparation.
+            entry.state = SurfaceState::default();
+            entry.gpu_dirty = true;
+            entry.surface.geometry.borrow_mut().content_size = [0.; 2];
+        }
+        entry.window = window;
+        entry.source_start = start;
+        entry.full_len = length;
         if entry.text != text {
             entry.surface.rope = Rope::from_str(&text);
             entry.surface.revision += 1;
@@ -304,8 +414,8 @@ impl ViewportState {
         let annotations = annotations.map(|a| {
             let mut a = (*a).clone();
             for span in &mut a.spans {
-                span.range.end = span.range.end.min(length);
-                span.range.start = span.range.start.min(length);
+                span.range.end = span.range.end.min(columns.len());
+                span.range.start = span.range.start.min(columns.len());
             }
             Arc::new(a)
         });
@@ -317,8 +427,10 @@ impl ViewportState {
             head: clamp(selection.head),
         };
         entry.surface.selection_color = surface.selection_color;
-        entry.surface.caret_visible =
-            surface.caret_visible && surface.rope.char_to_line(selection.head) == line;
+        entry.surface.caret_visible = surface.caret_visible
+            && surface.rope.char_to_line(selection.head) == line
+            && selection.head >= start + columns.start
+            && selection.head <= start + columns.end;
         entry.surface.epoch = surface.epoch;
         entry.used = self.frame;
         let shaped = entry.surface.shape(&mut entry.state, width, fonts)?;
@@ -343,6 +455,9 @@ impl ViewportState {
         let started = Instant::now();
         let document_changed = self.revision != Some(surface.revision);
         let index_changed = self.index.update(&surface.annotations, &surface.rope);
+        if index_changed {
+            self.annotation_epoch += 1;
+        }
         self.metrics.annotation_index_ms = started.elapsed().as_secs_f64() * 1000.;
         let mut geometry = surface.geometry.borrow_mut();
         geometry.layout = None;
@@ -359,31 +474,48 @@ impl ViewportState {
         self.revision = Some(surface.revision);
         let width = (viewport[0] - PADDING * 2.).max(0.);
         let started = Instant::now();
+        let probe = if !fonts.as_cosmic().db().is_empty() {
+            Some(self.grid_probe.layout(fonts)?)
+        } else {
+            None
+        };
+        if let Some(probe) = probe
+            && self
+                .grid_layout
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(old, &probe))
+        {
+            let advance = probe.glyphs().first().map_or(0., |glyph| glyph.advance);
+            self.cell = (advance.is_finite()
+                && advance > 0.
+                && probe.missing_glyphs().is_empty()
+                && probe.fonts().iter().all(|font| {
+                    fonts
+                        .font_info(font.id())
+                        .is_some_and(|info| info.monospaced)
+                })
+                && probe
+                    .glyphs()
+                    .iter()
+                    .all(|glyph| (glyph.advance - advance).abs() < 0.0001))
+            .then_some(advance);
+            self.grid_layout = Some(probe);
+        }
         // Shape the caret line even when it is offscreen so document-edge and
         // keyboard navigation can reveal exact caret geometry without a scan.
         let caret_line = surface.rope.char_to_line(surface.selection.head);
-        self.prepare_line(surface, caret_line, width, fonts)?;
+        self.prepare_line(surface, caret_line, width, geometry.offset[0], fonts)?;
         if surface.reveal_caret && geometry.epoch != Some(surface.epoch) {
             let entry = &self.cache[&caret_line];
-            let local = entry
-                .surface
-                .rope
-                .char_to_byte(entry.surface.selection.head);
-            let position = entry
-                .surface
-                .layout(&entry.state)
-                .caret(rxui::astrelis::TextPosition::new(
-                    entry.state_projection(local),
-                ))
-                .unwrap();
-            geometry.caret = Some(Rect::new(
-                position.origin[0],
-                self.heights.top(caret_line) + position.origin[1],
-                1.5,
-                position.height,
-            ));
+            geometry.caret =
+                Some(entry.document_caret(surface.selection.head, self.heights.top(caret_line)));
+            geometry.content_size[0] = geometry.content_size[0].max(entry.width());
             geometry.content_size[1] = self.heights.top(self.heights.values.len());
+            let old_offset = geometry.offset[0];
             geometry.reveal();
+            if geometry.offset[0] != old_offset {
+                self.prepare_line(surface, caret_line, width, geometry.offset[0], fonts)?;
+            }
         }
         let start = self
             .heights
@@ -394,7 +526,7 @@ impl ViewportState {
         self.visible = start..end;
         for line in self.visible.clone() {
             if line != caret_line {
-                self.prepare_line(surface, line, width, fonts)?;
+                self.prepare_line(surface, line, width, geometry.offset[0], fonts)?;
             }
         }
         // Preserve the top source line as exact mixed-size measurements replace
@@ -418,15 +550,17 @@ impl ViewportState {
         geometry.content_size = [
             self.cache
                 .values()
-                .map(|e| {
-                    e.surface.layout(&e.state).size()[0]
-                        .max(e.surface.geometry.borrow().content_size[0])
-                })
+                .map(|e| e.width().max(e.surface.geometry.borrow().content_size[0]))
                 .fold(viewport[0] - PADDING * 2., f32::max),
             self.heights.top(surface.rope.len_lines()),
         ];
         geometry.clamp_scroll();
         self.metrics.visible_lines = self.visible.len();
+        self.metrics.horizontal_lines = self
+            .visible
+            .clone()
+            .filter(|line| self.cache[line].window.is_some())
+            .count();
         self.metrics.cached_lines = self.cache.len();
         self.metrics.cached_source_bytes = self.cache.values().map(|entry| entry.text.len()).sum();
         self.metrics.cpu_layout_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -434,6 +568,40 @@ impl ViewportState {
     }
 }
 impl CachedLine {
+    fn left(&self) -> f32 {
+        self.window.as_ref().map_or(0., HorizontalWindow::left)
+    }
+    fn width(&self) -> f32 {
+        self.window.as_ref().map_or_else(
+            || self.surface.layout(&self.state).size()[0],
+            HorizontalWindow::width,
+        )
+    }
+    fn columns(&self) -> Range<usize> {
+        self.window
+            .as_ref()
+            .map_or(0..self.full_len, |window| window.range.clone())
+    }
+    fn document_caret(&self, head: usize, top: f32) -> Rect {
+        if let Some(window) = &self.window {
+            Rect::new(
+                head.saturating_sub(self.source_start).min(self.full_len) as f32 * window.cell,
+                top,
+                1.5,
+                LINE_HEIGHT,
+            )
+        } else {
+            let local = self.surface.rope.char_to_byte(self.surface.selection.head);
+            let caret = self
+                .surface
+                .layout(&self.state)
+                .caret(rxui::astrelis::TextPosition::new(
+                    self.state_projection(local),
+                ))
+                .unwrap();
+            Rect::new(caret.origin[0], top + caret.origin[1], 1.5, caret.height)
+        }
+    }
     fn state_projection(&self, byte: usize) -> usize {
         self.state.project_caret(byte)
     }
@@ -495,23 +663,25 @@ impl CustomElement for ViewportSurface {
             geometry.content_size[0] = geometry.content_size[0].max(local.content_size[0]);
             for hit in &local.hover_regions {
                 let mut hit = hit.clone();
-                hit.id = state.index.hover_id(
-                    line,
-                    start_char..start_char + surface.rope.line(line).len_chars(),
-                    hit.id,
-                );
+                hit.id = state
+                    .index
+                    .hover_id(line, entry.annotation_range.clone(), hit.id);
+                hit.rect.x += entry.left();
                 hit.rect.y += top;
                 geometry.hover_regions.push(hit);
             }
             if line == surface.rope.char_to_line(surface.selection.head) {
-                geometry.caret = local.caret.map(|mut rect| {
-                    rect.y += top;
-                    rect
-                });
+                geometry.caret = Some(entry.document_caret(surface.selection.head, top));
             }
             geometry.lines.push(LineHit {
                 top,
-                start_char,
+                start_char: if entry.window.is_some() {
+                    start_char
+                } else {
+                    start_char + entry.columns().start
+                },
+                left: entry.left(),
+                grid: entry.window.as_ref().map(|w| (w.cell, w.full_len)),
                 geometry: entry.surface.geometry.clone(),
             });
         }
@@ -549,7 +719,7 @@ impl CustomElement for ViewportSurface {
                 continue;
             }
             let origin = [
-                element.bounds.x + PADDING - geometry.offset[0],
+                element.bounds.x + PADDING + entry.left() - geometry.offset[0],
                 element.bounds.y + PADDING + top - geometry.offset[1],
             ];
             if entry.text.is_empty() {
@@ -570,9 +740,13 @@ impl CustomElement for ViewportSurface {
                 }
             }
             let source_start = self.0.rope.line_to_char(line);
-            let lf = source_start + entry.surface.rope.len_chars();
+            let lf = source_start + entry.full_len;
             let selected = self.0.selection.range();
-            if line + 1 < self.0.rope.len_lines() && selected.start <= lf && selected.end > lf {
+            if line + 1 < self.0.rope.len_lines()
+                && selected.start <= lf
+                && selected.end > lf
+                && entry.columns().end == entry.full_len
+            {
                 let position = entry
                     .surface
                     .layout(&entry.state)
@@ -660,7 +834,10 @@ impl CpuViewportProbe {
         };
     }
     pub fn prepare(&mut self, viewport: [f32; 2], scroll_y: f32) -> FrameMetrics {
-        self.surface.geometry.borrow_mut().offset[1] = scroll_y;
+        self.prepare_at(viewport, [0., scroll_y])
+    }
+    pub fn prepare_at(&mut self, viewport: [f32; 2], offset: [f32; 2]) -> FrameMetrics {
+        self.surface.geometry.borrow_mut().offset = offset;
         let started = Instant::now();
         self.state
             .prepare_cpu(&self.surface, viewport, &mut self.fonts)
@@ -697,6 +874,177 @@ mod tests {
             Some(fonts)
         }
     }
+    #[test]
+    fn horizontal_windows_cover_viewport_and_keep_bounded_overscan() {
+        for offset in [0., 1., 1279., 500_000., 999_990.] {
+            let window = HorizontalWindow::new(100_000, 10., offset, 1200.);
+            assert!(window.range.len() <= 512);
+            assert!(window.left() <= offset);
+            assert!(
+                window.range.end == window.full_len
+                    || window.range.end as f32 * window.cell >= offset + 1200.
+            );
+        }
+    }
+
+    #[test]
+    fn long_lines_reuse_windows_and_reveal_real_document_end() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut surface = surface(&"a".repeat(100_000));
+        let mut state = ViewportState::default();
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        let first = &state.cache[&0];
+        let cell = first.window.as_ref().expect("verified mono font").cell;
+        assert!(first.text.len() <= 512);
+        assert!(first.surface.layout(&first.state).glyphs().len() <= 512);
+        assert!((surface.geometry.borrow().content_size[0] - cell * 100_000.).abs() < 1.);
+        let layout = first.surface.layout(&first.state).clone();
+        surface.geometry.borrow_mut().offset[0] = cell * 4.;
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &layout,
+            state.cache[&0].surface.layout(&state.cache[&0].state)
+        ));
+        surface.selection = Selection {
+            anchor: 0,
+            head: 100_000,
+        };
+        surface.epoch += 1;
+        surface.reveal_caret = true;
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        let last = &state.cache[&0];
+        assert_eq!(last.columns().end, 100_000);
+        assert!(last.text.len() <= 512);
+        assert_eq!(last.surface.selection.range(), 0..last.text.len());
+        assert!(last.surface.caret_visible);
+        let geometry = surface.geometry.borrow();
+        assert!(geometry.offset[0] > 900_000.);
+        assert!((geometry.caret.unwrap().x - 100_000. * cell).abs() < 1.);
+        assert_eq!(surface.rope.len_chars(), 100_000);
+    }
+
+    #[test]
+    fn grid_hits_remain_document_relative_after_horizontal_scroll() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut surface = surface(&format!("prefix\n{}", "a".repeat(100_000)));
+        surface.selection = Selection { anchor: 7, head: 7 };
+        let mut state = ViewportState::default();
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        let cell = state.cache[&1].window.as_ref().unwrap().cell;
+        surface.geometry.borrow_mut().offset[0] = 50_000. * cell;
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        let line = &state.cache[&1];
+        assert!(line.columns().start > 49_000);
+        let mut geometry = surface.geometry.borrow_mut();
+        geometry.lines = vec![LineHit {
+            top: LINE_HEIGHT,
+            start_char: 7,
+            left: line.left(),
+            grid: Some((cell, line.full_len)),
+            geometry: line.surface.geometry.clone(),
+        }];
+        assert_eq!(
+            geometry.hit([PADDING + cell * 5., PADDING + LINE_HEIGHT + 12.]),
+            Some(50_012)
+        );
+        // Pointer capture can move outside the viewport; use the full source grid.
+        assert_eq!(
+            geometry.hit([PADDING + cell * 70_000., PADDING + LINE_HEIGHT + 12.]),
+            Some(100_007)
+        );
+    }
+
+    #[test]
+    fn horizontal_styles_clip_with_provider_order_and_complex_lines_fall_back() {
+        let Some(mut fonts) = fonts() else {
+            return;
+        };
+        let mut surface = surface(&"a".repeat(10_000));
+        let mut annotations = Annotations::default();
+        annotations
+            .spans
+            .push(StyledRange::new(0..2, SpanStyle::default()));
+        annotations.spans.push(
+            StyledRange::new(
+                4000..6000,
+                SpanStyle {
+                    foreground: Some([1., 0., 0., 1.]),
+                    background: Some([0., 0., 0., 1.]),
+                    ..SpanStyle::default()
+                },
+            )
+            .with_hover("style", "clipped provider"),
+        );
+        surface.annotations = Some(Arc::new(annotations));
+        let mut state = ViewportState::default();
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        let cell = state.cache[&0].window.as_ref().unwrap().cell;
+        surface.geometry.borrow_mut().offset[0] = 5000. * cell;
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        let entry = &state.cache[&0];
+        let spans = &entry.surface.annotations.as_ref().unwrap().spans;
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].range, 0..entry.text.len());
+        assert_eq!(
+            state.index.hover_id(0, entry.annotation_range.clone(), 0),
+            1
+        );
+        let mut mixed = (*surface.annotations.as_ref().unwrap().as_ref()).clone();
+        mixed.spans[1].style.font_size = Some(24.);
+        surface.annotations = Some(Arc::new(mixed));
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        assert!(state.cache[&0].window.is_none());
+        surface.annotations = None;
+        surface.rope.insert(3, "é");
+        surface.revision += 1;
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        assert!(state.cache[&0].window.is_none());
+        surface.rope.remove(3..4);
+        surface.revision += 1;
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        assert!(state.cache[&0].window.is_some());
+        assert!(state.cache[&0].text.len() <= 512);
+        let mut hints = Annotations::default();
+        hints.overlays.push(TextOverlay {
+            anchor: 5,
+            text: ": i32".into(),
+            kind: OverlayKind::InlayHint,
+            placement: OverlayPlacement::Inline,
+            foreground: [1.; 4],
+            background: None,
+            hover: None,
+        });
+        surface.annotations = Some(Arc::new(hints));
+        state
+            .prepare_cpu(&surface, [1200., 800.], &mut fonts)
+            .unwrap();
+        assert!(state.cache[&0].window.is_none());
+    }
+
     #[test]
     fn interval_queries_match_provider_order_with_document_wide_overlaps() {
         let mut surface = surface(&"x\n".repeat(1000));

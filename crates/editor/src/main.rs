@@ -11,7 +11,20 @@ fn main() -> Result<(), ApplicationError> {
     let stress = std::env::args()
         .skip(1)
         .any(|argument| argument == "--stress");
+    let horizontal = std::env::args()
+        .skip(1)
+        .any(|argument| argument == "--long-lines");
     Application::new().run(move |cx| {
+        if horizontal {
+            let editor = cx.new(|_| stress::horizontal_editor());
+            cx.open_window(
+                WindowOptions::new()
+                    .title("Velk — horizontal virtualization")
+                    .size(1280., 800.),
+                editor,
+            )?;
+            return Ok(());
+        }
         if stress {
             let editor = cx.new(|_| stress::editor());
             cx.open_window(

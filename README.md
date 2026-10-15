@@ -140,6 +140,7 @@ Run the CPU benchmarks and the native 100,000-line stress fixture:
 cargo bench -p velk-editor-widget --bench editing --locked
 cargo bench -p velk-editor-widget --bench viewport --features performance --locked
 cargo run --release --locked -- --stress
+cargo run --release --locked -- --long-lines
 ```
 
 Set `VELK_PROFILE=1` to log preparation counters/timings and draw-recording time.
@@ -148,3 +149,9 @@ frame budget (8.33 ms); these measurements do not establish presentation cadence
 
 See [the performance report](docs/performance/editor-prototype.md) for measured
 results, cache behavior, scope, and next optimizations.
+
+Long printable-ASCII lines with verified fixed font advances now prepare only a
+horizontal window plus overscan. Colors and decorations that preserve font metrics
+can use this path; Unicode, mixed metrics, line backgrounds, inline hints, and IME
+retain the general renderer. See the [horizontal virtualization report](docs/performance/horizontal-virtualization.md)
+for eligibility, measurements, and native validation.

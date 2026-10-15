@@ -105,11 +105,15 @@ impl Geometry {
                 .partition_point(|line| line.top <= y)
                 .saturating_sub(1);
             let line = &self.lines[index];
+            if let Some((cell, length)) = line.grid {
+                let x = (point[0] - PADDING + self.offset[0]).max(0.);
+                return Some(line.start_char + ((x / cell).round() as usize).min(length));
+            }
             return line
                 .geometry
                 .borrow()
                 .hit([
-                    point[0] + self.offset[0],
+                    point[0] + self.offset[0] - line.left,
                     point[1] + self.offset[1] - line.top,
                 ])
                 .map(|position| line.start_char + position);
@@ -558,7 +562,7 @@ fn boundary_after(layout: &TextLayout, byte: usize) -> usize {
     }
 }
 
-fn editor_text_style() -> TextStyle {
+pub(super) fn editor_text_style() -> TextStyle {
     // Named families keep Cosmic Text from requiring monospaced fallback faces
     // for CJK and emoji, which can produce nonfinite advances on macOS.
     let family = if cfg!(target_os = "macos") {
