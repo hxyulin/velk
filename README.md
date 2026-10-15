@@ -81,14 +81,14 @@ directory (`CARGO_TARGET_DIR` included) and stages native artifacts into
 `VELK_PLUGIN_DIR` explicitly. Direct launches search `plugins/` beside the
 executable; `VELK_PLUGIN_DIR=/absolute/path` overrides that directory.
 
-Plugins listed in `plugins.json` load asynchronously at startup. Press **F2** to
-open or close the plugin modal; **Escape**, an outside click, or its Close button
-also closes it. The modal leaves the editor layout unchanged, contains keyboard
-focus, and restores editor focus on close. It lists loaded plugin IDs, versions,
-generations, and descriptions, with **Load from disk**,
-**Unload all**, and individual **Unload** buttons. Loading leaves active IDs alone.
-Controls are disabled while a lifecycle operation is pending; errors remain visible.
-The previous load/unload keyboard chords have been removed.
+Plugins listed in `plugins.json` load asynchronously at startup, except IDs in
+the `disabled_plugins` setting. Press **F2** to open or close the Plugins page;
+**Escape**, an outside click, or its Close button also closes it. Each plugin has
+a status dot (running, off, failed) and an enable switch that persists to
+settings. The detail pane offers Restart and Disable/Enable, shows load errors
+in place, and lists what the plugin adds to Velk, derived from its registered
+hooks. **Load from disk** and **Unload all** remain in the command palette.
+Controls are disabled while a lifecycle operation is pending.
 
 The status line reports the loaded count and failures. Disk I/O, library loading,
 plugin calls, and teardown run serially on one sleeping background worker. There

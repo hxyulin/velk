@@ -4,9 +4,11 @@ mod grid;
 mod palette;
 mod panels;
 mod plugins;
+mod plugins_page;
 pub(crate) mod reload;
 mod search;
 mod semantic;
+mod settings_page;
 mod shell;
 use crate::file::FileState;
 use rxui::prelude::*;
@@ -55,6 +57,7 @@ pub struct Document {
     dialog: Option<DialogTask>,
     plugins: Option<plugins::State>,
     plugin_menu_open: bool,
+    plugin_page: plugins_page::Page,
     editor_focus: rxui::FocusHandle,
     shell: shell::State,
     palette: palette::State,
@@ -112,6 +115,7 @@ impl Document {
             dialog: None,
             plugins: None,
             plugin_menu_open: false,
+            plugin_page: Default::default(),
             editor_focus: rxui::FocusHandle::new(),
             shell: shell::State::default(),
             palette: palette::State::default(),
@@ -421,7 +425,7 @@ impl View for Document {
             .enabled(self.plugin_menu_open)
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
         let (load_plugins, unload_plugins) = self.plugin_actions(cx);
-        let plugin_menu = self.plugin_menu(
+        let plugin_menu = self.plugins_modal(
             cx,
             toggle_plugins.clone(),
             close_plugins.clone(),
@@ -438,7 +442,8 @@ impl View for Document {
             .command(CloseSettings, |this, _, cx| this.set_settings(false, cx))
             .enabled(self.shell.open)
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
-        let settings_menu = self.settings_menu(cx, toggle_settings.clone(), close_settings.clone());
+        let settings_menu =
+            self.settings_modal(cx, toggle_settings.clone(), close_settings.clone());
         let status = self
             .buffer
             .status
