@@ -325,7 +325,7 @@ mod tests {
         prepare(&mut ui, &mut runtime);
         click(&mut ui, &mut runtime, "show-status-bar");
         prepare(&mut ui, &mut runtime);
-        assert_eq!(bounds(&ui).height, 400.);
+        assert_eq!(bounds(&ui).height, 366.);
         key(
             &mut ui,
             &mut runtime,

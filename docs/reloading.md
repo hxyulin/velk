@@ -88,3 +88,10 @@ This is an internal, same-build session handoff, not crash recovery or a stable
 cross-version session format. Fullscreen/minimized state, exact focus within an
 open modal and transient service popups are not persisted. Only one document
 window is currently supported by the application.
+
+## Multiple buffers
+
+Reload transfers every open file-backed buffer and restores tab order and the
+selected tab. Inactive buffers retain unsaved text, undo history, selection,
+scroll, disk baseline and find state. Pending file opens or saves in any buffer
+block reload. See [buffers.md](buffers.md) for buffer ownership and lifecycle.

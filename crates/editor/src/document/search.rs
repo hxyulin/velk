@@ -134,11 +134,11 @@ async fn run(
 
 impl Document {
     pub(super) fn cancel_search(&mut self, cx: &mut Context<'_, Self>) {
-        self.search.task = None;
+        self.buffer.search.task = None;
         if let Some(state) = &self.plugins {
             let client = state.client.clone();
             let backend = self.shell.store.preferences.search_backend.clone();
-            let id = self.search.id;
+            let id = self.buffer.search.id;
             if let Ok(task) = cx.try_spawn(
                 async move {
                     if let Ok(handle) = bind(&client, backend).await {
@@ -152,7 +152,10 @@ impl Document {
         }
     }
     pub(super) fn sync_search(&mut self, cx: &mut Context<'_, Self>) -> bool {
-        if !self.search.open || self.search.revision == self.editor.read(cx).buffer().revision() {
+        if self.background_buffer
+            || !self.buffer.search.open
+            || self.buffer.search.revision == self.buffer.editor.read(cx).buffer().revision()
+        {
             return false;
         }
         self.restart_search(cx);
@@ -160,11 +163,12 @@ impl Document {
     }
     pub(super) fn restart_search(&mut self, cx: &mut Context<'_, Self>) {
         self.cancel_search(cx);
-        self.search.id += 1;
-        self.search.results = None;
-        self.search.selected = None;
+        self.next_search += 1;
+        self.buffer.search.id = self.next_search;
+        self.buffer.search.results = None;
+        self.buffer.search.selected = None;
         let (text, revision, caret) = {
-            let editor = self.editor.read(cx);
+            let editor = self.buffer.editor.read(cx);
             let buffer = editor.buffer();
             (
                 buffer.text().clone(),
@@ -172,26 +176,27 @@ impl Document {
                 buffer.selection().head,
             )
         };
-        self.search.revision = revision;
-        let query = self.search.query.clone();
+        self.buffer.search.revision = revision;
+        let query = self.buffer.search.query.clone();
         if query.text.is_empty() {
-            self.search.notice = "Find in this file".into();
+            self.buffer.search.notice = "Find in this file".into();
             return;
         }
         if let Err(error) = query.validate() {
-            self.search.notice = error;
+            self.buffer.search.notice = error;
             return;
         }
         if text.len_bytes() > model::MAX_DOCUMENT_BYTES {
-            self.search.notice = "Search supports buffers up to 64 MiB".into();
+            self.buffer.search.notice = "Search supports buffers up to 64 MiB".into();
             return;
         }
         let Some(plugins) = &self.plugins else {
-            self.search.notice = "Search backend unavailable; load a search plugin".into();
+            self.buffer.search.notice = "Search backend unavailable; load a search plugin".into();
             return;
         };
-        self.search.notice = "Searching…".into();
-        let id = self.search.id;
+        self.buffer.search.notice = "Searching…".into();
+        let id = self.buffer.search.id;
+        let buffer_id = self.buffer.id;
         match cx.try_spawn(
             run(
                 plugins.client.clone(),
@@ -202,78 +207,89 @@ impl Document {
                 text,
             ),
             move |this, result, cx| {
-                if !this.search.open
-                    || this.search.id != id
-                    || this.editor.read(cx).buffer().revision() != revision
-                {
-                    return;
-                }
-                this.search.task = None;
-                match result {
-                    Ok(Ok(results)) => {
-                        let selected = results
-                            .matches
-                            .iter()
-                            .position(|m| m.start >= caret)
-                            .unwrap_or(0);
-                        this.search.results = Some(results);
-                        this.search.selected = None;
-                        if this.search.preserve_selection {
-                            this.search.preserve_selection = false;
-                            let range = this.editor.read(cx).buffer().selection().range();
-                            let results = this.search.results.as_ref().unwrap();
-                            this.search.selected = results
+                this.with_buffer(buffer_id, cx, |this, cx| {
+                    if !this.buffer.search.open
+                        || this.buffer.search.id != id
+                        || this.buffer.editor.read(cx).buffer().revision() != revision
+                    {
+                        return;
+                    }
+                    this.buffer.search.task = None;
+                    match result {
+                        Ok(Ok(results)) => {
+                            let selected = results
                                 .matches
                                 .iter()
-                                .position(|m| m.start == range.start && m.end == range.end);
-                            this.search.notice = match this.search.selected {
-                                Some(index) => {
-                                    format!("{} of {}", index + 1, results.matches.len())
-                                }
-                                None => format!("{} matches", results.matches.len()),
-                            };
-                        } else {
-                            this.select_search_match(selected, cx);
+                                .position(|m| m.start >= caret)
+                                .unwrap_or(0);
+                            this.buffer.search.results = Some(results);
+                            this.buffer.search.selected = None;
+                            if this.buffer.search.preserve_selection {
+                                this.buffer.search.preserve_selection = false;
+                                let range =
+                                    this.buffer.editor.read(cx).buffer().selection().range();
+                                let results = this.buffer.search.results.as_ref().unwrap();
+                                this.buffer.search.selected = results
+                                    .matches
+                                    .iter()
+                                    .position(|m| m.start == range.start && m.end == range.end);
+                                this.buffer.search.notice = match this.buffer.search.selected {
+                                    Some(index) => {
+                                        format!("{} of {}", index + 1, results.matches.len())
+                                    }
+                                    None => format!("{} matches", results.matches.len()),
+                                };
+                            } else {
+                                this.select_search_match(selected, cx);
+                            }
                         }
+                        Ok(Err(error)) => {
+                            this.buffer.search.notice = format!("Search unavailable: {error}")
+                        }
+                        Err(error) => this.buffer.search.notice = format!("Search failed: {error}"),
                     }
-                    Ok(Err(error)) => this.search.notice = format!("Search unavailable: {error}"),
-                    Err(error) => this.search.notice = format!("Search failed: {error}"),
-                }
+                });
             },
         ) {
-            Ok(task) => self.search.task = Some(task),
-            Err(error) => self.search.notice = error.to_string(),
+            Ok(task) => self.buffer.search.task = Some(task),
+            Err(error) => self.buffer.search.notice = error.to_string(),
         }
     }
     fn select_search_match(&mut self, index: usize, cx: &mut Context<'_, Self>) {
-        let Some(results) = &self.search.results else {
+        let Some(results) = &self.buffer.search.results else {
             return;
         };
-        if results.revision != self.editor.read(cx).buffer().revision() {
+        if results.revision != self.buffer.editor.read(cx).buffer().revision() {
             return;
         }
         if let Some(m) = results.matches.get(index) {
             let range = m.start..m.end;
-            self.search.selected = Some(index);
-            self.search.notice = format!(
+            self.buffer.search.selected = Some(index);
+            self.buffer.search.notice = format!(
                 "{} of {}{}",
                 index + 1,
                 results.matches.len(),
                 if results.truncated { "+" } else { "" }
             );
-            self.editor.update(cx, |editor, _| {
+            self.buffer.editor.update(cx, |editor, _| {
                 editor.select_range(range);
             });
         } else {
-            self.search.notice = "No matches".into();
+            self.buffer.search.notice = "No matches".into();
         }
     }
     fn navigate_search(&mut self, previous: bool, cx: &mut Context<'_, Self>) {
-        let count = self.search.results.as_ref().map_or(0, |r| r.matches.len());
+        let count = self
+            .buffer
+            .search
+            .results
+            .as_ref()
+            .map_or(0, |r| r.matches.len());
         if count == 0 {
             return;
         }
         let index = self
+            .buffer
             .search
             .selected
             .unwrap_or(if previous { 0 } else { count - 1 });
@@ -288,8 +304,8 @@ impl Document {
     }
     fn close_search(&mut self, cx: &mut Context<'_, Self>) {
         self.cancel_search(cx);
-        self.search.open = false;
-        self.search.results = None;
+        self.buffer.search.open = false;
+        self.buffer.search.results = None;
         let _ = self.editor_focus.focus(cx);
     }
     pub(super) fn search_bar(
@@ -298,18 +314,18 @@ impl Document {
     ) -> (rxui::CommandAction<Find>, Element) {
         let find = cx
             .command(Find, |this, _, cx| {
-                if !this.search.open {
-                    let editor = this.editor.read(cx);
+                if !this.buffer.search.open {
+                    let editor = this.buffer.editor.read(cx);
                     let range = editor.buffer().selection().range();
                     if !range.is_empty() && range.len() <= model::MAX_QUERY_BYTES {
                         let selected = editor.buffer().text().slice(range);
                         if selected.len_bytes() <= model::MAX_QUERY_BYTES {
-                            this.search.query.text = selected.to_string();
+                            this.buffer.search.query.text = selected.to_string();
                         }
                     }
                 }
-                this.search.open = true;
-                let _ = this.search.focus.focus(cx);
+                this.buffer.search.open = true;
+                let _ = this.buffer.search.focus.focus(cx);
                 this.restart_search(cx);
             })
             .label("Find in file")
@@ -317,9 +333,10 @@ impl Document {
         let close = cx
             .command(Close, |this, _, cx| this.close_search(cx))
             .label("Close")
-            .enabled(self.search.open)
+            .enabled(self.buffer.search.open)
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
         let has_matches = self
+            .buffer
             .search
             .results
             .as_ref()
@@ -347,7 +364,7 @@ impl Document {
             .fill_width()
             .flex_shrink(0.)
             .layout(|style| {
-                style.display = if self.search.open {
+                style.display = if self.buffer.search.open {
                     rxui::taffy::Display::Flex
                 } else {
                     rxui::taffy::Display::None
@@ -364,16 +381,16 @@ impl Document {
                     .gap(6.)
                     .fill_width()
                     .child(
-                        text_input(self.search.query.text.clone())
+                        text_input(self.buffer.search.query.text.clone())
                             .key("search-query")
                             .accessibility_label("Find in file")
                             .placeholder("Find in this file")
-                            .focus_handle(self.search.focus.clone())
+                            .focus_handle(self.buffer.search.focus.clone())
                             .flex_grow(1.)
                             .min_width(0.)
                             .on_change(cx.listener(|this, event: &TextChangeEvent, cx| {
-                                this.search.preserve_selection = false;
-                                this.search.query.text = event.value.clone();
+                                this.buffer.search.preserve_selection = false;
+                                this.buffer.search.query.text = event.value.clone();
                                 this.restart_search(cx);
                             })),
                     )
@@ -385,23 +402,23 @@ impl Document {
                 row()
                     .gap(12.)
                     .child(
-                        checkbox(self.search.query.case_sensitive, "Match case")
+                        checkbox(self.buffer.search.query.case_sensitive, "Match case")
                             .key("search-case")
                             .on_change(cx.listener(|this, event: &ToggleEvent, cx| {
-                                this.search.query.case_sensitive = event.checked;
+                                this.buffer.search.query.case_sensitive = event.checked;
                                 this.restart_search(cx);
                             })),
                     )
                     .child(
-                        checkbox(self.search.query.whole_word, "Whole word")
+                        checkbox(self.buffer.search.query.whole_word, "Whole word")
                             .key("search-word")
                             .on_change(cx.listener(|this, event: &ToggleEvent, cx| {
-                                this.search.query.whole_word = event.checked;
+                                this.buffer.search.query.whole_word = event.checked;
                                 this.restart_search(cx);
                             })),
                     )
                     .child(
-                        label(self.search.notice.clone())
+                        label(self.buffer.search.notice.clone())
                             .key("search-status")
                             .font_size(12.)
                             .color(ThemeColor::TextMuted),
@@ -469,8 +486,8 @@ mod tests {
         );
         runtime.update(|cx| {
             document.update(cx, |this, cx| {
-                this.search.results = Some(Results {
-                    id: this.search.id,
+                this.buffer.search.results = Some(Results {
+                    id: this.buffer.search.id,
                     revision: 0,
                     matches: vec![
                         model::Match { start: 0, end: 3 },
@@ -513,6 +530,6 @@ mod tests {
         ui.prepare(&mut runtime, [800., 400.], &mut Measure)
             .unwrap();
         assert_eq!(ui.focused_element(), Some(source));
-        runtime.update(|cx| assert!(!document.read(cx).search.open));
+        runtime.update(|cx| assert!(!document.read(cx).buffer.search.open));
     }
 }

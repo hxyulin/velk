@@ -123,8 +123,8 @@ impl Document {
                 _ => "Plugin worker unavailable".into(),
             };
             this.refresh_panels(cx);
-            if this.search.open {
-                this.search.preserve_selection = true;
+            if this.buffer.search.open {
+                this.buffer.search.preserve_selection = true;
                 this.restart_search(cx);
             }
         }) {

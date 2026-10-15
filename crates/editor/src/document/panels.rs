@@ -150,13 +150,15 @@ impl Document {
                 Err(e) => this.panels.error = Some(e.to_string()),
             }
             if let Some(error) = &this.panels.error {
-                this.status = Some(format!("Panels: {error}"));
+                this.buffer.status = Some(format!("Panels: {error}"));
             } else if this
+                .buffer
                 .status
                 .as_deref()
                 .is_some_and(|s| s.starts_with("Panels:"))
             {
-                this.status = Some(format!("Panels: {} available", this.panels.entries.len()));
+                this.buffer.status =
+                    Some(format!("Panels: {} available", this.panels.entries.len()));
             }
         }) {
             Ok(t) => self.panels.task = Some(t),
@@ -365,7 +367,7 @@ impl Document {
                     .any(|e| !this.panels.ui.closed.contains(&e.panel.slot));
             this.panels.ui.visible = !showing;
             if this.panels.ui.visible && this.panels.entries.is_empty() {
-                this.status = Some(self::empty_notice(&this.panels));
+                this.buffer.status = Some(self::empty_notice(&this.panels));
             }
             if this.panels.ui.visible {
                 this.panels.ui.closed.clear();

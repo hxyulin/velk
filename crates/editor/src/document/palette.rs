@@ -13,10 +13,6 @@ struct Previous;
 impl Command for Previous {}
 struct Accept;
 impl Command for Accept {}
-pub(super) struct CloseWindow;
-impl Command for CloseWindow {}
-pub(super) struct Quit;
-impl Command for Quit {}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -475,7 +471,7 @@ mod tests {
         );
         runtime.update(|cx| {
             assert!(!document.read(cx).palette.open);
-            assert!(document.read(cx).search.open);
+            assert!(document.read(cx).buffer.search.open);
             assert_eq!(editor.read(cx).buffer().text().to_string(), "original");
             assert!(!editor.read(cx).buffer().is_dirty());
             assert!(!editor.read(cx).buffer().can_undo());

@@ -11,6 +11,54 @@ use velk_editor_widget::{BufferSnapshot, Editor};
 pub const SNAPSHOT_ENV: &str = "VELK_RELOAD_SESSION";
 pub const READY_ENV: &str = "VELK_RELOAD_READY";
 
+pub struct RestoredBuffer {
+    pub file: FileState,
+    pub editor: Editor,
+    pub path: PathBuf,
+    pub search_open: bool,
+    pub search_query: velk_search::Query,
+}
+pub struct PendingBuffer {
+    pub path: PathBuf,
+    pub file: FileState,
+    pub buffer: BufferSnapshot,
+    pub scroll: [f32; 2],
+    pub search_open: bool,
+    pub search_query: velk_search::Query,
+}
+#[derive(Serialize, Deserialize)]
+pub struct SessionBuffer {
+    #[serde(with = "path")]
+    path: PathBuf,
+    file: FileState,
+    buffer: String,
+    scroll: [f32; 2],
+    #[serde(default)]
+    search_open: bool,
+    #[serde(default)]
+    search_query: velk_search::Query,
+}
+impl SessionBuffer {
+    pub fn editor(&self) -> Result<Editor, String> {
+        let mut editor = Editor::from_session(self.buffer.as_bytes(), self.scroll)?;
+        editor
+            .set_language(velk_editor_widget::Language::for_path(&self.path))
+            .map_err(|e| e.to_string())?;
+        Ok(editor)
+    }
+}
+impl PendingBuffer {
+    fn encode(self) -> Result<SessionBuffer, String> {
+        Ok(SessionBuffer {
+            path: self.path,
+            file: self.file,
+            buffer: String::from_utf8(self.buffer.encode()?).map_err(|e| e.to_string())?,
+            scroll: self.scroll,
+            search_open: self.search_open,
+            search_query: self.search_query,
+        })
+    }
+}
 pub struct Pending {
     pub path: PathBuf,
     pub file: FileState,
@@ -21,6 +69,8 @@ pub struct Pending {
     pub position: Option<[i32; 2]>,
     pub maximized: bool,
     pub client: Option<velk_plugin_host::Client>,
+    pub buffers: Vec<PendingBuffer>,
+    pub active_index: usize,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Session {
@@ -37,6 +87,10 @@ pub struct Session {
     #[serde(default)]
     pub maximized: bool,
     pub plugin_states: Vec<(String, Vec<u8>)>,
+    #[serde(default)]
+    pub buffers: Vec<SessionBuffer>,
+    #[serde(default)]
+    pub active_index: usize,
 }
 impl Pending {
     #[tracing::instrument(level = "debug", skip_all)]
@@ -48,6 +102,12 @@ impl Pending {
         };
         Ok(Session {
             version: 1,
+            buffers: self
+                .buffers
+                .into_iter()
+                .map(PendingBuffer::encode)
+                .collect::<Result<_, _>>()?,
+            active_index: self.active_index,
             plugin_states,
             path: self.path,
             file: self.file,
@@ -68,6 +128,7 @@ impl Session {
         .map_err(|e| e.to_string())?;
         if session.version != 1
             || session.path != expected
+            || session.active_index > session.buffers.len()
             || session
                 .size
                 .iter()
@@ -76,6 +137,20 @@ impl Session {
             return Err("invalid or unsupported reload session".into());
         }
         Ok(session)
+    }
+    pub fn extra_editors(&self) -> Result<Vec<RestoredBuffer>, String> {
+        self.buffers
+            .iter()
+            .map(|b| {
+                Ok(RestoredBuffer {
+                    file: b.file.clone(),
+                    editor: b.editor()?,
+                    path: b.path.clone(),
+                    search_open: b.search_open,
+                    search_query: b.search_query.clone(),
+                })
+            })
+            .collect()
     }
     pub fn editor(&self) -> Result<Editor, String> {
         Editor::from_session(self.buffer.as_bytes(), self.scroll)
@@ -197,6 +272,8 @@ mod tests {
             position: None,
             maximized: false,
             client: None,
+            buffers: Vec::new(),
+            active_index: 0,
         }
     }
     #[test]
@@ -225,6 +302,58 @@ mod tests {
                 .contains("changed on disk")
         );
         assert_eq!(std::fs::read_to_string(path).unwrap(), "external");
+    }
+    #[test]
+    fn multiple_buffers_roundtrip_in_order_with_dirty_history_scroll_and_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        std::fs::write(&a, "first").unwrap();
+        std::fs::write(&b, "second").unwrap();
+        let mut pending = pending(b.clone());
+        let (file, mut editor) = FileState::open(&a).unwrap();
+        editor.select_range(1..3);
+        editor.insert("edited");
+        pending.buffers.push(PendingBuffer {
+            path: a.clone(),
+            file,
+            buffer: editor.buffer().snapshot(),
+            scroll: [10., 80.],
+            search_open: true,
+            search_query: velk_search::Query {
+                text: "edited".into(),
+                ..Default::default()
+            },
+        });
+        pending.active_index = 1;
+        let session = pending.encode().unwrap();
+        let snapshot = dir.path().join("session.json");
+        std::fs::write(&snapshot, serde_json::to_vec(&session).unwrap()).unwrap();
+        let restored = Session::read(snapshot, &b).unwrap();
+        assert_eq!(restored.active_index, 1);
+        let mut runtime = rxui::Runtime::new();
+        let document = runtime.update(|cx| {
+            let editor = cx.new(|_| restored.editor().unwrap());
+            let d = cx.new(|cx| {
+                crate::document::Document::new(editor, restored.file.clone(), b.clone(), cx)
+            });
+            d.update(cx, |d, cx| {
+                d.restore_buffers(restored.extra_editors().unwrap(), restored.active_index, cx)
+            });
+            d
+        });
+        let _ = document;
+        let extras = restored.extra_editors().unwrap();
+        assert_eq!(extras[0].path, a);
+        assert_eq!(extras[0].editor.scroll_offset(), [10., 80.]);
+        assert!(extras[0].editor.buffer().is_dirty());
+        assert!(extras[0].editor.buffer().can_undo());
+        assert_eq!(extras[0].editor.buffer().text().to_string(), "feditedst");
+        assert!(extras[0].search_open);
+        assert_eq!(extras[0].search_query.text, "edited");
+        assert!(restored.editor().unwrap().buffer().is_dirty());
+        assert_eq!(std::fs::read_to_string(a).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(b).unwrap(), "second");
     }
     #[cfg(unix)]
     #[test]

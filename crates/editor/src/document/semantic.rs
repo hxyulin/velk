@@ -35,7 +35,7 @@ impl Document {
     ) {
         let snapshot = self.semantic_snapshot(cx);
         service.update(snapshot.clone());
-        self.semantic = Some(State {
+        self.buffer.semantic = Some(State {
             service,
             revision: snapshot.revision,
             status: Status::Starting,
@@ -51,19 +51,19 @@ impl Document {
         self.arm_semantics(cx);
     }
     pub(super) fn semantic_snapshot(&self, cx: &impl rxui::ReadContext) -> DocumentSnapshot {
-        let editor = self.editor.read(cx);
+        let editor = self.buffer.editor.read(cx);
         DocumentSnapshot {
-            path: self.file.path().to_path_buf(),
+            path: self.buffer.file.path().to_path_buf(),
             language: "rust".into(),
             revision: editor.buffer().revision(),
             text: editor.buffer().text().clone(),
         }
     }
     pub(super) fn sync_semantics(&mut self, cx: &mut Context<'_, Self>) -> bool {
-        let Some(state) = &mut self.semantic else {
+        let Some(state) = &mut self.buffer.semantic else {
             return false;
         };
-        let editor = self.editor.read(cx);
+        let editor = self.buffer.editor.read(cx);
         let buffer = editor.buffer();
         let target = editor.hover_request();
         if state.target != target {
@@ -91,7 +91,7 @@ impl Document {
         state.count = 0;
         state.notice = None;
         state.service.update(DocumentSnapshot {
-            path: self.file.path().to_path_buf(),
+            path: self.buffer.file.path().to_path_buf(),
             language: "rust".into(),
             revision: buffer.revision(),
             text: buffer.text().clone(),
@@ -99,19 +99,25 @@ impl Document {
         visible_changed
     }
     fn arm_semantics(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(state) = &mut self.semantic else {
+        let Some(state) = &mut self.buffer.semantic else {
             return;
         };
+        let buffer_id = self.buffer.id;
         let events = state.service.events.clone();
-        match cx.try_spawn(async move { events.recv().await }, |this, result, cx| {
-            if let Some(state) = &mut this.semantic {
-                state.task = None;
-            }
-            if let Ok(Ok(event)) = result {
-                this.semantic_event(event, cx);
-                this.arm_semantics(cx);
-            }
-        }) {
+        match cx.try_spawn(
+            async move { events.recv().await },
+            move |this, result, cx| {
+                this.with_buffer(buffer_id, cx, |this, cx| {
+                    if let Some(state) = &mut this.buffer.semantic {
+                        state.task = None;
+                    }
+                    if let Ok(Ok(event)) = result {
+                        this.semantic_event(event, cx);
+                        this.arm_semantics(cx);
+                    }
+                });
+            },
+        ) {
             Ok(task) => state.task = Some(task),
             Err(error) => {
                 state.service.shutdown();
@@ -121,7 +127,8 @@ impl Document {
     }
     #[tracing::instrument(level = "debug", skip_all)]
     fn semantic_event(&mut self, event: Event, cx: &mut Context<'_, Self>) {
-        let Some(state) = &mut self.semantic else {
+        let buffer_id = self.buffer.id;
+        let Some(state) = &mut self.buffer.semantic else {
             return;
         };
         match event {
@@ -131,11 +138,13 @@ impl Document {
                     state.count = 0;
                     state.hover = None;
                     state.render_task = None;
-                    self.editor
+                    self.buffer
+                        .editor
                         .update(cx, |editor, _| editor.clear_annotations());
                 }
                 let enabled = matches!(status,Status::Ready(c) if c.hover);
-                self.editor
+                self.buffer
+                    .editor
                     .update(cx, |editor, _| editor.set_semantic_hover(enabled));
                 state.status = status;
             }
@@ -149,14 +158,14 @@ impl Document {
                     "diagnostics received"
                 );
                 if matches!(state.status, Status::Failed(_) | Status::Stopped)
-                    || self.editor.read(cx).buffer().revision() != revision
+                    || self.buffer.editor.read(cx).buffer().revision() != revision
                 {
                     cx.unchanged();
                     return;
                 }
-                let annotations = annotations(self.editor.read(cx).buffer(), &diagnostics);
+                let annotations = annotations(self.buffer.editor.read(cx).buffer(), &diagnostics);
                 state.count = diagnostics.len();
-                self.editor.update(cx, |editor, _| {
+                self.buffer.editor.update(cx, |editor, _| {
                     let _ = editor.set_annotations(annotations);
                 });
             }
@@ -167,7 +176,7 @@ impl Document {
                     found = hover.is_some(),
                     "hover received"
                 );
-                let current = self.editor.read(cx);
+                let current = self.buffer.editor.read(cx);
                 let valid = state.hover == Some(request)
                     && state.target.is_some()
                     && current.hover_request() == state.target
@@ -187,31 +196,33 @@ impl Document {
                         match cx.try_spawn(
                             renderer.render(hover.contents),
                             move |this, result, cx| {
-                                let Some(state) = &mut this.semantic else {
-                                    return;
-                                };
-                                if state.target != Some(target) {
-                                    cx.unchanged();
-                                    return;
-                                }
-                                state.render_task = None;
-                                let document = match result {
-                                    Ok(Ok(document)) => document,
-                                    _ => velk_markup::Document::plain(fallback),
-                                };
-                                this.editor.update(cx, |editor, _| {
-                                    editor.resolve_formatted_hover(
-                                        target,
-                                        range,
-                                        "Rust".into(),
-                                        Arc::new(document),
-                                    );
+                                this.with_buffer(buffer_id, cx, |this, cx| {
+                                    let Some(state) = &mut this.buffer.semantic else {
+                                        return;
+                                    };
+                                    if state.target != Some(target) {
+                                        cx.unchanged();
+                                        return;
+                                    }
+                                    state.render_task = None;
+                                    let document = match result {
+                                        Ok(Ok(document)) => document,
+                                        _ => velk_markup::Document::plain(fallback),
+                                    };
+                                    this.buffer.editor.update(cx, |editor, _| {
+                                        editor.resolve_formatted_hover(
+                                            target,
+                                            range,
+                                            "Rust".into(),
+                                            Arc::new(document),
+                                        );
+                                    });
                                 });
                             },
                         ) {
                             Ok(task) => state.render_task = Some(task),
                             Err(error) => {
-                                self.editor.update(cx, |editor, _| {
+                                self.buffer.editor.update(cx, |editor, _| {
                                     editor.resolve_hover(target, None, None);
                                 });
                                 if target.source == HoverSource::Caret {
@@ -220,7 +231,7 @@ impl Document {
                             }
                         }
                     } else {
-                        self.editor.update(cx, |editor, _| {
+                        self.buffer.editor.update(cx, |editor, _| {
                             editor.resolve_hover(
                                 target,
                                 hover.range,
@@ -232,7 +243,7 @@ impl Document {
                         });
                     }
                 } else {
-                    self.editor.update(cx, |editor, _| {
+                    self.buffer.editor.update(cx, |editor, _| {
                         editor.resolve_hover(target, None, None);
                     });
                     if target.source == HoverSource::Caret {
@@ -243,14 +254,14 @@ impl Document {
             Event::RequestFailed { request, message } => {
                 if state.hover != Some(request)
                     || state.target.is_none()
-                    || self.editor.read(cx).hover_request() != state.target
+                    || self.buffer.editor.read(cx).hover_request() != state.target
                 {
                     cx.unchanged();
                     return;
                 }
                 state.hover = None;
                 let target = state.target.unwrap();
-                self.editor.update(cx, |editor, _| {
+                self.buffer.editor.update(cx, |editor, _| {
                     editor.resolve_hover(target, None, None);
                 });
                 if target.source == HoverSource::Caret {
@@ -260,17 +271,17 @@ impl Document {
         }
     }
     pub(super) fn request_hover(&mut self, cx: &mut Context<'_, Self>) {
-        if self.semantic.is_none() {
+        if self.buffer.semantic.is_none() {
             return;
         }
-        self.editor.update(cx, |editor, _| {
+        self.buffer.editor.update(cx, |editor, _| {
             editor.set_semantic_hover(true);
             editor.request_hover_at_caret();
         });
         self.sync_semantics(cx);
     }
     pub(super) fn semantic_status(&self) -> Option<String> {
-        self.semantic.as_ref().map(|state| {
+        self.buffer.semantic.as_ref().map(|state| {
             if let Some(notice) = &state.notice {
                 return notice.clone();
             }
@@ -366,6 +377,83 @@ mod tests {
         }
     }
     #[test]
+    fn queued_diagnostics_follow_the_original_buffer_and_closing_stops_its_service() {
+        use rxui::{BackgroundFuture, BlockingJob, SpawnError, TaskExecutor};
+        use std::sync::Mutex;
+        #[derive(Default)]
+        struct Queue(Mutex<Vec<BackgroundFuture>>);
+        impl TaskExecutor for Queue {
+            fn spawn(&self, future: BackgroundFuture) -> Result<(), SpawnError> {
+                self.0.lock().unwrap().push(future);
+                Ok(())
+            }
+            fn spawn_blocking(&self, _: BlockingJob) -> Result<(), SpawnError> {
+                Err(SpawnError::Unavailable)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        std::fs::write(&a, "first").unwrap();
+        std::fs::write(&b, "second").unwrap();
+        let mut runtime = rxui::Runtime::new();
+        let queue = Arc::new(Queue::default());
+        runtime.configure_tasks(queue.clone(), || {}).unwrap();
+        let (service, session) = Service::external(|| {});
+        let (file, editor) = crate::file::FileState::open(&a).unwrap();
+        let document = runtime.update(|cx| {
+            let editor = cx.new(|_| editor);
+            let document = cx.new(|cx| Document::new(editor, file, a, cx));
+            document.update(cx, |d, cx| {
+                d.enable_semantics(service, cx);
+                let (file, editor) = crate::file::FileState::open(&b).unwrap();
+                d.add_buffer(file, editor, b, cx);
+            });
+            document
+        });
+        session.events().publish(Event::Diagnostics {
+            revision: 0,
+            diagnostics: vec![velk_semantic::Diagnostic {
+                range: 0..1,
+                severity: Severity::Warning,
+                message: "belongs to first".into(),
+                source: None,
+                code: None,
+            }],
+        });
+        let futures = std::mem::take(&mut *queue.0.lock().unwrap());
+        std::thread::spawn(move || {
+            for future in futures {
+                pollster::block_on(future);
+            }
+        })
+        .join()
+        .unwrap();
+        runtime.poll_tasks();
+        runtime.flush().unwrap();
+        runtime.update(|cx| {
+            document.update(cx, |d, cx| {
+                assert_eq!(d.buffer.id, 2);
+                assert!(d.buffer.editor.read(cx).annotations().is_none());
+                assert_eq!(
+                    d.inactive[&1]
+                        .editor
+                        .read(cx)
+                        .annotations()
+                        .unwrap()
+                        .spans
+                        .len(),
+                    1
+                );
+                d.select_buffer(1, cx);
+                d.intent(super::super::Intent::Buffer, cx);
+                assert_eq!(d.buffer.id, 2);
+                assert!(session.is_cancelled());
+                assert!(!d.inactive.contains_key(&1));
+            })
+        });
+    }
+    #[test]
     fn diagnostics_align_graphemes_and_preserve_message_cards_and_eof_overlays() {
         let buffer = Buffer::new("é\n世界");
         let diagnostic = |range, message: &str| velk_semantic::Diagnostic {
@@ -413,7 +501,7 @@ mod tests {
             let editor = cx.new(|_| editor);
             cx.new(|cx| {
                 let mut d = Document::new(editor, file, path, cx);
-                d.semantic = Some(State {
+                d.buffer.semantic = Some(State {
                     service: Service::start(Idle).unwrap(),
                     revision: 0,
                     status: Status::Ready(velk_semantic::Capabilities {
@@ -456,6 +544,7 @@ mod tests {
                 assert_eq!(
                     document
                         .read(cx)
+                        .buffer
                         .semantic
                         .as_ref()
                         .unwrap()
@@ -532,7 +621,7 @@ mod tests {
             runtime.update(|cx| cx.new(|cx| Document::new(editor.clone(), file, path, cx)));
         runtime.update(|cx| {
             document.update(cx, |d, _| {
-                d.semantic = Some(State {
+                d.buffer.semantic = Some(State {
                     service: Service::start(Idle).unwrap(),
                     revision: 0,
                     status: Status::Ready(velk_semantic::Capabilities {
@@ -560,7 +649,7 @@ mod tests {
             runtime.update(|cx| {
                 document.update(cx, |d, cx| {
                     d.request_hover(cx);
-                    let request = d.semantic.as_ref().unwrap().hover.unwrap();
+                    let request = d.buffer.semantic.as_ref().unwrap().hover.unwrap();
                     d.semantic_event(
                         Event::Hover {
                             request,
@@ -574,7 +663,7 @@ mod tests {
                         cx,
                     );
                     if cancel {
-                        d.editor.update(cx, |e, _| e.insert("x"));
+                        d.buffer.editor.update(cx, |e, _| e.insert("x"));
                         d.sync_semantics(cx);
                     }
                 })
@@ -622,7 +711,7 @@ mod tests {
                 position: 0,
             };
             document.update(cx, |d, _| {
-                d.semantic = Some(State {
+                d.buffer.semantic = Some(State {
                     service: Service::start(Idle).unwrap(),
                     revision: 0,
                     status: Status::Ready(Default::default()),
@@ -656,7 +745,7 @@ mod tests {
                 )
             });
             assert_eq!(
-                document.read(cx).semantic.as_ref().unwrap().hover,
+                document.read(cx).buffer.semantic.as_ref().unwrap().hover,
                 Some(request)
             );
             editor.update(cx, |editor, _| editor.insert("x"));
@@ -682,6 +771,7 @@ mod tests {
             assert!(
                 document
                     .read(cx)
+                    .buffer
                     .semantic
                     .as_ref()
                     .unwrap()

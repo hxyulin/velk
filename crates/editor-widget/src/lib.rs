@@ -33,7 +33,7 @@ use std::{cell::RefCell, rc::Rc};
 use surface::{Composition, Geometry, Surface};
 pub use velk_syntax::Language;
 
-/// An editor view. Create a separate entity per window; document state can be
+/// An editor view. Create a separate entity per open buffer; document state can be
 /// accessed through `buffer()` and programmatic inserts through `insert()`.
 #[derive(Default)]
 pub struct Editor {
@@ -58,6 +58,14 @@ impl Editor {
     pub fn new(text: &str) -> Self {
         Self {
             buffer: Buffer::new(text),
+            ..Self::default()
+        }
+    }
+
+    /// Attach independently loaded document state to a UI view without copying text.
+    pub fn from_buffer(buffer: Buffer) -> Self {
+        Self {
+            buffer,
             ..Self::default()
         }
     }

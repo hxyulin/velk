@@ -101,7 +101,10 @@ fn run() -> Result<(), Error> {
     } else {
         0
     };
-    Application::new()
+    let application = Application::new();
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let application = application.menu_bar(document::Document::menus());
+    application
         .theme(theme::dark())
         .window_created(move |_, cx| {
             if let Some(document) = created.borrow().as_ref().and_then(WeakEntity::upgrade) {
@@ -153,7 +156,6 @@ fn run() -> Result<(), Error> {
         })
         .run(move |cx| {
             let editor = cx.new(|_| editor);
-            let rust = Language::for_path(&path) == Some(Language::Rust);
             let root = cx.new(|cx| document::Document::new(editor, file, path, cx));
             root.update(cx, |this, _| this.configure_shell(settings));
             if let Some(client) = plugin_client.clone() {
@@ -170,18 +172,15 @@ fn run() -> Result<(), Error> {
                     root.update(cx, |this, cx| this.enable_plugins(client, cx));
                 }
             }
-            if rust {
+            if let Some(session) = &restored {
+                let buffers = session
+                    .extra_editors()
+                    .map_err(|e| ApplicationError::Native(Box::new(io::Error::other(e))))?;
                 root.update(cx, |this, cx| {
-                    match plugin_client
-                        .as_ref()
-                        .ok_or_else(|| "plugin worker unavailable".to_string())
-                        .and_then(velk_plugin_host::Client::semantic_service)
-                    {
-                        Ok(service) => this.enable_semantics(service, cx),
-                        Err(error) => tracing::warn!(%error, "cannot start semantic service"),
-                    }
+                    this.restore_buffers(buffers, session.active_index, cx)
                 });
             }
+            root.update(cx, |this, cx| this.start_all_semantics(cx));
             let options = if let Some(session) = &restored {
                 WindowOptions::new()
                     .title(title)

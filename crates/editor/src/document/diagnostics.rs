@@ -12,7 +12,7 @@ impl Document {
         if self.diagnostics.is_some() || self.reloading() {
             return;
         }
-        self.status = Some(
+        self.buffer.status = Some(
             if start {
                 "Starting trace capture…"
             } else {
@@ -39,7 +39,7 @@ impl Document {
             },
             |this, result, _| {
                 this.diagnostics = None;
-                this.status = Some(match result {
+                this.buffer.status = Some(match result {
                     Ok(Ok(message)) => message,
                     Ok(Err(error)) => format!("Trace failed: {error}"),
                     Err(error) => format!("Trace failed: {error}"),
@@ -47,7 +47,7 @@ impl Document {
             },
         ) {
             Ok(task) => self.diagnostics = Some(task),
-            Err(error) => self.status = Some(format!("Trace failed: {error}")),
+            Err(error) => self.buffer.status = Some(format!("Trace failed: {error}")),
         }
     }
 }

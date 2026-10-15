@@ -1,6 +1,6 @@
 # Editor shell
 
-Velk starts with the editor and a compact bottom status bar. The bar shows save
+Velk starts with a buffer tab bar, the editor and a compact bottom status bar. The bar shows save
 and semantic status and provides Settings and Plugins buttons. Enabling the left
 activity bar moves those buttons into it. Panels start hidden, and the mock Files plugin performs no filesystem scanning.
 
@@ -30,6 +30,9 @@ changes coalesced. Unknown keys are preserved. Malformed/unreadable files are no
 overwritten: the modal reports the error and edits apply to this window only.
 Reset appearance restores only the two layout options.
 
+See [buffers.md](buffers.md) for opening, switching, closing and saving multiple
+files, keyboard shortcuts and reload behavior.
+
 ## Feature plugins
 
 Plugins can now contribute host-rendered panels through the named
@@ -57,7 +60,8 @@ focus. Buttons can also be clicked or activated after Tab navigation. Disabled
 commands remain visible, and Enter on a disabled result or an empty list does
 nothing. Reopening starts with an empty query.
 
-The initial catalogue includes Save, Find in file, Settings, Plugins, Show hover,
+The catalogue includes Open file, Save, Close buffer, Next/Previous buffer,
+Find in file, Settings, Plugins, Show hover,
 Plugins: Load from disk, Plugins: Unload all, Close window, and Quit Velk. Command
 entries wrap the same RXUI actions as existing buttons and shortcuts, sharing
 their current availability and callbacks. Closing or quitting still uses the

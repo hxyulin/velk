@@ -1,3 +1,4 @@
+mod buffers;
 mod diagnostics;
 mod palette;
 mod panels;
@@ -7,7 +8,7 @@ mod search;
 mod semantic;
 mod shell;
 use crate::file::FileState;
-use rxui::{Subscription, prelude::*};
+use rxui::prelude::*;
 use std::path::PathBuf;
 use velk_editor_widget::Editor;
 
@@ -31,87 +32,102 @@ impl Command for CloseSettings {}
 pub enum Intent {
     Close,
     Quit,
+    Buffer,
 }
 
 pub struct Document {
-    editor: Entity<Editor>,
-    file: FileState,
-    path: PathBuf,
+    buffer: buffers::BufferState,
+    inactive: std::collections::BTreeMap<u64, buffers::BufferState>,
+    next_buffer: u64,
+    buffer_order: Vec<u64>,
+    background_buffer: bool,
+    next_search: u64,
+    opening: Option<Task>,
+    closing: Option<Intent>,
+    close_approved: std::collections::BTreeSet<u64>,
     pub window: Option<WindowHandle>,
-    dirty: bool,
-    status: Option<String>,
-    saving: Option<Task>,
     reload: Option<Task>,
     diagnostics: Option<Task>,
     restore_focus_pending: bool,
     restore_focus_action: std::cell::RefCell<Option<rxui::CommandAction<reload::RestoreFocus>>>,
     dialog: Option<DialogTask>,
-    _subscription: Subscription,
-    semantic: Option<semantic::State>,
     plugins: Option<plugins::State>,
     plugin_menu_open: bool,
     editor_focus: rxui::FocusHandle,
     shell: shell::State,
-    search: search::State,
     palette: palette::State,
     panels: panels::State,
 }
 impl Document {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub fn menus() -> rxui::NativeMenuBar {
+        use rxui::{NativeMenu, NativeMenuBar, standard_commands as commands};
+        NativeMenuBar::new()
+            .menu(NativeMenu::new("Velk").command::<commands::Quit>("Quit Velk"))
+            .menu(
+                NativeMenu::new("File")
+                    .command::<buffers::Open>("Open…")
+                    .command::<Save>("Save")
+                    .separator()
+                    .command::<buffers::Close>("Close buffer")
+                    .command::<commands::CloseWindow>("Close window"),
+            )
+            .menu(
+                NativeMenu::new("Edit")
+                    .command::<commands::Undo>("Undo")
+                    .command::<commands::Redo>("Redo")
+                    .separator()
+                    .command::<commands::Cut>("Cut")
+                    .command::<commands::Copy>("Copy")
+                    .command::<commands::Paste>("Paste")
+                    .command::<commands::SelectAll>("Select all"),
+            )
+    }
     pub fn new(
         editor: Entity<Editor>,
         file: FileState,
         path: PathBuf,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        let dirty = editor.read(cx).buffer().is_dirty();
-        let subscription = cx
-            .observe(&editor, |this, editor, cx| {
-                let dirty = editor.read(cx).buffer().is_dirty();
-                let semantic_changed = this.sync_semantics(cx);
-                let search_changed = this.sync_search(cx);
-                if this.dirty != dirty {
-                    this.dirty = dirty;
-                    this.title();
-                } else if !semantic_changed && !search_changed {
-                    cx.unchanged();
-                }
-            })
-            .expect("editor entity is live");
+        let buffer = buffers::BufferState::new(1, editor, file, path, cx);
         Self {
-            editor,
-            file,
-            path,
+            buffer,
+            inactive: Default::default(),
+            next_buffer: 2,
+            buffer_order: vec![1],
+            background_buffer: false,
+            next_search: 0,
+            opening: None,
+            closing: None,
+            close_approved: Default::default(),
             window: None,
-            dirty,
-            status: None,
-            saving: None,
             reload: None,
             diagnostics: None,
             restore_focus_pending: false,
             restore_focus_action: Default::default(),
             dialog: None,
-            _subscription: subscription,
-            semantic: None,
             plugins: None,
             plugin_menu_open: false,
             editor_focus: rxui::FocusHandle::new(),
             shell: shell::State::default(),
-            search: search::State::default(),
             palette: palette::State::default(),
             panels: panels::State::default(),
         }
     }
     pub fn title(&self) {
+        if self.background_buffer {
+            return;
+        }
         if let Some(window) = self.window.as_ref().and_then(WindowHandle::native_window) {
             window.set_title(&format!(
                 "Velk — {}{}",
-                self.path.display(),
-                if self.dirty { " *" } else { "" }
+                self.buffer.path.display(),
+                if self.buffer.dirty { " *" } else { "" }
             ));
         }
     }
     fn busy(&self) -> bool {
-        self.saving.is_some() || self.dialog.is_some() || self.reloading()
+        self.buffer.saving.is_some() || self.dialog.is_some() || self.reloading()
     }
     #[tracing::instrument(level = "debug", skip_all)]
     fn save(&mut self, then: Option<Intent>, cx: &mut Context<'_, Self>) {
@@ -119,19 +135,24 @@ impl Document {
             return;
         }
         let (text, checkpoint) = {
-            let editor = self.editor.read(cx);
+            let editor = self.buffer.editor.read(cx);
             (editor.buffer().text().clone(), editor.buffer().checkpoint())
         };
-        let saved_snapshot = self.semantic.as_ref().map(|_| self.semantic_snapshot(cx));
-        let file = self.file.clone();
+        let buffer_id = self.buffer.id;
+        let saved_snapshot = self
+            .buffer
+            .semantic
+            .as_ref()
+            .map(|_| self.semantic_snapshot(cx));
+        let file = self.buffer.file.clone();
         let save_trace = tracing::debug_span!(
             "save.transaction",
             async_work = true,
-            revision = self.editor.read(cx).buffer().revision()
+            revision = self.buffer.editor.read(cx).buffer().revision()
         );
         let worker_trace = save_trace.clone();
         let queued = (!worker_trace.is_disabled()).then(std::time::Instant::now);
-        self.status = Some("Saving…".into());
+        self.buffer.status = Some("Saving…".into());
         match cx.try_spawn_blocking(
             move || {
                 worker_trace.in_scope(|| {
@@ -145,48 +166,88 @@ impl Document {
                 })
             },
             move |this, result, cx| {
-                let _entered = save_trace.enter();
-                this.saving = None;
-                match result {
-                    Ok(Ok(file)) => {
-                        this.file = file;
-                        if let (Some(state), Some(snapshot)) = (&this.semantic, saved_snapshot) {
-                            state.service.saved(snapshot);
-                        }
-                        this.editor.update(cx, |editor, _| {
-                            editor.mark_saved(checkpoint);
-                        });
-                        this.dirty = this.editor.read(cx).buffer().is_dirty();
-                        this.title();
-                        this.status = None;
-                        if let Some(intent) = then {
-                            if this.dirty {
-                                this.status = Some(
-                                    "Saved the snapshot; newer edits are still unsaved.".into(),
-                                );
-                            } else {
-                                this.finish(intent, cx);
+                this.with_buffer(buffer_id, cx, |this, cx| {
+                    if then.is_some() {
+                        this.closing = None;
+                    }
+                    let _entered = save_trace.enter();
+                    this.buffer.saving = None;
+                    match result {
+                        Ok(Ok(file)) => {
+                            this.buffer.file = file;
+                            if let (Some(state), Some(snapshot)) =
+                                (&this.buffer.semantic, saved_snapshot)
+                            {
+                                state.service.saved(snapshot);
+                            }
+                            this.buffer.editor.update(cx, |editor, _| {
+                                editor.mark_saved(checkpoint);
+                            });
+                            this.buffer.dirty = this.buffer.editor.read(cx).buffer().is_dirty();
+                            this.title();
+                            this.buffer.status = None;
+                            if let Some(intent) = then {
+                                if this.buffer.dirty {
+                                    this.buffer.status = Some(
+                                        "Saved the snapshot; newer edits are still unsaved.".into(),
+                                    );
+                                } else {
+                                    this.closing = Some(intent);
+                                    this.finish(intent, cx);
+                                }
                             }
                         }
+                        Ok(Err(error)) => {
+                            this.buffer.status = Some(format!("Save failed: {error}"))
+                        }
+                        Err(error) => this.buffer.status = Some(format!("Save failed: {error}")),
                     }
-                    Ok(Err(error)) => this.status = Some(format!("Save failed: {error}")),
-                    Err(error) => this.status = Some(format!("Save failed: {error}")),
-                }
+                });
+                this.title();
             },
         ) {
-            Ok(task) => self.saving = Some(task),
-            Err(error) => self.status = Some(format!("Save failed: {error}")),
+            Ok(task) => self.buffer.saving = Some(task),
+            Err(error) => {
+                self.closing = None;
+                self.buffer.status = Some(format!("Save failed: {error}"));
+            }
         }
     }
     pub fn intent(&mut self, intent: Intent, cx: &mut Context<'_, Self>) {
+        if self.buffer.editor.read(cx).has_composition() {
+            self.buffer.status = Some("Finish text composition before closing.".into());
+            return;
+        }
         if self.busy() {
-            if self.saving.is_some() {
-                self.status = Some("Saving… Please wait before closing.".into());
+            if self.buffer.saving.is_some() {
+                self.buffer.status = Some("Saving… Please wait before closing.".into());
             }
             return;
         }
+        if self.any_saving() || self.opening.is_some() {
+            self.buffer.status =
+                Some("Please wait for file operations to finish before closing.".into());
+            return;
+        }
+        if self.closing.is_none() {
+            self.close_approved.clear();
+        }
+        self.closing = Some(intent);
+        if !matches!(intent, Intent::Buffer)
+            && !self.buffer.editor.read(cx).buffer().is_dirty()
+            && let Some(id) = self
+                .inactive
+                .values()
+                .find(|b| b.editor.read(cx).buffer().is_dirty())
+                .map(|b| b.id)
+        {
+            let mut buffer = self.inactive.remove(&id).unwrap();
+            std::mem::swap(&mut self.buffer, &mut buffer);
+            self.inactive.insert(buffer.id, buffer);
+            self.title();
+        }
         // Read the buffer directly: its observer may not yet have run.
-        if !self.editor.read(cx).buffer().is_dirty() {
+        if !self.buffer.editor.read(cx).buffer().is_dirty() {
             self.finish(intent, cx);
             return;
         }
@@ -195,7 +256,7 @@ impl Document {
             .title("Save changes?")
             .description(format!(
                 "Save changes to ‘{}’ before closing?",
-                self.path.display()
+                self.buffer.path.display()
             ))
             .level(MessageLevel::Warning)
             .buttons(MessageButtons::YesNoCancel);
@@ -204,24 +265,57 @@ impl Document {
             match result {
                 Ok(MessageResponse::Yes) => this.save(Some(intent), cx),
                 Ok(MessageResponse::No) => this.finish(intent, cx),
-                Ok(_) => {}
-                Err(error) => this.status = Some(format!("Cannot show save dialog: {error}")),
+                Ok(_) => {
+                    this.closing = None;
+                }
+                Err(error) => {
+                    this.closing = None;
+                    this.buffer.status = Some(format!("Cannot show save dialog: {error}"));
+                }
             }
         }) {
             Ok(task) => self.dialog = Some(task),
-            Err(error) => self.status = Some(format!("Cannot show save dialog: {error}")),
+            Err(error) => {
+                self.closing = None;
+                self.buffer.status = Some(format!("Cannot show save dialog: {error}"));
+            }
         }
     }
     fn finish(&mut self, intent: Intent, cx: &mut Context<'_, Self>) {
-        if let Some(state) = &self.semantic {
-            state.service.shutdown();
+        if matches!(intent, Intent::Buffer) {
+            if self.inactive.is_empty() {
+                self.finish(Intent::Close, cx);
+            } else {
+                self.closing = None;
+                self.remove_current_buffer(cx);
+            }
+            return;
         }
+        // Retain every buffer until all prompts succeed. Cancelling a later
+        // prompt must not lose an earlier buffer whose discard was approved.
+        self.close_approved.insert(self.buffer.id);
+        self.closing = Some(intent);
+        if let Some(id) = self
+            .inactive
+            .values()
+            .find(|b| !self.close_approved.contains(&b.id) && b.editor.read(cx).buffer().is_dirty())
+            .map(|b| b.id)
+        {
+            let mut next = self.inactive.remove(&id).unwrap();
+            std::mem::swap(&mut self.buffer, &mut next);
+            self.inactive.insert(next.id, next);
+            self.title();
+            self.intent(intent, cx);
+            return;
+        }
+        self.closing = None;
         let result = match intent {
             Intent::Close => cx.close_window(self.window.as_ref().expect("native document window")),
             Intent::Quit => cx.exit(),
+            Intent::Buffer => unreachable!(),
         };
         if let Err(error) = result {
-            self.status = Some(error.to_string());
+            self.buffer.status = Some(error.to_string());
         }
     }
 }
@@ -232,15 +326,66 @@ impl View for Document {
                 Some(cx.command(reload::RestoreFocus, |this, _, cx| this.restore_focus(cx)));
             cx.request_animation_frame();
         }
+        let open = cx
+            .command(buffers::Open, |this, _, cx| this.open_file(cx))
+            .label("Open file…")
+            .enabled(!self.busy() && self.opening.is_none() && self.closing.is_none())
+            .shortcut(Shortcut::primary("o"));
+        let close_buffer = cx
+            .command(buffers::Close, |this, _, cx| {
+                this.intent(Intent::Buffer, cx)
+            })
+            .label("Close buffer")
+            .enabled(
+                !self.busy()
+                    && !self.any_saving()
+                    && self.opening.is_none()
+                    && self.closing.is_none(),
+            )
+            .shortcut(Shortcut::primary("w"));
+        let next_buffer = cx
+            .command(buffers::Next, |this, _, cx| this.cycle_buffer(false, cx))
+            .label("Next buffer")
+            .shortcut(Shortcut::new(
+                KeyboardKey::Tab,
+                rxui::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+            ));
+        let previous_buffer = cx
+            .command(buffers::Previous, |this, _, cx| this.cycle_buffer(true, cx))
+            .label("Previous buffer")
+            .shortcut(Shortcut::new(
+                KeyboardKey::Tab,
+                rxui::Modifiers {
+                    control: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ));
+        let quit = cx
+            .command(rxui::standard_commands::Quit, |this, _, cx| {
+                this.intent(Intent::Quit, cx)
+            })
+            .label("Quit Velk")
+            .shortcut(Shortcut::primary("q"))
+            .allow_in_modal(true);
+        let close_window = cx
+            .command(rxui::standard_commands::CloseWindow, |this, _, cx| {
+                this.intent(Intent::Close, cx)
+            })
+            .label("Close window")
+            .shortcut(Shortcut::primary("w").shift());
         let save = cx
             .command(Save, |this, _, cx| this.save(None, cx))
             .label("Save")
-            .enabled(!self.busy() && self.dirty)
+            .enabled(!self.busy() && self.buffer.dirty)
             .shortcut(Shortcut::primary("s"));
         let hover = cx
             .command(Hover, |this, _, cx| this.request_hover(cx))
             .label("Show hover")
-            .enabled(self.semantic.as_ref().is_some_and(
+            .enabled(self.buffer.semantic.as_ref().is_some_and(
                 |state| matches!(state.status, velk_semantic::Status::Ready(c) if c.hover),
             ))
             .shortcut(Shortcut::new(
@@ -290,11 +435,15 @@ impl View for Document {
             .enabled(self.shell.open)
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
         let settings_menu = self.settings_menu(cx, toggle_settings.clone(), close_settings.clone());
-        let status = self.status.as_deref().unwrap_or(if self.dirty {
-            "Unsaved changes"
-        } else {
-            "Saved"
-        });
+        let status = self
+            .buffer
+            .status
+            .as_deref()
+            .unwrap_or(if self.buffer.dirty {
+                "Unsaved changes"
+            } else {
+                "Saved"
+            });
         let status = match self.semantic_status() {
             Some(semantic) => format!("{status} · {semantic}"),
             None => status.to_owned(),
@@ -341,7 +490,7 @@ impl View for Document {
         let trace_marker = cx
             .command(diagnostics::Marker, |this, _, _| {
                 velk_diagnostics::marker("User marker");
-                this.status = Some("Trace marker added".into());
+                this.buffer.status = Some("Trace marker added".into());
             })
             .label("Diagnostics: Add trace marker")
             .enabled(trace_available && velk_diagnostics::recording());
@@ -350,6 +499,18 @@ impl View for Document {
             if self.palette.open {
                 vec![
                     palette::Entry::new("velk.file.save", save.clone(), palette::primary("S")),
+                    palette::Entry::new("velk.file.open", open.clone(), palette::primary("O")),
+                    palette::Entry::new(
+                        "velk.buffer.close",
+                        close_buffer.clone(),
+                        palette::primary("W"),
+                    ),
+                    palette::Entry::new("velk.buffer.next", next_buffer.clone(), "Ctrl+Tab"),
+                    palette::Entry::new(
+                        "velk.buffer.previous",
+                        previous_buffer.clone(),
+                        "Ctrl+Shift+Tab",
+                    ),
                     palette::Entry::new("velk.search.find", find.clone(), palette::primary("F")),
                     palette::Entry::new(
                         "velk.settings.open",
@@ -372,22 +533,8 @@ impl View for Document {
                         unload_plugins.clone().label("Plugins: Unload all"),
                         "",
                     ),
-                    palette::Entry::new(
-                        "velk.window.close",
-                        cx.command(palette::CloseWindow, |this, _, cx| {
-                            this.intent(Intent::Close, cx)
-                        })
-                        .label("Close window")
-                        .enabled(!self.busy()),
-                        palette::primary("W"),
-                    ),
-                    palette::Entry::new(
-                        "velk.app.quit",
-                        cx.command(palette::Quit, |this, _, cx| this.intent(Intent::Quit, cx))
-                            .label("Quit Velk")
-                            .enabled(!self.busy()),
-                        palette::primary("Q"),
-                    ),
+                    palette::Entry::new("velk.window.close", close_window.clone(), ""),
+                    palette::Entry::new("velk.app.quit", quit.clone(), palette::primary("Q")),
                     palette::Entry::new("velk.plugins.restart", restart_plugins.clone(), ""),
                     palette::Entry::new(
                         "velk.window.reload",
@@ -423,6 +570,12 @@ impl View for Document {
             .on_command(toggle_palette)
             .on_command(load_plugins)
             .on_command(unload_plugins)
+            .on_command(quit)
+            .on_command(close_window)
+            .on_command(open.clone())
+            .on_command(close_buffer.clone())
+            .on_command(next_buffer)
+            .on_command(previous_buffer)
             .on_command(save)
             .on_command(hover)
             .on_command(toggle_plugins)
@@ -438,6 +591,7 @@ impl View for Document {
                     .accessibility_label("Reloading window")
                     .into_element()
             }))
+            .child(self.buffer_bar(cx, open.clone(), close_buffer.clone()))
             .child(search_bar)
             .child(
                 row()
@@ -448,7 +602,8 @@ impl View for Document {
                     .children(activity)
                     .children(self.panel_slot(velk_panels::Slot::Left, cx))
                     .child(
-                        self.editor
+                        self.buffer
+                            .editor
                             .clone()
                             .into_element()
                             .focus_handle(self.editor_focus.clone())
@@ -463,7 +618,7 @@ impl View for Document {
             .children(self.panel_slot(velk_panels::Slot::Bottom, cx))
             .children(
                 (!self.shell.store.preferences.status_bar)
-                    .then_some(self.status.as_ref())
+                    .then_some(self.buffer.status.as_ref())
                     .flatten()
                     .map(|message| {
                         label(message.clone())
@@ -484,7 +639,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
-    struct QueuedExecutor(Mutex<Vec<BlockingJob>>);
+    pub(super) struct QueuedExecutor(Mutex<Vec<BlockingJob>>);
     impl TaskExecutor for QueuedExecutor {
         fn spawn(&self, _: BackgroundFuture) -> Result<(), SpawnError> {
             Err(SpawnError::Unavailable)
@@ -495,7 +650,7 @@ mod tests {
         }
     }
     impl QueuedExecutor {
-        fn complete(&self, runtime: &mut Runtime) {
+        pub(super) fn complete(&self, runtime: &mut Runtime) {
             let jobs = std::mem::take(&mut *self.0.lock().unwrap());
             std::thread::spawn(move || {
                 for job in jobs {
@@ -523,12 +678,12 @@ mod tests {
         runtime.update(|cx| editor.update(cx, |e, _| e.insert("one")));
         runtime.flush().unwrap();
         runtime.update(|cx| {
-            assert!(document.read(cx).dirty);
+            assert!(document.read(cx).buffer.dirty);
             document.update(cx, |d, cx| d.save(None, cx));
             editor.update(cx, |e, _| e.insert("two"));
             // A second save must not race the first one's rename/baseline.
             document.update(cx, |d, cx| d.save(None, cx));
-            assert!(document.read(cx).saving.is_some());
+            assert!(document.read(cx).buffer.saving.is_some());
         });
         assert_eq!(executor.0.lock().unwrap().len(), 1);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
@@ -536,9 +691,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "oneoriginal");
         runtime.update(|cx| {
             assert!(editor.read(cx).buffer().is_dirty());
-            assert!(document.read(cx).dirty);
-            assert!(document.read(cx).saving.is_none());
-            assert!(document.read(cx).status.is_none());
+            assert!(document.read(cx).buffer.dirty);
+            assert!(document.read(cx).buffer.saving.is_none());
+            assert!(document.read(cx).buffer.status.is_none());
             assert_eq!(
                 editor.read(cx).buffer().text().to_string(),
                 "onetwooriginal"
@@ -548,7 +703,7 @@ mod tests {
         executor.complete(&mut runtime);
         runtime.update(|cx| {
             assert!(!editor.read(cx).buffer().is_dirty());
-            assert!(!document.read(cx).dirty);
+            assert!(!document.read(cx).buffer.dirty);
             assert!(editor.read(cx).buffer().can_undo());
             // A failed subsequent save retains the last successful checkpoint.
             editor.update(cx, |e, _| e.insert("three"));
@@ -561,6 +716,7 @@ mod tests {
             assert!(
                 document
                     .read(cx)
+                    .buffer
                     .status
                     .as_ref()
                     .unwrap()
@@ -600,11 +756,11 @@ mod tests {
                 .bounds;
             assert_eq!(bounds.width, size[0]);
             assert!(
-                bounds.height >= size[1] - 40.,
+                bounds.height >= size[1] - 74.,
                 "editor unexpectedly collapsed: {bounds:?}"
             );
             assert!(
-                bounds.height <= size[1] - 18.,
+                bounds.height <= size[1] - 52.,
                 "editor obscures status: {bounds:?}"
             );
         }
@@ -625,12 +781,13 @@ mod tests {
             assert!(
                 document
                     .read(cx)
+                    .buffer
                     .status
                     .as_ref()
                     .unwrap()
                     .contains("not configured")
             );
-            assert!(document.read(cx).saving.is_none());
+            assert!(document.read(cx).buffer.saving.is_none());
         });
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
     }

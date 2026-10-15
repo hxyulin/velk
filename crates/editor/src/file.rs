@@ -5,7 +5,7 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Seek, Write},
     path::{Path, PathBuf},
 };
-use velk_editor_widget::Editor;
+use velk_editor_widget::{Buffer, Editor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LineEnding {
@@ -64,6 +64,11 @@ impl FileState {
     }
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn open(path: &Path) -> io::Result<(Self, Editor)> {
+        let (file, buffer) = Self::read(path)?;
+        Ok((file, Editor::from_buffer(buffer)))
+    }
+    #[tracing::instrument(level = "debug", skip_all)]
+    pub fn read(path: &Path) -> io::Result<(Self, Buffer)> {
         let path = fs::canonicalize(path)?;
         let file = File::open(&path)?;
         if !file.metadata()?.is_file() {
@@ -75,7 +80,7 @@ impl FileState {
             endings: [0; 3],
             after_cr: false,
         };
-        let editor = Editor::from_reader(&mut reader)?;
+        let editor = Buffer::from_reader(&mut reader)?;
         let max = reader.endings.iter().copied().max().unwrap();
         let index = reader.endings.iter().position(|&n| n == max).unwrap();
         let ending = [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr][index];
