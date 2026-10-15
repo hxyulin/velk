@@ -159,6 +159,7 @@ impl Watches {
             ));
             if let Some(panel) = snapshot.panels.first_mut() {
                 match &mut panel.content {
+                    Content::Grid(_) => {}
                     Content::Tree(rows) => rows.push(Node {
                         id: "watch-error".into(),
                         label: message,

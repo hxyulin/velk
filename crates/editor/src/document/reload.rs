@@ -71,6 +71,8 @@ impl Document {
     pub(super) fn restore_focus(&mut self, cx: &mut Context<'_, Self>) {
         let result = if self.shell.open || self.plugin_menu_open || self.palette.open {
             Ok(()) // RXUI's modal owns autofocus and the focus trap.
+        } else if let Some(result) = self.focus_bottom(cx) {
+            result
         } else if self.buffer.search.open {
             self.buffer.search.focus.focus(cx)
         } else {

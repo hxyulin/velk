@@ -191,7 +191,9 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                     reply = files.request(Request::Poll { id }).unwrap();
                 }
-                Reply::Invalidated | Reply::Unchanged => panic!("unexpected change reply"),
+                Reply::Ack | Reply::Invalidated | Reply::Unchanged => {
+                    panic!("unexpected change reply")
+                }
                 Reply::Cancelled => panic!("unexpected cancellation"),
             }
         }

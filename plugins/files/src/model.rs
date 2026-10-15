@@ -196,7 +196,11 @@ impl Model {
                 snapshot.validate()?;
                 return Ok(snapshot);
             }
-            Request::Changes | Request::Poll { .. } | Request::Cancel { .. } => {
+            Request::Input { .. }
+            | Request::Updates { .. }
+            | Request::Changes
+            | Request::Poll { .. }
+            | Request::Cancel { .. } => {
                 return Err("worker received a control request".into());
             }
         }
@@ -361,6 +365,7 @@ impl Model {
         };
         let snapshot = Snapshot {
             watch: true,
+            stream: false,
             panels: vec![Panel {
                 id: "files".into(),
                 title: "Files".into(),

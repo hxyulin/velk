@@ -61,7 +61,7 @@ focus. Buttons can also be clicked or activated after Tab navigation. Disabled
 commands remain visible, and Enter on a disabled result or an empty list does
 nothing. Reopening starts with an empty query.
 
-The catalogue includes Open file, Open folder (Command+Shift+O / Control+Shift+O),
+The catalogue includes Terminal: Toggle bottom panel (Control+backtick), Open file, Open folder (Command+Shift+O / Control+Shift+O),
 Panels: Refresh, Save, Close buffer, Next/Previous buffer,
 Find in file, Settings, Plugins, Show hover,
 Plugins: Load from disk, Plugins: Unload all, Close window, and Quit Velk. Command
@@ -82,3 +82,9 @@ onto the UI thread or changing the native plugin ABI.
 The palette also exposes Diagnostics commands to start/stop a trace capture and
 add a marker. See [profiling.md](profiling.md) for capture limits, structured logs,
 plugin instrumentation and sampling builds.
+
+
+The built-in `velk.terminal` plugin adds a Ghostty-powered fixed-cell bottom
+panel. Its shell starts when shown, and hiding the panel retains its live
+session. See [terminal.md](terminal.md) for build prerequisites, keyboard input,
+ownership, unload/reload behavior and prototype limits.

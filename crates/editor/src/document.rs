@@ -1,5 +1,6 @@
 mod buffers;
 mod diagnostics;
+mod grid;
 mod palette;
 mod panels;
 mod plugins;
@@ -452,6 +453,17 @@ impl View for Document {
             None => status.to_owned(),
         };
         let toggle_panels = self.panels_action(cx);
+        let toggle_terminal = cx
+            .command(panels::ToggleBottom, |this, _, cx| this.toggle_bottom(cx))
+            .label("Terminal: Toggle bottom panel")
+            .enabled(self.bottom_available() && !self.reloading())
+            .shortcut(Shortcut::new(
+                KeyboardKey::Character("`".into()),
+                rxui::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+            ));
         let refresh_panels = cx
             .command(panels::Refresh, |this, _, cx| this.refresh_panels(cx))
             .label("Panels: Refresh")
@@ -568,6 +580,7 @@ impl View for Document {
                         palette::primary("Shift+O"),
                     ),
                     palette::Entry::new("velk.panels.refresh", refresh_panels.clone(), ""),
+                    palette::Entry::new("velk.terminal.toggle", toggle_terminal.clone(), "Ctrl+`"),
                     palette::Entry::new("velk.diagnostics.start", trace_start.clone(), ""),
                     palette::Entry::new("velk.diagnostics.stop", trace_stop.clone(), ""),
                     palette::Entry::new("velk.diagnostics.marker", trace_marker.clone(), ""),
@@ -580,6 +593,7 @@ impl View for Document {
             .fill_width()
             .fill_height()
             .on_command(toggle_panels)
+            .on_command(toggle_terminal)
             .on_command(trace_start)
             .on_command(trace_stop)
             .on_command(trace_marker)

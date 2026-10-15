@@ -5,4 +5,5 @@ velk_plugin_sdk::export_plugin_pack!(
     velk_plugin_rust_analyzer::RustAnalyzer,
     velk_plugin_search::Search,
     velk_plugin_files::Files,
+    velk_plugin_terminal::Terminal,
 );

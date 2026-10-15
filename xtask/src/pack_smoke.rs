@@ -14,7 +14,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .iter()
                 .all(|e| matches!(e, Event::Loaded(_)))
         );
-        assert_eq!(manager.plugins().count(), 5);
+        assert_eq!(manager.plugins().count(), 6);
         let image = manager.plugins().next().unwrap().loaded_path.clone();
         assert!(
             manager
@@ -149,6 +149,62 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         )?;
         assert!(fresh.effects.is_empty());
 
+        let terminal = manager.bind_hook("velk.terminal", velk_panels::HOOK)?;
+        let initial = panel_request(
+            &mut manager,
+            &terminal,
+            velk_panels::Request::Describe {
+                context: velk_panels::Context {
+                    root: Some(velk_panels::NativePath::new(project.path())),
+                    ..Default::default()
+                },
+            },
+        )?;
+        assert!(initial.stream);
+        let input = velk_panels::Request::Input {
+            panel: "terminal".into(),
+            events: vec![
+                velk_panels::grid::Input::Resize { cols: 80, rows: 12 },
+                velk_panels::grid::Input::Text {
+                    text: "printf 'PACK_%s\\n' TERMINAL\n".into(),
+                    paste: false,
+                },
+            ],
+        };
+        let bytes = manager.call_hook(&terminal, &velk_panels::encode(&input)?)?;
+        assert!(matches!(
+            velk_panels::decode::<velk_panels::Reply>(&bytes)?,
+            velk_panels::Reply::Ack
+        ));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let terminal_snapshot = loop {
+            let bytes = manager.call_hook(
+                &terminal,
+                &velk_panels::encode(&velk_panels::Request::Updates { revision: 0 })?,
+            )?;
+            if let velk_panels::Reply::Ready { snapshot } = velk_panels::decode(&bytes)? {
+                snapshot.validate()?;
+                if let velk_panels::Content::Grid(grid) = &snapshot.panels[0].content {
+                    let text: String = grid.cells.iter().map(|c| c.2.as_str()).collect();
+                    if text.contains("PACK_TERMINAL") {
+                        break snapshot;
+                    }
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native terminal plugin missed PTY output"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(matches!(
+            manager.unload("velk.terminal"),
+            Some(Event::Removed(_))
+        ));
+        assert!(manager.call_hook(&terminal, b"{}").is_err());
+        terminal_snapshot.validate()?;
+        assert_eq!(manager.load()?.len(), 1);
+
         assert!(matches!(manager.unload(ID), Some(Event::Removed(_))));
         assert!(image.exists());
         assert_eq!(manager.describe("velk.lsp")?, "Generic LSP transport");
@@ -156,10 +212,10 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         let markdown = manager.plugins().find(|p| p.id == ID).unwrap();
         assert_eq!(markdown.loaded_path, image);
         assert!(markdown.generation > old);
-        assert_eq!(manager.unload_all().len(), 5);
+        assert_eq!(manager.unload_all().len(), 6);
         assert!(image.exists(), "LSP's image lease applies to all members");
         assert!(manager.call_hook(&search, b"{}").is_err());
-        assert_eq!(manager.load()?.len(), 5);
+        assert_eq!(manager.load()?.len(), 6);
         assert!(manager.plugins().all(|p| p.loaded_path == image));
         manager.unload_all();
         // Even selecting only a nonresident member must discover pack residency.
@@ -179,7 +235,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     probe(root, output, release)?;
     crate::lsp_smoke::run_pack(root, output)?;
     println!(
-        "Plugin pack smoke passed: one image, five identities, independent unload/reload, resident subsets, artifact revalidation, nonresident cleanup, initialization failures, stale handles, packed LSP sessions"
+        "Plugin pack smoke passed: one image, six identities, independent unload/reload, resident subsets, artifact revalidation, nonresident cleanup, initialization failures, stale handles, packed LSP sessions, packed PTY terminal input/output"
     );
     Ok(())
 }

@@ -1,5 +1,6 @@
 //! Host-rendered panel contributions carried by a named byte request. No UI,
 //! callbacks, plugin-owned memory or filesystem I/O cross this boundary.
+pub mod grid;
 mod path;
 pub use path::NativePath;
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,7 @@ pub struct Panel {
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Content {
     Tree(Vec<Node>),
+    Grid(grid::Grid),
     Text(String),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +81,15 @@ impl Context {
 pub enum Request {
     /// Cheap invalidation check; never performs I/O or starts a model job.
     Changes,
+    /// Collect a coalesced live snapshot, or Unchanged. Never performs I/O.
+    Updates {
+        revision: u64,
+    },
+    /// Ordered input for an interactive panel. Replies with Ack.
+    Input {
+        panel: String,
+        events: Vec<grid::Input>,
+    },
     Describe {
         context: Context,
     },
@@ -104,6 +115,7 @@ pub enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Reply {
+    Ack,
     Unchanged,
     Invalidated,
     Ready { snapshot: Snapshot },
@@ -115,8 +127,11 @@ pub enum Reply {
 pub enum Effect {
     OpenFile { path: NativePath },
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Fast live snapshots via Updates (8 ms), independent of slow invalidations.
+    #[serde(default)]
+    pub stream: bool,
     /// Provider supports cheap Changes checks for external invalidation.
     #[serde(default)]
     pub watch: bool,
@@ -155,6 +170,7 @@ impl Snapshot {
                     return Err("panel text too large".into());
                 }
                 Content::Text(_) => {}
+                Content::Grid(grid) => grid.validate()?,
                 Content::Tree(nodes) => {
                     count += nodes.len();
                     if count > MAX_NODES {
@@ -214,6 +230,7 @@ mod tests {
     fn validates_tree_structure_unique_ids_and_bounds() {
         let mut s = Snapshot {
             watch: false,
+            stream: false,
             effects: Vec::new(),
             panels: vec![Panel {
                 id: "files".into(),
@@ -251,6 +268,7 @@ mod tests {
         let effect = Effect::OpenFile { path };
         let mut snapshot = Snapshot {
             watch: false,
+            stream: false,
             panels: vec![],
             effects: vec![effect.clone()],
         };

@@ -31,6 +31,22 @@ Decode `velk_panels::Request` and encode a `velk_panels::Reply`:
   host checks on its async executor every 200 ms and only updates the UI after
   invalidation. Automatic rediscovery waits for queued user actions to finish.
   Lifecycle changes cancel the check loop and reject stale replies.
+- `Updates { revision }` collects a latest live snapshot from a provider with
+  `Snapshot.stream = true`. Return Ready or Unchanged promptly. The host sends
+  its highest panel revision for this provider; providers advance that revision
+  for every new frame. Reads are idempotent and do not consume the frame, so
+  cancellation or a hide/show transition cannot lose a final update. The host checks
+  visible/open streaming panels every 8 ms on its async executor; hidden grids
+  stop fast checks. Snapshots coalesce, and Unchanged causes no UI update. Slow
+  invalidation checks retain their independent 200 ms schedule. Streamed updates
+  cannot contain effects and only replace their provider, retaining other panels
+  without copying their contents.
+- `Input { panel, events }` queues ordered fixed-cell input and returns Ack. There
+  is no revision comparison: keyboard streams target a live panel identity, not
+  coordinates from a potentially obsolete snapshot. Generation-bound handles
+  still retire input connections on unload/restart. Resize, committed text/paste,
+  named/control keys and wheel scroll are owned values. No callback or input
+  processing runs in the renderer.
 
 A handler can return `Reply::Ready { snapshot }` immediately, or
 `Reply::Pending { id }` after queueing owned work. Subsequent polls return the same
@@ -43,7 +59,7 @@ supersession and unload cancellation.
 
 `Snapshot` describes the provider's complete set of panels. Each panel has a
 provider-local ID, title, preferred `Left`, `Right` or `Bottom` slot, revision and
-content. Content is `Text` or `Tree`. Trees use preorder depth and stable node
+content. Content is `Text`, `Tree` or a bounded fixed-cell `Grid`. Trees use preorder depth and stable node
 IDs. The first node starts at depth zero, depth increases by at most one, and
 only a branch can have children. A node's `expanded` flag initializes host state
 only. `lazy` is valid only for a branch, and requests Expand when opened. Later
@@ -54,7 +70,8 @@ collapsed parent is reopened after plugin restart.
 The host qualifies panel IDs with plugin ID, so two providers can both call a
 panel `files`. Multiple panels in a slot appear as tabs. Host controls own fonts,
 colors, accessibility, focus, layout and scrolling. Side slots are 280 logical
-pixels wide and the bottom slot is 180 pixels high; resizing and moving panels
+pixels wide; the bottom slot is 180 pixels high for text/trees and 320 for grids.
+Resizing and moving panels
 are not yet exposed. Contributions cannot draw arbitrary native UI or run
 callbacks during rendering.
 
@@ -65,6 +82,24 @@ is rejected. A new generation can restart revision numbering. Leaves without
 actions only select; branches toggle expansion. Pointer and Enter/Space button
 activation share the same path. This is a virtual list of buttons, not a full
 accessibility tree navigation implementation.
+
+## Fixed-cell surfaces
+
+`Grid` is renderer-neutral cell data; see [terminal.md](terminal.md) for its first
+provider. Sparse cells carry row/column, grapheme text, width and a style index.
+Styles carry sRGB foreground/background and decoration flags. The host validates
+bounds, row order, overlap, style references and cursor position. Current bounds
+are 200 columns, 60 rows, 4,096 styles and 128 UTF-8 bytes per grapheme, within the
+same 1 MiB message limit. Input is bounded before queueing.
+
+The host paints the grid with RXUI/Astrelis, converts sRGB to linear colors,
+caches shaped/prepared runs, and places Unicode graphemes at their supplied cell
+coordinates. It owns focus, clipboard paste, IME composition and text commits.
+Preparing a visible grid can queue a size change through its bounded input
+channel; it performs no plugin or filesystem call. Input delivery and live
+snapshot collection use independent async tasks so continuous output does not
+block keystrokes or directory actions. The root plugin ABI and Plugin trait are
+unchanged.
 
 ## Host effects
 

@@ -13,6 +13,8 @@ use velk_plugin_host::{Client, HookHandle, PluginInfo};
 
 pub(super) struct Toggle;
 impl Command for Toggle {}
+pub(super) struct ToggleBottom;
+impl Command for ToggleBottom {}
 pub(super) struct Refresh;
 impl Command for Refresh {}
 pub(super) struct OpenFolder;
@@ -39,6 +41,7 @@ pub(super) struct Entry {
     panel: Panel,
     visible: Vec<usize>,
     scroll: rxui::ScrollHandle,
+    grid: Option<std::rc::Rc<super::grid::Connection>>,
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -49,6 +52,9 @@ pub(super) struct State {
     task: Option<Task>,
     watching: Option<Task>,
     watch_providers: BTreeSet<String>,
+    stream_providers: BTreeSet<String>,
+    slow_checked: Option<Instant>,
+    focus_bottom: bool,
     refresh_pending: bool,
     error: Option<String>,
     pending: VecDeque<PendingAction>,
@@ -59,6 +65,9 @@ struct PendingAction {
     expand: bool,
 }
 impl State {
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch
+    }
     pub(super) fn new(source: NativePath) -> Self {
         Self {
             ui: UiState {
@@ -136,7 +145,7 @@ async fn exchange(
                 rxui::sleep(Duration::from_millis(8)).await;
                 request = Request::Poll { id };
             }
-            Reply::Unchanged | Reply::Invalidated => {
+            Reply::Ack | Reply::Unchanged | Reply::Invalidated => {
                 return Err("unexpected panel change reply".into());
             }
             Reply::Cancelled => return Err("panel request cancelled".into()),
@@ -203,6 +212,7 @@ impl Document {
         self.panels.pending.clear();
         self.panels.watching = None;
         self.panels.watch_providers.clear();
+        self.panels.stream_providers.clear();
         self.panels.refresh_pending = false;
         self.panels.entries.clear();
         self.panels.handles.clear();
@@ -231,7 +241,7 @@ impl Document {
                 this.panels.task = None;
                 match result {
                     Ok(Ok((contributions, errors))) => {
-                        this.install_panels(contributions);
+                        this.install_panels(contributions, None, cx);
                         this.panels.error = (!errors.is_empty())
                             .then(|| errors.into_iter().take(4).collect::<Vec<_>>().join("; "));
                     }
@@ -257,11 +267,29 @@ impl Document {
             Err(e) => self.panels.error = Some(e.to_string()),
         }
     }
-    fn install_panels(&mut self, contributions: Vec<Contribution>) {
+    fn install_panels(
+        &mut self,
+        contributions: Vec<Contribution>,
+        provider: Option<&str>,
+        cx: &mut Context<'_, Self>,
+    ) {
         let mut old = std::mem::take(&mut self.panels.entries);
-        self.panels.handles.clear();
-        self.panels.watch_providers.clear();
+        if let Some(provider) = provider {
+            let (previous, retained) = old.into_iter().partition(|e| e.provider == provider);
+            old = previous;
+            self.panels.entries = retained;
+            self.panels.handles.remove(provider);
+            self.panels.watch_providers.remove(provider);
+            self.panels.stream_providers.remove(provider);
+        } else {
+            self.panels.handles.clear();
+            self.panels.watch_providers.clear();
+            self.panels.stream_providers.clear();
+        }
         for c in contributions {
+            if c.snapshot.stream {
+                self.panels.stream_providers.insert(c.provider.clone());
+            }
             if c.snapshot.watch {
                 self.panels.watch_providers.insert(c.provider.clone());
             }
@@ -301,17 +329,37 @@ impl Document {
                         view.selected = None;
                     }
                 }
-                let scroll = old
-                    .iter()
-                    .position(|e| e.key == key)
-                    .map(|i| old.remove(i).scroll)
+                let previous = old.iter().position(|e| e.key == key).map(|i| old.remove(i));
+                let scroll = previous
+                    .as_ref()
+                    .map(|e| e.scroll.clone())
                     .unwrap_or_default();
+                let mut grid = previous.and_then(|e| e.grid);
+                if matches!(panel.content, Content::Grid(_))
+                    && grid.is_none()
+                    && let Some(plugins) = &self.plugins
+                {
+                    match super::grid::Connection::new(
+                        plugins.client.clone(),
+                        self.panels.handles[&c.provider].clone(),
+                        panel.id.clone(),
+                        self.panels.epoch,
+                        cx,
+                    ) {
+                        Ok(connection) => grid = Some(connection),
+                        Err(error) => self.panels.error = Some(error),
+                    }
+                }
+                if let Some(connection) = &grid {
+                    connection.set_epoch(self.panels.epoch);
+                }
                 let mut entry = Entry {
                     provider: c.provider.clone(),
                     key,
                     panel,
                     visible: Vec::new(),
                     scroll,
+                    grid,
                 };
                 entry.rebuild(view);
                 self.panels.entries.push(entry);
@@ -339,6 +387,7 @@ impl Document {
         provider: String,
         handle: HookHandle,
         snapshot: Snapshot,
+        cx: &mut Context<'_, Self>,
     ) -> Result<(), String> {
         snapshot.validate()?;
         for panel in &snapshot.panels {
@@ -350,41 +399,42 @@ impl Document {
                 return Err("stale panel revision".into());
             }
         }
-        let mut contributions: Vec<_> = self
+        let panels = self
             .panels
             .entries
             .iter()
             .filter(|e| e.provider != provider)
-            .map(|e| Contribution {
-                provider: e.provider.clone(),
-                handle: self.panels.handles[&e.provider].clone(),
-                snapshot: Snapshot {
-                    watch: self.panels.watch_providers.contains(&e.provider),
-                    effects: Vec::new(),
-                    panels: vec![e.panel.clone()],
-                },
-            })
-            .collect();
-        contributions.push(Contribution {
-            provider,
-            handle,
-            snapshot,
-        });
-        let panels = contributions
+            .count()
+            + snapshot.panels.len();
+        let count = |content: &Content| match content {
+            Content::Tree(rows) => rows.len(),
+            _ => 0,
+        };
+        let nodes = self
+            .panels
+            .entries
             .iter()
-            .flat_map(|c| &c.snapshot.panels)
-            .collect::<Vec<_>>();
-        let nodes = panels
-            .iter()
-            .map(|p| match &p.content {
-                Content::Tree(n) => n.len(),
-                _ => 0,
-            })
-            .sum::<usize>();
-        if panels.len() > 64 || nodes > 20_000 {
+            .filter(|e| e.provider != provider)
+            .map(|e| count(&e.panel.content))
+            .sum::<usize>()
+            + snapshot
+                .panels
+                .iter()
+                .map(|p| count(&p.content))
+                .sum::<usize>();
+        if panels > 64 || nodes > 20_000 {
             return Err("window panel contribution limit exceeded".into());
         }
-        self.install_panels(contributions);
+        let name = provider.clone();
+        self.install_panels(
+            vec![Contribution {
+                provider,
+                handle,
+                snapshot,
+            }],
+            Some(&name),
+            cx,
+        );
         Ok(())
     }
     fn panel_context(&self, provider: &str) -> PanelContext {
@@ -532,7 +582,7 @@ impl Document {
                     Ok(Ok(mut snapshot)) => {
                         let effects = std::mem::take(&mut snapshot.effects);
                         this.panels.error = this
-                            .replace_panel_provider(provider, response_handle, snapshot)
+                            .replace_panel_provider(provider, response_handle, snapshot, cx)
                             .err();
                         if this.panels.error.is_none() {
                             for effect in effects {
@@ -565,27 +615,84 @@ impl Document {
         let handles: Vec<_> = self
             .panels
             .watch_providers
-            .iter()
-            .filter_map(|p| self.panels.handles.get(p).cloned())
+            .union(&self.panels.stream_providers)
+            .filter(|provider| {
+                !self.panels.stream_providers.contains(*provider)
+                    || (self.panels.ui.visible
+                        && self.panels.entries.iter().any(|e| {
+                            &e.provider == *provider
+                                && !self.panels.ui.closed.contains(&e.panel.slot)
+                        }))
+            })
+            .filter_map(|provider| {
+                self.panels.handles.get(provider).map(|handle| {
+                    (
+                        provider.clone(),
+                        handle.clone(),
+                        self.panels.stream_providers.contains(provider),
+                        self.panels
+                            .entries
+                            .iter()
+                            .filter(|e| &e.provider == provider)
+                            .map(|e| e.panel.revision)
+                            .max()
+                            .unwrap_or(0),
+                    )
+                })
+            })
             .collect();
         if handles.is_empty() {
             return;
         }
+        let streaming = handles.iter().any(|(_, _, stream, _)| *stream);
         let client = plugins.client.clone();
         let epoch = self.panels.epoch;
+        let checked = self.panels.slow_checked.unwrap_or_else(Instant::now);
         match cx.try_spawn(
             async move {
+                let mut slow = checked;
                 loop {
-                    rxui::sleep(Duration::from_millis(200)).await;
-                    for handle in &handles {
+                    rxui::sleep(Duration::from_millis(if streaming { 8 } else { 200 })).await;
+                    let check_slow = !streaming || slow.elapsed() >= Duration::from_millis(200);
+                    let mut updates = Vec::new();
+                    for (provider, handle, stream, revision) in &handles {
+                        if !stream && !check_slow {
+                            continue;
+                        }
+                        let request = if *stream {
+                            Request::Updates {
+                                revision: *revision,
+                            }
+                        } else {
+                            Request::Changes
+                        };
                         let bytes = client
-                            .call_hook(handle.clone(), velk_panels::encode(&Request::Changes)?)
+                            .call_hook(handle.clone(), velk_panels::encode(&request)?)
                             .await?;
                         match velk_panels::decode::<Reply>(&bytes)? {
-                            Reply::Invalidated => return Ok::<_, String>(()),
+                            Reply::Invalidated => return Ok::<_, String>((None, slow)),
                             Reply::Unchanged => {}
-                            _ => return Err("unexpected panel invalidation reply".into()),
+                            Reply::Ready { snapshot } if *stream => {
+                                snapshot.validate()?;
+                                if !snapshot.effects.is_empty() {
+                                    return Err(
+                                        "streamed panel updates cannot request effects".into()
+                                    );
+                                }
+                                updates.push(Contribution {
+                                    provider: provider.clone(),
+                                    handle: handle.clone(),
+                                    snapshot,
+                                });
+                            }
+                            _ => return Err("unexpected panel update reply".into()),
                         }
+                    }
+                    if check_slow {
+                        slow = Instant::now();
+                    }
+                    if !updates.is_empty() {
+                        return Ok((Some(updates), slow));
                     }
                 }
             },
@@ -595,7 +702,22 @@ impl Document {
                 }
                 this.panels.watching = None;
                 match result {
-                    Ok(Ok(())) => {
+                    Ok(Ok((Some(contributions), checked))) => {
+                        this.panels.slow_checked = Some(checked);
+                        for contribution in contributions {
+                            if let Err(error) = this.replace_panel_provider(
+                                contribution.provider,
+                                contribution.handle,
+                                contribution.snapshot,
+                                cx,
+                            ) {
+                                this.panels.error = Some(error);
+                            }
+                        }
+                        this.watch_panels(cx);
+                    }
+                    Ok(Ok((None, checked))) => {
+                        this.panels.slow_checked = Some(checked);
                         this.panels.refresh_pending = true;
                         this.start_panel_action(cx);
                     }
@@ -607,6 +729,45 @@ impl Document {
             Ok(task) => self.panels.watching = Some(task),
             Err(error) => self.panels.error = Some(error.to_string()),
         }
+    }
+    pub(super) fn bottom_available(&self) -> bool {
+        self.panels
+            .entries
+            .iter()
+            .any(|e| e.panel.slot == Slot::Bottom)
+    }
+    pub(super) fn toggle_bottom(&mut self, cx: &mut Context<'_, Self>) {
+        if self.panels.ui.visible && !self.panels.ui.closed.contains(&Slot::Bottom) {
+            self.panels.ui.closed.insert(Slot::Bottom);
+            self.panels.focus_bottom = false;
+            let _ = self.editor_focus.focus(cx);
+        } else {
+            self.panels.ui.visible = true;
+            self.panels.ui.closed.remove(&Slot::Bottom);
+            self.panels.focus_bottom = true;
+            self.restore_focus_pending = true;
+        }
+        self.panels.watching = None;
+        self.watch_panels(cx);
+    }
+    pub(super) fn focus_bottom(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<Result<(), rxui::FocusError>> {
+        if !self.panels.focus_bottom {
+            return None;
+        }
+        let connection = self
+            .panels
+            .entries
+            .iter()
+            .find(|e| e.panel.slot == Slot::Bottom)
+            .and_then(|e| e.grid.as_ref())?;
+        let result = connection.focus(cx);
+        if result.is_ok() {
+            self.panels.focus_bottom = false;
+        }
+        Some(result)
     }
     pub(super) fn panels_refresh_busy(&self) -> bool {
         self.panels.task.is_some()
@@ -673,6 +834,8 @@ impl Document {
             } else {
                 let _ = this.editor_focus.focus(cx);
             }
+            this.panels.watching = None;
+            this.watch_panels(cx);
         })
         .label("Panels: Toggle visibility")
         .shortcut(Shortcut::primary("b"))
@@ -717,6 +880,8 @@ impl Document {
                 .key(format!("panel-close-{slot:?}"))
                 .on_click(cx.listener(move |this, _, cx| {
                     this.panels.ui.closed.insert(slot);
+                    this.panels.watching = None;
+                    this.watch_panels(cx);
                     let _ = this.editor_focus.focus(cx);
                 })),
         );
@@ -730,6 +895,11 @@ impl Document {
                 .padding(8.)
                 .child(label(text.clone()).font_size(13.))
                 .into_element(),
+            Content::Grid(grid) => entry
+                .grid
+                .as_ref()
+                .map(|connection| connection.element(grid.clone(), cx))
+                .unwrap_or_else(|| label("Interactive panel unavailable").into_element()),
             Content::Tree(nodes) => {
                 virtual_list(entry.visible.len(), 26., &entry.scroll, cx, |i| {
                     let node = &nodes[entry.visible[i]];
@@ -806,7 +976,15 @@ impl Document {
             panel = panel.child(label(error.clone()).font_size(12.).padding(6.));
         }
         Some(match slot {
-            Slot::Bottom => panel.fill_width().height(180.),
+            Slot::Bottom => {
+                panel
+                    .fill_width()
+                    .height(if matches!(entry.panel.content, Content::Grid(_)) {
+                        320.
+                    } else {
+                        180.
+                    })
+            }
             _ => panel.width(280.).fill_height(),
         })
     }
@@ -852,6 +1030,7 @@ mod tests {
             },
             visible: vec![],
             scroll: Default::default(),
+            grid: None,
         }
     }
     fn click(ui: &mut Ui<Document>, runtime: &mut Runtime, key: &str) {

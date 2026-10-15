@@ -19,6 +19,7 @@ path = "examples/widget-preview.rs"
 required-features = ["performance"]
 
 [dependencies]
+async-channel = "2.5"
 velk-panels.workspace = true
 velk-diagnostics = { workspace = true, features = ["collector"] }
 tracing.workspace = true

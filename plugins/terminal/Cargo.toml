@@ -1,0 +1,25 @@
+[package]
+name = "velk-plugin-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lib]
+crate-type = ["rlib"]
+[dependencies]
+velk-plugin-sdk.workspace = true
+velk-panels.workspace = true
+ghostty-vt = { version = "=0.7.2", default-features = false }
+# Keep the C ABI and checksum-pinned source in sync with the safe adapter.
+ghostty-vt-sys = "=0.7.2"
+portable-pty = "0.9.0"
+anyhow = "1"
+mio = { version = "1.2", features = ["os-poll", "os-ext"] }
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.28", features = ["fs", "signal"] }
+[dev-dependencies]
+tempfile = "3.27.0"
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"

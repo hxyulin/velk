@@ -9,6 +9,7 @@ mod hooks_smoke;
 mod lsp_smoke;
 mod pack_smoke;
 mod search_smoke;
+mod terminal_tools;
 mod trace_summary;
 const PLUGIN: &str = "velk-plugin-markdown";
 const ID: &str = "velk.markdown";
@@ -30,7 +31,9 @@ fn checked(command: &mut Command) -> Result<(), String> {
     }
 }
 fn cargo() -> Command {
-    Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+    let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    terminal_tools::configure(&mut command);
+    command
 }
 fn paths(release: bool) -> Result<(PathBuf, PathBuf), String> {
     let output = cargo()
@@ -86,6 +89,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         "velk.language-server.rust-analyzer",
         velk_search::DEFAULT_BACKEND,
         "velk.files",
+        "velk.terminal",
     ]
     .into_iter()
     .map(|id| PluginSpec {
@@ -218,19 +222,25 @@ fn run() -> Result<(), String> {
     }
     if action == "help" {
         println!(
-            "cargo xtask build [--release]\ncargo xtask plugins [--release]\ncargo xtask run [--release] -- <file>\ncargo xtask test-plugins [--release]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
+            "cargo xtask setup-terminal\ncargo xtask test\ncargo xtask build [--release]\ncargo xtask plugins [--release]\ncargo xtask run [--release] -- <file>\ncargo xtask test-plugins [--release]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
         );
         return Ok(());
     }
     if !matches!(
         action.as_str(),
-        "build" | "plugins" | "run" | "test-plugins"
+        "build" | "plugins" | "run" | "test-plugins" | "setup-terminal" | "test"
     ) || (action == "run" && args.len() != 1)
         || (action != "run" && !args.is_empty())
     {
         return Err("invalid arguments; use cargo xtask help".into());
     }
     let (root, output) = paths(release)?;
+    if action == "setup-terminal" {
+        return terminal_tools::setup(&root);
+    }
+    if action == "test" {
+        return checked(cargo().current_dir(&root).args(["test", "--workspace"]));
+    }
     if action == "test-plugins" {
         return smoke(&root, &output, release);
     }
