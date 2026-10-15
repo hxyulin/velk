@@ -200,25 +200,7 @@ impl Manager {
             .get(handle.slot)
             .and_then(|h| h.bytes)
             .ok_or("request hook unavailable")?;
-        let mut reply = Reply {
-            result: None,
-            calls: 0,
-        };
-        let status = unsafe {
-            (api.call)(
-                api.context,
-                Bytes {
-                    data: input.as_ptr(),
-                    length: input.len(),
-                },
-                collect,
-                (&mut reply as *mut Reply).cast(),
-            )
-        };
-        if status != OK {
-            return Err(format!("hook request failed ({status})"));
-        }
-        reply.result.ok_or("hook returned without a reply")?
+        call_bytes(api, input)
     }
     /// Ordered notification fan-out on the background worker. Accepted events
     /// are delivered even if their acknowledgement receiver is dropped.
@@ -256,5 +238,46 @@ impl Manager {
         } else {
             Err(errors.join("; "))
         }
+    }
+}
+
+fn call_bytes(api: BytesApi, input: &[u8]) -> Result<Vec<u8>, String> {
+    let mut reply = Reply {
+        result: None,
+        calls: 0,
+    };
+    let status = unsafe {
+        (api.call)(
+            api.context,
+            Bytes {
+                data: input.as_ptr(),
+                length: input.len(),
+            },
+            collect,
+            (&mut reply as *mut Reply).cast(),
+        )
+    };
+    if status != OK {
+        return Err(format!("hook request failed ({status})"));
+    }
+    reply.result.ok_or("hook returned without a reply")?
+}
+
+impl Generation {
+    pub(super) fn read_metadata(&self) -> Result<Option<velk_plugin_sdk::PluginMetadata>, String> {
+        let Some(hook) = self.hooks.iter().find(|h| h.info.name == METADATA_HOOK) else {
+            return Ok(None);
+        };
+        let api = hook
+            .bytes
+            .ok_or("metadata hook must use the bytes request contract")?;
+        let bytes = call_bytes(api, &[])?;
+        if bytes.len() > 512 * 1024 {
+            return Err("plugin metadata exceeds 512 KiB".into());
+        }
+        let metadata: velk_plugin_sdk::PluginMetadata =
+            serde_json::from_slice(&bytes).map_err(|e| format!("invalid plugin metadata: {e}"))?;
+        metadata.validate()?;
+        Ok(Some(metadata))
     }
 }

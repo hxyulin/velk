@@ -25,6 +25,8 @@ pub struct PluginInfo {
     pub loaded_path: PathBuf,
     /// Host-owned copy; remains valid after the library is unloaded.
     pub description: String,
+    /// Owned display name, Markdown README and declared access requirements.
+    pub metadata: velk_plugin_sdk::PluginMetadata,
     /// Logical unload releases sessions/instances, while this build stays mapped.
     pub resident_code: bool,
     /// Names of the hooks this generation registered, in registration order.
@@ -68,6 +70,7 @@ impl Generation {
                 generation,
                 loaded_path: code.path.clone(),
                 description: String::new(),
+                metadata: Default::default(),
                 resident_code: code.resident,
                 hooks: vec![],
             },
@@ -83,6 +86,13 @@ impl Generation {
         loaded.discover_hooks()?;
         loaded.info.hooks = loaded.hooks.iter().map(|h| h.info.name.clone()).collect();
         loaded.info.description = loaded.describe()?;
+        loaded.info.metadata =
+            loaded
+                .read_metadata()?
+                .unwrap_or_else(|| velk_plugin_sdk::PluginMetadata {
+                    name: loaded.info.id.clone(),
+                    ..Default::default()
+                });
         Ok(loaded)
     }
     fn describe(&mut self) -> Result<String, String> {
@@ -534,6 +544,7 @@ mod tests {
                     generation: 1,
                     loaded_path: copy.path().into(),
                     description: String::new(),
+                    metadata: Default::default(),
                     resident_code: false,
                     hooks: vec![],
                 },
@@ -677,6 +688,7 @@ pub(super) mod test_provider {
                     generation: 1,
                     loaded_path: copy.path().into(),
                     description: String::new(),
+                    metadata: Default::default(),
                     resident_code: false,
                     hooks: vec![],
                 },

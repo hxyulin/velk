@@ -509,3 +509,6 @@ See [the responsiveness report](docs/performance/responsiveness.md) for controll
 submission timings, native event latency, limits and reproduction commands.
 Set `VELK_BENCH_GPU_WAIT=1` on the responsiveness benchmark to additionally wait
 for offscreen GPU completion; this does not measure display presentation.
+
+Plugin authors: see [Plugin metadata and access declarations](docs/plugin-api.md)
+for names, required and optional capabilities, and Markdown READMEs.

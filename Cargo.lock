@@ -4116,6 +4116,8 @@ name = "velk-plugin-sdk"
 version = "0.0.0-dev"
 dependencies = [
  "ropey",
+ "serde",
+ "serde_json",
  "velk-diagnostics",
  "velk-markup",
  "velk-plugin-api",

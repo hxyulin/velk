@@ -183,3 +183,7 @@ pub struct TraceSink {
 pub struct DiagnosticsApi {
     pub attach: unsafe extern "C" fn(*const TraceSink) -> i32,
 }
+
+/// Optional JSON metadata request; empty input, UTF-8 PluginMetadata response.
+/// Uses BYTES_CONTRACT v1 without changing the root native ABI.
+pub const METADATA_HOOK: &str = "velk.plugin.metadata.v1";

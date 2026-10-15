@@ -20,13 +20,23 @@ pub struct LanguageServer {
     pub initialization_options: String,
     pub configuration: String,
 }
+mod metadata;
+pub use metadata::{Capability, CapabilityDeclaration, PluginMetadata};
+
 pub trait Plugin: Default + 'static {
     const ID: &'static str;
     const VERSION: &'static str;
+    /// Human-readable display name. Defaults to the ID for older implementations.
+    const NAME: &'static str = Self::ID;
+    /// README-style Markdown; use include_str! to embed a README.md.
+    const README: &'static str = "";
+    /// Declared access requirements, not enforced grants for native code.
+    const CAPABILITIES: &'static [CapabilityDeclaration] = &[];
     const RESIDENT_CODE: bool = false;
     fn register(_reg: &mut Registrar<Self>) -> Result<(), String> {
         Ok(())
     }
+    /// Short plain-text summary used in plugin lists. Rich documentation goes in README.
     fn describe(&mut self) -> String;
 }
 #[doc(hidden)]

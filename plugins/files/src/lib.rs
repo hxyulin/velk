@@ -97,6 +97,18 @@ impl Drop for Files {
 impl Plugin for Files {
     const ID: &'static str = "velk.files";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const NAME: &'static str = "Files";
+    const README: &'static str = include_str!("../README.md");
+    const CAPABILITIES: &'static [velk_plugin_sdk::CapabilityDeclaration] = &[
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "filesystem.read",
+            "Read project directories and file metadata.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "filesystem.watch",
+            "Watch project directories for file tree updates.",
+        ),
+    ];
     fn describe(&mut self) -> String {
         "Lazy project file tree".into()
     }

@@ -28,6 +28,22 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     unsafe {
         manager.load()?;
     }
+    let metadata = manager.plugins().next().unwrap().metadata.clone();
+    assert_eq!(metadata.name, "Named Hooks Probe");
+    assert!(metadata.readme.contains("**Markdown**"));
+    assert_eq!(metadata.capabilities.len(), 2);
+    assert!(!metadata.capabilities[0].optional);
+    assert!(metadata.capabilities[1].optional);
+    let metadata_hook = manager.bind_hook("test.hooks", "velk.plugin.metadata.v1")?;
+    let queried: velk_plugin_host::PluginMetadata =
+        serde_json::from_slice(&manager.call_hook(&metadata_hook, b"")?)
+            .map_err(|e| e.to_string())?;
+    assert_eq!(queried, metadata);
+    assert!(
+        manager
+            .call_hook(&metadata_hook, b"unexpected input")
+            .is_err()
+    );
     let registered = manager.hooks("test.hooks")?;
     assert_eq!(
         registered
@@ -65,6 +81,12 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     manager.unload_all();
     assert!(!copy.exists());
     assert_eq!(owned, input);
+    assert_eq!(
+        metadata.name, "Named Hooks Probe",
+        "host owns metadata after unload"
+    );
+    assert!(metadata.readme.contains("世界"));
+    assert!(manager.call_hook(&metadata_hook, b"").is_err());
     assert!(manager.call_hook(&echo, b"").is_err());
     unsafe {
         manager.load()?;

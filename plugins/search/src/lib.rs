@@ -80,6 +80,13 @@ impl Drop for Search {
 impl Plugin for Search {
     const ID: &'static str = model::DEFAULT_BACKEND;
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const NAME: &'static str = "Buffer Search";
+    const README: &'static str = include_str!("../README.md");
+    const CAPABILITIES: &'static [velk_plugin_sdk::CapabilityDeclaration] =
+        &[velk_plugin_sdk::CapabilityDeclaration::required(
+            "editor.buffer.read",
+            "Search the text supplied from the current buffer.",
+        )];
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
         reg.provide(
             hooks::Request(model::HOOK),

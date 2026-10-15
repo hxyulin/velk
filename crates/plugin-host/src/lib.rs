@@ -9,6 +9,7 @@ use std::{
 };
 mod native;
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
+pub use velk_plugin_sdk::{Capability, PluginMetadata};
 
 pub mod hook_kind {
     pub use velk_plugin_api::{CONTRIBUTION, EVENT, REQUEST, SERVICE};
@@ -17,7 +18,7 @@ pub mod hook_kind {
 pub mod hook_name {
     pub use velk_plugin_api::{
         DIAGNOSTICS_HOOK, LANGUAGE_HOOK, LIFECYCLE_RESTORE_HOOK, LIFECYCLE_SNAPSHOT_HOOK,
-        MARKUP_HOOK, SEMANTIC_HOOK,
+        MARKUP_HOOK, METADATA_HOOK, SEMANTIC_HOOK,
     };
 }
 pub type PluginStates = Vec<(String, Vec<u8>)>;

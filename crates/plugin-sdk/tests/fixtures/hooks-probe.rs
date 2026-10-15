@@ -9,6 +9,18 @@ struct Probe {
 }
 impl Plugin for Probe {
     const ID: &'static str = "test.hooks";
+    const NAME: &'static str = "Named Hooks Probe";
+    const README: &'static str = "# Probe\n\n**Markdown** documentation 世界";
+    const CAPABILITIES: &'static [velk_plugin_sdk::CapabilityDeclaration] = &[
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "editor.buffer.read",
+            "Read test buffers.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::optional(
+            "network.http",
+            "Fetch optional test docs.",
+        ),
+    ];
     const VERSION: &'static str = "1";
     fn describe(&mut self) -> String {
         "Named registry probe".into()

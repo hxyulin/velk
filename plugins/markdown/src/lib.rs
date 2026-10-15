@@ -8,6 +8,8 @@ use velk_plugin_sdk::{
 impl Plugin for CommonMark {
     const ID: &'static str = "velk.markdown";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const NAME: &'static str = "CommonMark";
+    const README: &'static str = include_str!("../README.md");
     fn register(reg: &mut velk_plugin_sdk::Registrar<Self>) -> Result<(), String> {
         reg.provide(
             velk_plugin_sdk::hooks::RenderMarkdown,

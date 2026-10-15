@@ -145,6 +145,7 @@ mod tests {
                 generation: 1,
                 loaded_path: PathBuf::new(),
                 description: String::new(),
+                metadata: Default::default(),
                 resident_code: false,
                 hooks: vec![],
             },

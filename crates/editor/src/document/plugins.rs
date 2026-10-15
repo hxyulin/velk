@@ -16,6 +16,8 @@ pub(super) struct State {
     pub(super) loaded: Vec<velk_plugin_host::PluginInfo>,
     /// Last info seen per ID this session, so unloaded plugins keep a description.
     pub(super) known: std::collections::BTreeMap<String, velk_plugin_host::PluginInfo>,
+    /// Rendered README copies remain usable after a plugin unloads.
+    pub(super) readmes: std::collections::BTreeMap<String, velk_markup::Document>,
     /// Manifest IDs from the latest lifecycle report.
     pub(super) available: Vec<String>,
     /// Latest rejection per ID, cleared when that plugin loads.
@@ -38,6 +40,7 @@ impl Document {
             status: String::new(),
             loaded: Vec::new(),
             known: Default::default(),
+            readmes: Default::default(),
             available: Vec::new(),
             failed: Default::default(),
         });
@@ -107,47 +110,77 @@ impl Document {
             "Unloading plugins…"
         }
         .into();
-        match cx.try_spawn(async move { receiver.recv().await }, |this, result, cx| {
-            let Some(state) = &mut this.plugins else {
-                return;
-            };
-            state.task = None;
-            state.status = match result {
-                Ok(Ok(Ok(report))) => {
-                    for event in &report.events {
-                        if let Event::Rejected { id, message } = event {
-                            state.failed.insert(id.clone(), message.clone());
+        let renderer = state.client.clone();
+        match cx.try_spawn(
+            async move {
+                use velk_markup::Renderer;
+                let result = receiver.recv().await;
+                let mut readmes = std::collections::BTreeMap::new();
+                if let Ok(Ok(report)) = &result {
+                    for plugin in &report.plugins {
+                        let source = plugin.metadata.readme.clone();
+                        if !source.is_empty() {
+                            let document = renderer
+                                .render(source.clone())
+                                .await
+                                .unwrap_or_else(|_| velk_markup::Document::plain(source));
+                            readmes.insert(plugin.id.clone(), document);
                         }
                     }
-                    for plugin in &report.plugins {
-                        state.failed.remove(&plugin.id);
-                        state.known.insert(plugin.id.clone(), plugin.clone());
-                    }
-                    state.available = report.available;
-                    state.loaded = report.plugins;
-                    let errors: Vec<_> = report
-                        .events
-                        .iter()
-                        .filter_map(|e| match e {
-                            Event::Rejected { id, message } => Some(format!("{id}: {message}")),
-                            _ => None,
-                        })
-                        .collect();
-                    if errors.is_empty() {
-                        format!("Plugins: {} loaded", report.loaded)
-                    } else {
-                        format!("Plugins: {} loaded · {}", report.loaded, errors.join("; "))
-                    }
                 }
-                Ok(Ok(Err(error))) => format!("Plugins: {error}"),
-                _ => "Plugin worker unavailable".into(),
-            };
-            this.refresh_panels(cx);
-            if this.buffer.search.open {
-                this.buffer.search.preserve_selection = true;
-                this.restart_search(cx);
-            }
-        }) {
+                (result, readmes)
+            },
+            |this, result, cx| {
+                let Some(state) = &mut this.plugins else {
+                    return;
+                };
+                state.task = None;
+                let result = result.map(|(result, readmes)| {
+                    for (id, readme) in readmes {
+                        state.readmes.insert(id, readme);
+                    }
+                    result
+                });
+                state.status = match result {
+                    Ok(Ok(Ok(report))) => {
+                        for event in &report.events {
+                            if let Event::Rejected { id, message } = event {
+                                state.failed.insert(id.clone(), message.clone());
+                            }
+                        }
+                        for plugin in &report.plugins {
+                            state.failed.remove(&plugin.id);
+                            if plugin.metadata.readme.is_empty() {
+                                state.readmes.remove(&plugin.id);
+                            }
+                            state.known.insert(plugin.id.clone(), plugin.clone());
+                        }
+                        state.available = report.available;
+                        state.loaded = report.plugins;
+                        let errors: Vec<_> = report
+                            .events
+                            .iter()
+                            .filter_map(|e| match e {
+                                Event::Rejected { id, message } => Some(format!("{id}: {message}")),
+                                _ => None,
+                            })
+                            .collect();
+                        if errors.is_empty() {
+                            format!("Plugins: {} loaded", report.loaded)
+                        } else {
+                            format!("Plugins: {} loaded · {}", report.loaded, errors.join("; "))
+                        }
+                    }
+                    Ok(Ok(Err(error))) => format!("Plugins: {error}"),
+                    _ => "Plugin worker unavailable".into(),
+                };
+                this.refresh_panels(cx);
+                if this.buffer.search.open {
+                    this.buffer.search.preserve_selection = true;
+                    this.restart_search(cx);
+                }
+            },
+        ) {
             Ok(task) => state.task = Some(task),
             Err(error) => {
                 state.status = format!("Plugins: {error}");

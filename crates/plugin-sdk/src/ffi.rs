@@ -94,7 +94,8 @@ unsafe extern "C" fn create<P: Plugin>(output: *mut *mut c_void) -> i32 {
     guard(|| {
         let mut plugin = Box::new(P::default());
         let mut registry = registry::Registrar::new(&mut *plugin);
-        if P::register(&mut registry).is_err()
+        if register_metadata(&mut registry).is_err()
+            || P::register(&mut registry).is_err()
             || (registry.entries.len() < MAX_HOOKS && register_diagnostics(&mut registry).is_err())
         {
             return INVALID;
@@ -329,4 +330,19 @@ mod tests {
             assert_eq!(destroy::<Panicking>(instance), OK);
         }
     }
+}
+
+fn register_metadata<P: Plugin>(registry: &mut registry::Registrar<P>) -> Result<(), String> {
+    let metadata = crate::PluginMetadata::of::<P>();
+    metadata.validate()?;
+    let bytes = serde_json::to_vec(&metadata).map_err(|e| e.to_string())?;
+    registry.provide(
+        registry::Request(METADATA_HOOK),
+        move |_: &mut P, input: &[u8]| {
+            if !input.is_empty() {
+                return Err("metadata request must be empty".into());
+            }
+            Ok(bytes.clone())
+        },
+    )
 }

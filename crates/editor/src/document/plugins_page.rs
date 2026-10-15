@@ -50,7 +50,8 @@ fn contributions(info: &PluginInfo) -> Vec<(&'static str, String)> {
             hook_name::LANGUAGE_HOOK => ("Language", "Language server definition".into()),
             hook_name::LIFECYCLE_SNAPSHOT_HOOK
             | hook_name::LIFECYCLE_RESTORE_HOOK
-            | hook_name::DIAGNOSTICS_HOOK => continue,
+            | hook_name::DIAGNOSTICS_HOOK
+            | hook_name::METADATA_HOOK => continue,
             name => {
                 other.push(name.to_owned());
                 continue;
@@ -62,6 +63,40 @@ fn contributions(info: &PluginInfo) -> Vec<(&'static str, String)> {
         rows.push(("Hooks", other.join("  ")));
     }
     rows
+}
+
+/// Render the plugin-owned document as inert styled text, without fetching images
+/// or interpreting HTML. Link destinations remain data, as in hover documentation.
+fn markdown_body(document: &velk_markup::Document) -> Element {
+    rich_text(
+        document
+            .runs
+            .iter()
+            .map(|run| {
+                let mut span = rxui::span(run.text.clone());
+                let style = &run.style;
+                if style.bold {
+                    span = span.bold();
+                }
+                if style.italic {
+                    span = span.italic();
+                }
+                if style.code {
+                    span = span.monospace();
+                }
+                if style.strikethrough {
+                    span = span.strikethrough();
+                }
+                if style.heading > 0 {
+                    span = span.font_size(24. - f32::from(style.heading.min(6)));
+                }
+                if style.link.is_some() {
+                    span = span.underline().color(ThemeColor::Accent);
+                }
+                span
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 impl Document {
@@ -117,6 +152,11 @@ impl Document {
     fn plugin_info(&self, id: &str) -> Option<&PluginInfo> {
         self.plugins.as_ref().and_then(|s| s.known.get(id))
     }
+    fn plugin_name(&self, id: &str) -> String {
+        self.plugin_info(id)
+            .filter(|p| !p.metadata.name.is_empty())
+            .map_or_else(|| display_name(id), |p| p.metadata.name.clone())
+    }
     fn plugin_list_row(&self, id: &str, selected: bool, cx: &mut ViewContext<'_, Self>) -> Element {
         let status = self.plugin_status(id);
         let enabled = !self
@@ -168,7 +208,7 @@ impl Document {
                                 .flex_shrink(1.)
                                 .min_width(0.)
                                 .clip()
-                                .child(label(display_name(id)).font_weight(FontWeight::MEDIUM))
+                                .child(label(self.plugin_name(id)).font_weight(FontWeight::MEDIUM))
                                 .child(
                                     label(description)
                                         .font_size(12.)
@@ -190,7 +230,7 @@ impl Document {
             .child(
                 switch(enabled, "")
                     .key(format!("plugin-enabled-{id}"))
-                    .accessibility_label(format!("Enable {}", display_name(id)))
+                    .accessibility_label(format!("Enable {}", self.plugin_name(id)))
                     .disabled(self.plugins_busy() || self.reloading())
                     .on_change(cx.listener(move |this, event: &ToggleEvent, cx| {
                         this.set_plugin_enabled(toggle_id.clone(), event.checked, cx)
@@ -215,7 +255,7 @@ impl Document {
             .fill_width()
             .gap(4.)
             .child(
-                label(display_name(id))
+                label(self.plugin_name(id))
                     .font_size(18.)
                     .font_weight(FontWeight::SEMIBOLD),
             )
@@ -274,6 +314,60 @@ impl Document {
             .and_then(|s| s.failed.get(id))
         {
             detail = detail.child(error_box("Failed to load", message.clone()));
+        }
+        if let Some(info) = info {
+            if !info.description.is_empty() {
+                detail = detail.child(label(info.description.clone()).color(ThemeColor::TextMuted));
+            }
+            if !info.metadata.readme.is_empty() {
+                let readme = self
+                    .plugins
+                    .as_ref()
+                    .and_then(|state| state.readmes.get(id));
+                detail = detail.child(
+                    readme
+                        .map_or_else(|| label(info.metadata.readme.clone()), markdown_body)
+                        .key("plugin-readme")
+                        .fill_width()
+                        .padding_y(12.),
+                );
+            }
+            detail = detail.child(
+                label("Capabilities")
+                    .font_size(15.)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .padding_y(10.),
+            );
+            detail = detail.child(label("Declared access. Native plugins run with the editor’s permissions; these declarations are not enforced.")
+                .font_size(12.).color(ThemeColor::TextMuted));
+            if info.metadata.capabilities.is_empty() {
+                detail = detail.child(label("No access capabilities declared.").font_size(12.5));
+            }
+            for capability in &info.metadata.capabilities {
+                detail = detail.child(
+                    column()
+                        .gap(3.)
+                        .padding_y(6.)
+                        .child(
+                            label(format!(
+                                "{} · {}",
+                                capability.id,
+                                if capability.optional {
+                                    "Optional"
+                                } else {
+                                    "Required"
+                                }
+                            ))
+                            .font_size(12.5)
+                            .font_weight(FontWeight::MEDIUM),
+                        )
+                        .child(
+                            label(capability.reason.clone())
+                                .font_size(12.5)
+                                .color(ThemeColor::TextMuted),
+                        ),
+                );
+            }
         }
         detail = detail.child(
             label("Adds to Velk")
@@ -343,7 +437,8 @@ impl Document {
             .into_iter()
             .filter(|id| {
                 let description = self.plugin_info(id).map_or("", |p| &p.description);
-                let haystack = format!("{id} {} {description}", display_name(id)).to_lowercase();
+                let haystack =
+                    format!("{id} {} {description}", self.plugin_name(id)).to_lowercase();
                 terms.iter().all(|t| haystack.contains(t))
             })
             .collect();
@@ -502,6 +597,7 @@ mod tests {
             generation: 1,
             loaded_path: Default::default(),
             description: String::new(),
+            metadata: Default::default(),
             resident_code: false,
             hooks: vec![
                 velk_panels::HOOK.into(),

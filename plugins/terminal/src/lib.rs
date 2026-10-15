@@ -215,6 +215,22 @@ impl Drop for Terminal {
 impl Plugin for Terminal {
     const ID: &'static str = "velk.terminal";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const NAME: &'static str = "Terminal";
+    const README: &'static str = include_str!("../README.md");
+    const CAPABILITIES: &'static [velk_plugin_sdk::CapabilityDeclaration] = &[
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "process.spawn",
+            "Run the configured interactive shell in a pseudo-terminal.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "environment.read",
+            "Read the configured shell and its inherited environment.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "filesystem.read",
+            "Resolve the terminal working directory.",
+        ),
+    ];
     fn describe(&mut self) -> String {
         "Ghostty terminal emulator with an owned PTY".into()
     }

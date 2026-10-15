@@ -7,6 +7,18 @@ pub struct Lsp;
 impl Plugin for Lsp {
     const ID: &'static str = "velk.lsp";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const NAME: &'static str = "Language Server Protocol";
+    const README: &'static str = include_str!("../README.md");
+    const CAPABILITIES: &'static [velk_plugin_sdk::CapabilityDeclaration] = &[
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "process.spawn",
+            "Start and communicate with configured language-server processes.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "editor.buffer.read",
+            "Send document contents and changes to language servers.",
+        ),
+    ];
 
     // Tokio process signal handlers can outlive their reactor on Unix.
     const RESIDENT_CODE: bool = true;

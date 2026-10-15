@@ -5,6 +5,18 @@ pub struct RustAnalyzer;
 impl Plugin for RustAnalyzer {
     const ID: &'static str = "velk.language-server.rust-analyzer";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const NAME: &'static str = "Rust Analyzer";
+    const README: &'static str = include_str!("../README.md");
+    const CAPABILITIES: &'static [velk_plugin_sdk::CapabilityDeclaration] = &[
+        velk_plugin_sdk::CapabilityDeclaration::optional(
+            "environment.read",
+            "Read language-server executable and configuration overrides.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::optional(
+            "filesystem.read",
+            "Read an explicitly configured language-server configuration file.",
+        ),
+    ];
     fn register(reg: &mut velk_plugin_sdk::Registrar<Self>) -> Result<(), String> {
         reg.provide(
             velk_plugin_sdk::hooks::LanguageDefinition,

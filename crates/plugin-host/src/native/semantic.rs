@@ -323,6 +323,7 @@ mod tests {
                     generation: 1,
                     loaded_path: dir.path().into(),
                     description: String::new(),
+                    metadata: Default::default(),
                     resident_code: false,
                     hooks: vec![],
                 },
