@@ -48,6 +48,7 @@ impl ProjectedComposition {
         element: &ElementInfo<'_>,
         cx: &mut CustomPrepare<'_>,
     ) -> Result<(), UiError> {
+        #[cfg(any(test, feature = "performance"))]
         let started = std::time::Instant::now();
         let composition = source.composition.as_ref().unwrap();
         let replaced = source.selection.range();
@@ -108,7 +109,10 @@ impl ProjectedComposition {
         self.surface.0.preedit = Some(replaced.start..replaced.start + inserted);
         self.surface.0.caret_visible = source.caret_visible && composition.cursor.is_some();
         self.surface.0.epoch = source.epoch;
-        self.surface.0.input_started = source.input_started;
+        #[cfg(any(test, feature = "performance"))]
+        {
+            self.surface.0.input_started = source.input_started;
+        }
         self.surface.0.reveal_caret = source.reveal_caret;
         self.surface.0.selection_color = source.selection_color;
         self.surface.0.geometry.borrow_mut().offset = source.geometry.borrow().offset;
@@ -116,6 +120,7 @@ impl ProjectedComposition {
         self.selection = source.selection;
         self.composition = composition.clone();
         self.annotations = source.annotations.clone();
+        #[cfg(any(test, feature = "performance"))]
         let projection_ms = started.elapsed().as_secs_f64() * 1000.;
         self.surface.prepare(&mut self.state, element, cx)?;
         let geometry = self.surface.0.geometry.borrow();
@@ -131,19 +136,25 @@ impl ProjectedComposition {
         target.focused = geometry.focused;
         target.origin = geometry.origin;
         target.content_size = geometry.content_size;
-        target.metrics = geometry.metrics;
-        target.metrics.composition_projected = true;
-        target.metrics.projection_ms = projection_ms;
-        target.metrics.total_prepare_ms = started.elapsed().as_secs_f64() * 1000.;
-        target.last_input = geometry.last_input;
+        #[cfg(any(test, feature = "performance"))]
+        {
+            target.metrics = geometry.metrics;
+            target.metrics.composition_projected = true;
+            target.metrics.projection_ms = projection_ms;
+            target.metrics.total_prepare_ms = started.elapsed().as_secs_f64() * 1000.;
+            target.last_input = geometry.last_input;
+        }
         target.composed = Some(ComposedGeometry {
             geometry: self.surface.0.geometry.clone(),
             providers: self.providers.clone(),
             replaced,
             inserted,
         });
-        if std::env::var_os("VELK_PROFILE").is_some() {
-            eprintln!("Velk projected frame: {:?}", target.metrics);
+        #[cfg(any(test, feature = "performance"))]
+        {
+            if std::env::var_os("VELK_PROFILE").is_some() {
+                eprintln!("Velk projected frame: {:?}", target.metrics);
+            }
         }
         Ok(())
     }

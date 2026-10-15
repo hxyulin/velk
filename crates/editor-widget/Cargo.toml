@@ -33,3 +33,4 @@ required-features = ["performance"]
 [[bench]]
 name = "responsiveness"
 harness = false
+required-features = ["performance"]

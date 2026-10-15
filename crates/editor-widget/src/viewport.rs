@@ -7,7 +7,10 @@ use crate::{
 use ropey::Rope;
 use rxui::astrelis::{PaintSession, Rect, TextBuffer, TextLayout, TextShaping, TextSystem};
 use rxui::{CustomElement, CustomPrepare, ElementInfo, UiError};
-use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, time::Instant};
+use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
+
+#[cfg(any(test, feature = "performance"))]
+use std::time::Instant;
 
 const CACHE_LIMIT: usize = 256;
 const OVERSCAN: usize = 4;
@@ -24,6 +27,7 @@ fn composition_line(surface: &Surface) -> Option<usize> {
 
 /// CPU/GPU preparation diagnostics for the most recently prepared frame.
 /// GPU preparation is CPU submission/resource work, not GPU execution time.
+#[cfg(any(test, feature = "performance"))]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameMetrics {
     pub visible_lines: usize,
@@ -339,6 +343,7 @@ pub(crate) struct ViewportState {
     frame: u64,
     visible: Range<usize>,
     projected: Option<Box<crate::composition::ProjectedComposition>>,
+    #[cfg(any(test, feature = "performance"))]
     metrics: FrameMetrics,
     grid_probe: TextBuffer,
     grid_layout: Option<Arc<TextLayout>>,
@@ -357,6 +362,7 @@ impl Default for ViewportState {
             frame: 0,
             visible: 0..0,
             projected: None,
+            #[cfg(any(test, feature = "performance"))]
             metrics: FrameMetrics::default(),
             grid_probe: {
                 let mut buffer = TextBuffer::new();
@@ -402,6 +408,7 @@ impl ViewportState {
                 preedit: None,
                 geometry: Rc::new(RefCell::new(Geometry::default())),
                 epoch: 0,
+                #[cfg(any(test, feature = "performance"))]
                 input_started: None,
                 reveal_caret: false,
                 caret_visible: false,
@@ -606,10 +613,16 @@ impl ViewportState {
         entry.used = self.frame;
         let shaped = entry.surface.shape(&mut entry.state, width, fonts)?;
         if shaped {
-            self.metrics.shaped_lines += 1;
+            #[cfg(any(test, feature = "performance"))]
+            {
+                self.metrics.shaped_lines += 1;
+            }
             entry.gpu_dirty = true;
         } else {
-            self.metrics.cache_hits += 1;
+            #[cfg(any(test, feature = "performance"))]
+            {
+                self.metrics.cache_hits += 1;
+            }
         }
         let layout = entry.surface.layout(&entry.state);
         self.heights.set(line, layout.size()[1].max(LINE_HEIGHT));
@@ -621,15 +634,22 @@ impl ViewportState {
         viewport: [f32; 2],
         fonts: &mut TextSystem,
     ) -> Result<(), UiError> {
-        self.metrics = FrameMetrics::default();
+        #[cfg(any(test, feature = "performance"))]
+        {
+            self.metrics = FrameMetrics::default();
+        }
         self.frame += 1;
+        #[cfg(any(test, feature = "performance"))]
         let started = Instant::now();
         let document_changed = self.revision != Some(surface.revision);
         let index_changed = self.index.update(&surface.annotations, &surface.rope);
         if index_changed {
             self.annotation_epoch += 1;
         }
-        self.metrics.annotation_index_ms = started.elapsed().as_secs_f64() * 1000.;
+        #[cfg(any(test, feature = "performance"))]
+        {
+            self.metrics.annotation_index_ms = started.elapsed().as_secs_f64() * 1000.;
+        }
         let mut geometry = surface.geometry.borrow_mut();
         geometry.layout = None;
         let viewport_changed = geometry.viewport != viewport;
@@ -645,6 +665,7 @@ impl ViewportState {
         }
         self.revision = Some(surface.revision);
         let width = (viewport[0] - PADDING * 2.).max(0.);
+        #[cfg(any(test, feature = "performance"))]
         let started = Instant::now();
         let probe = if !fonts.as_cosmic().db().is_empty() {
             Some(self.grid_probe.layout(fonts)?)
@@ -742,27 +763,31 @@ impl ViewportState {
                 self.prepare_line(surface, caret_line, width, geometry.offset[0], fonts)?;
             }
         }
-        self.metrics.visible_lines = self.visible.len();
-        self.metrics.horizontal_lines = self
-            .visible
-            .clone()
-            .filter(|line| {
-                self.cache[line].window.is_some() || self.cache[line].rich_window.is_some()
-            })
-            .count();
-        self.metrics.rich_horizontal_lines = self
-            .visible
-            .clone()
-            .filter(|line| self.cache[line].rich_window.is_some())
-            .count();
-        self.metrics.cached_lines = self.cache.len();
-        self.metrics.unicode_horizontal_lines = self
-            .visible
-            .clone()
-            .filter(|line| self.cache[line].unicode_window.is_some())
-            .count();
-        self.metrics.cached_source_bytes = self.cache.values().map(|entry| entry.text.len()).sum();
-        self.metrics.cpu_layout_ms = started.elapsed().as_secs_f64() * 1000.;
+        #[cfg(any(test, feature = "performance"))]
+        {
+            self.metrics.visible_lines = self.visible.len();
+            self.metrics.horizontal_lines = self
+                .visible
+                .clone()
+                .filter(|line| {
+                    self.cache[line].window.is_some() || self.cache[line].rich_window.is_some()
+                })
+                .count();
+            self.metrics.rich_horizontal_lines = self
+                .visible
+                .clone()
+                .filter(|line| self.cache[line].rich_window.is_some())
+                .count();
+            self.metrics.cached_lines = self.cache.len();
+            self.metrics.unicode_horizontal_lines = self
+                .visible
+                .clone()
+                .filter(|line| self.cache[line].unicode_window.is_some())
+                .count();
+            self.metrics.cached_source_bytes =
+                self.cache.values().map(|entry| entry.text.len()).sum();
+            self.metrics.cpu_layout_ms = started.elapsed().as_secs_f64() * 1000.;
+        }
         Ok(())
     }
 }
@@ -847,6 +872,7 @@ impl CustomElement for ViewportSurface {
         element: &ElementInfo<'_>,
         cx: &mut CustomPrepare<'_>,
     ) -> Result<(), UiError> {
+        #[cfg(any(test, feature = "performance"))]
         let started = Instant::now();
         let surface = &self.0;
         if surface.composition.is_some() {
@@ -868,13 +894,18 @@ impl CustomElement for ViewportSurface {
         geometry.origin = [element.bounds.x, element.bounds.y];
         geometry.rope = surface.rope.clone();
         geometry.focused = element.focused;
+        #[cfg(any(test, feature = "performance"))]
         let started_gpu = Instant::now();
         for line in state.visible.clone() {
             let entry = state.cache.get_mut(&line).unwrap();
+            #[cfg(any(test, feature = "performance"))]
             let gpu_dirty = entry.gpu_dirty || entry.last_raster() != cx.raster_scale;
             entry.surface.prepare(&mut entry.state, element, cx)?;
-            if gpu_dirty {
-                state.metrics.gpu_prepared_lines += 1;
+            #[cfg(any(test, feature = "performance"))]
+            {
+                if gpu_dirty {
+                    state.metrics.gpu_prepared_lines += 1;
+                }
             }
             entry.gpu_dirty = false;
             let top = state.heights.top(line);
@@ -915,18 +946,21 @@ impl CustomElement for ViewportSurface {
                 geometry: entry.surface.geometry.clone(),
             });
         }
-        state.metrics.gpu_prepare_ms = started_gpu.elapsed().as_secs_f64() * 1000.;
-        state.metrics.total_prepare_ms = started.elapsed().as_secs_f64() * 1000.;
         geometry.epoch = Some(surface.epoch);
-        if surface.input_started != geometry.last_input {
-            state.metrics.input_to_prepare_ms = surface
-                .input_started
-                .map(|start| start.elapsed().as_secs_f64() * 1000.);
-            geometry.last_input = surface.input_started;
-        }
-        geometry.metrics = state.metrics;
-        if std::env::var_os("VELK_PROFILE").is_some() {
-            eprintln!("Velk frame: {:?}", state.metrics);
+        #[cfg(any(test, feature = "performance"))]
+        {
+            state.metrics.gpu_prepare_ms = started_gpu.elapsed().as_secs_f64() * 1000.;
+            state.metrics.total_prepare_ms = started.elapsed().as_secs_f64() * 1000.;
+            if surface.input_started != geometry.last_input {
+                state.metrics.input_to_prepare_ms = surface
+                    .input_started
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.);
+                geometry.last_input = surface.input_started;
+            }
+            geometry.metrics = state.metrics;
+            if std::env::var_os("VELK_PROFILE").is_some() {
+                eprintln!("Velk frame: {:?}", state.metrics);
+            }
         }
         Ok(())
     }
@@ -939,15 +973,19 @@ impl CustomElement for ViewportSurface {
         if self.0.composition.is_some() {
             let projected = state.projected.as_ref().unwrap();
             projected.surface.paint(&projected.state, element, paint)?;
-            self.0.geometry.borrow_mut().metrics.paint_record_ms = projected
-                .surface
-                .0
-                .geometry
-                .borrow()
-                .metrics
-                .paint_record_ms;
+            #[cfg(any(test, feature = "performance"))]
+            {
+                self.0.geometry.borrow_mut().metrics.paint_record_ms = projected
+                    .surface
+                    .0
+                    .geometry
+                    .borrow()
+                    .metrics
+                    .paint_record_ms;
+            }
             return Ok(());
         }
+        #[cfg(any(test, feature = "performance"))]
         let started = Instant::now();
         let geometry = self.0.geometry.borrow();
         for line in state.visible.clone() {
@@ -1008,15 +1046,19 @@ impl CustomElement for ViewportSurface {
                 .paint_at(&entry.state, element, paint, origin)?;
         }
         drop(geometry);
-        let elapsed = started.elapsed().as_secs_f64() * 1000.;
-        self.0.geometry.borrow_mut().metrics.paint_record_ms = elapsed;
-        if std::env::var_os("VELK_PROFILE").is_some() {
-            eprintln!("Velk paint record: {elapsed:.6} ms");
+        #[cfg(any(test, feature = "performance"))]
+        {
+            let elapsed = started.elapsed().as_secs_f64() * 1000.;
+            self.0.geometry.borrow_mut().metrics.paint_record_ms = elapsed;
+            if std::env::var_os("VELK_PROFILE").is_some() {
+                eprintln!("Velk paint record: {elapsed:.6} ms");
+            }
         }
         Ok(())
     }
 }
 impl CachedLine {
+    #[cfg(any(test, feature = "performance"))]
     fn last_raster(&self) -> f32 {
         self.state.raster_scale()
     }

@@ -1,7 +1,7 @@
 # Velk
 
 A desktop editor built with Rust and [RXUI](https://github.com/hxyulin/rxui).
-The application opens a native window with an empty rope-backed text editor.
+The application opens a single UTF-8 file in a native rope-backed text editor.
 
 ## Development
 
@@ -11,11 +11,28 @@ Install [rustup](https://rustup.rs/). The repository pins Rust 1.99.0 in
 Run the editor:
 
 ```sh
-cargo run --locked
+cargo run --locked -- path/to/file.txt
 ```
 
 The binary is named `velk`. It can also be run explicitly with
-`cargo run --locked -p velk-editor --bin velk`.
+`cargo run --locked -p velk-editor --bin velk -- path/to/file.txt`.
+
+Build and run the normal application:
+
+```sh
+cargo build --release --locked
+./target/release/velk path/to/file.txt
+```
+
+Exactly one file path is required. Quote paths containing spaces. The app reports
+usage errors, unreadable files and invalid UTF-8 on stderr before starting the UI.
+Files load directly into a Rope; CRLF and CR line endings normalize to LF in the
+editing buffer. Loading creates no undo entry and leaves the source file unchanged.
+Editing is currently in memory; file saving is not implemented yet.
+
+The normal binary has no showcase or stress-test switches. Widget profiling,
+frame counters and input timing are compiled only for tests or the opt-in
+`performance` feature.
 
 Check the workspace:
 
@@ -91,11 +108,14 @@ Use [Conventional Commits](https://www.conventionalcommits.org/), for example
 
 ## Rich text playground
 
-Run the editable prototype:
+Run the separate development example (not part of the normal app binary):
 
 ```sh
-cargo run --locked -- --showcase
+cargo run --locked -p velk-editor --example widget-preview --features performance -- --showcase
 ```
+
+Its preview-specific tests run with
+`cargo test -p velk-editor --example widget-preview --features performance --locked`.
 
 It demonstrates foreground and range backgrounds, a full-line debugger
 background, bold/italic and mixed font sizes, solid/dashed/wavy underlines,
@@ -135,20 +155,21 @@ multiple labels at one anchor. Labels are currently single-line text; arbitrary
 embedded widgets, soft-wrapped inlays, interactive diagnostic actions, automatic
 annotation remapping, and a rich-text file format are future work.
 
-Run the CPU benchmarks and the native 100,000-line stress fixture:
+Run the benchmarks and the separate native stress fixtures:
 
 ```sh
 cargo bench -p velk-editor-widget --bench editing --locked
 cargo bench -p velk-editor-widget --bench viewport --features performance --locked
-cargo bench -p velk-editor-widget --bench responsiveness --locked
-cargo run --release --locked -- --stress
-cargo run --release --locked -- --long-lines
-cargo run --release --locked -- --rich-long-lines
-cargo run --release --locked -- --unicode-long-lines
+cargo bench -p velk-editor-widget --bench responsiveness --features performance --locked
+cargo run --release --locked -p velk-editor --example widget-preview --features performance -- --stress
+cargo run --release --locked -p velk-editor --example widget-preview --features performance -- --long-lines
+cargo run --release --locked -p velk-editor --example widget-preview --features performance -- --rich-long-lines
+cargo run --release --locked -p velk-editor --example widget-preview --features performance -- --unicode-long-lines
 ```
 
-Set `VELK_PROFILE=1` to log preparation counters/timings and draw-recording time.
-Applications can inspect `Editor::frame_metrics()`. Our target is a 120 Hz
+In a development build with `--features performance`, set `VELK_PROFILE=1` to
+log preparation counters/timings and draw-recording time. That feature also exposes
+`Editor::frame_metrics()`; normal app builds omit this instrumentation. Our target is a 120 Hz
 frame budget (8.33 ms); these measurements do not establish presentation cadence.
 
 See [the performance report](docs/performance/editor-prototype.md) for measured

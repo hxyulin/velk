@@ -37,7 +37,9 @@ pub(crate) struct Geometry {
     pub(super) content_size: [f32; 2],
     pub(super) hover_regions: Vec<HoverRegion>,
     pub(super) lines: Vec<crate::viewport::LineHit>,
+    #[cfg(any(test, feature = "performance"))]
     pub(super) metrics: crate::viewport::FrameMetrics,
+    #[cfg(any(test, feature = "performance"))]
     pub(super) last_input: Option<std::time::Instant>,
     pub(super) composed: Option<crate::composition::ComposedGeometry>,
 }
@@ -199,6 +201,7 @@ pub(crate) struct Surface {
     pub preedit: Option<Range<usize>>,
     pub geometry: Rc<RefCell<Geometry>>,
     pub epoch: u64,
+    #[cfg(any(test, feature = "performance"))]
     pub input_started: Option<std::time::Instant>,
     pub reveal_caret: bool,
     pub caret_visible: bool,
@@ -243,6 +246,7 @@ impl SurfaceState {
     pub(super) fn project_caret(&self, byte: usize) -> usize {
         self.projection.display_offset(byte, true)
     }
+    #[cfg(any(test, feature = "performance"))]
     pub(super) fn raster_scale(&self) -> f32 {
         self.raster_scale
     }

@@ -12,6 +12,7 @@ mod viewport;
 #[cfg(feature = "performance")]
 #[doc(hidden)]
 pub use viewport::CpuViewportProbe;
+#[cfg(any(test, feature = "performance"))]
 pub use viewport::FrameMetrics;
 
 pub use annotations::{
@@ -20,11 +21,10 @@ pub use annotations::{
 };
 pub use buffer::{Buffer, Selection};
 use rxui::{prelude::*, standard_commands as commands};
+#[cfg(any(test, feature = "performance"))]
+use std::time::Instant;
 use std::{cell::RefCell, rc::Rc};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Duration};
 use surface::{Composition, Geometry, HoverHit, Surface};
 
 /// An editor view. Create a separate entity per window; document state can be
@@ -36,6 +36,7 @@ pub struct Editor {
     geometry: Rc<RefCell<Geometry>>,
     epoch: u64,
     caret_epoch: u64,
+    #[cfg(any(test, feature = "performance"))]
     input_started: Option<Instant>,
     reveal_caret: bool,
     annotations: Option<Arc<Annotations>>,
@@ -53,7 +54,16 @@ impl Editor {
         }
     }
 
+    /// Load a UTF-8 document without creating a full-document String.
+    pub fn from_reader(reader: impl std::io::Read) -> std::io::Result<Self> {
+        Ok(Self {
+            buffer: Buffer::from_reader(reader)?,
+            ..Self::default()
+        })
+    }
+
     /// Preparation diagnostics from the most recent native frame.
+    #[cfg(any(test, feature = "performance"))]
     pub fn frame_metrics(&self) -> FrameMetrics {
         self.geometry.borrow().metrics
     }
@@ -134,7 +144,10 @@ impl Editor {
     }
 
     pub fn insert(&mut self, text: &str) {
-        self.input_started = Some(Instant::now());
+        #[cfg(any(test, feature = "performance"))]
+        {
+            self.input_started = Some(Instant::now());
+        }
         self.composition = None;
         self.buffer.insert(text);
         self.edited();
@@ -155,6 +168,7 @@ impl Editor {
     }
 
     fn key(&mut self, event: &KeyInput, cx: &mut Context<'_, Self>) {
+        #[cfg(any(test, feature = "performance"))]
         let input_started = Instant::now();
         let key = &event.event;
         if !key.pressed || self.composition.is_some() {
@@ -241,7 +255,10 @@ impl Editor {
             _ => false,
         };
         if handled {
-            self.input_started = Some(input_started);
+            #[cfg(any(test, feature = "performance"))]
+            {
+                self.input_started = Some(input_started);
+            }
             event.prevent_default();
             self.edited();
         } else if !had_hover {
@@ -256,10 +273,14 @@ impl Editor {
         if drag && !event.buttons.contains(PointerButton::Primary) {
             return;
         }
+        #[cfg(any(test, feature = "performance"))]
         let input_started = Instant::now();
         let position = self.geometry.borrow().hit(event.local_position);
         if let Some(position) = position {
-            self.input_started = Some(input_started);
+            #[cfg(any(test, feature = "performance"))]
+            {
+                self.input_started = Some(input_started);
+            }
             self.buffer
                 .set_caret(position, drag || event.modifiers.shift);
             self.composition = None;
@@ -289,7 +310,10 @@ impl View for Editor {
             .shortcut(Shortcut::primary("c"));
         let cut = cx
             .command(commands::Cut, |this, _, cx| {
-                this.input_started = Some(Instant::now());
+                #[cfg(any(test, feature = "performance"))]
+                {
+                    this.input_started = Some(Instant::now());
+                }
                 match cx.write_clipboard_text(this.buffer.selected_text()) {
                     Ok(()) => {
                         this.composition = None;
@@ -303,7 +327,10 @@ impl View for Editor {
             .shortcut(Shortcut::primary("x"));
         let undo = cx
             .command(commands::Undo, |this, _, _| {
-                this.input_started = Some(Instant::now());
+                #[cfg(any(test, feature = "performance"))]
+                {
+                    this.input_started = Some(Instant::now());
+                }
                 this.buffer.undo();
                 this.edited();
             })
@@ -311,7 +338,10 @@ impl View for Editor {
             .shortcut(Shortcut::primary("z"));
         let redo = cx
             .command(commands::Redo, |this, _, _| {
-                this.input_started = Some(Instant::now());
+                #[cfg(any(test, feature = "performance"))]
+                {
+                    this.input_started = Some(Instant::now());
+                }
                 this.buffer.redo();
                 this.edited();
             })
@@ -320,7 +350,10 @@ impl View for Editor {
             .shortcut(Shortcut::primary("y"));
         let select_all = cx
             .command(commands::SelectAll, |this, _, _| {
-                this.input_started = Some(Instant::now());
+                #[cfg(any(test, feature = "performance"))]
+                {
+                    this.input_started = Some(Instant::now());
+                }
                 this.buffer.select_all();
                 this.edited();
             })
@@ -334,6 +367,7 @@ impl View for Editor {
             preedit: None,
             geometry: self.geometry.clone(),
             epoch: self.epoch,
+            #[cfg(any(test, feature = "performance"))]
             input_started: self.input_started,
             reveal_caret: self.reveal_caret,
             caret_visible,
@@ -372,7 +406,10 @@ impl View for Editor {
         .on_pointer_up(cx.listener(|_, event: &PointerInput, _| event.release_pointer()))
         .on_text_insert(cx.listener(|this, event: &TextInsertInput, _| this.insert(&event.text)))
         .on_ime(cx.listener(|this, event: &ImeInput, _| {
-            this.input_started = Some(Instant::now());
+            #[cfg(any(test, feature = "performance"))]
+            {
+                this.input_started = Some(Instant::now());
+            }
             this.composition = match &event.event {
                 ImeEvent::Preedit { text, cursor } => Some(Composition {
                     text: text.clone(),
@@ -384,7 +421,10 @@ impl View for Editor {
         }))
         .on_wheel(cx.listener(|this, event: &WheelInput, _| {
             this.hide_hover();
-            this.input_started = Some(Instant::now());
+            #[cfg(any(test, feature = "performance"))]
+            {
+                this.input_started = Some(Instant::now());
+            }
             this.geometry.borrow_mut().scroll(event.delta);
             this.epoch += 1;
             this.reveal_caret = false;

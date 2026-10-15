@@ -2647,6 +2647,7 @@ name = "velk-editor"
 version = "0.1.0"
 dependencies = [
  "rxui",
+ "tempfile",
  "velk-editor-widget",
 ]
 

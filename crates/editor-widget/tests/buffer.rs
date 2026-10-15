@@ -18,6 +18,67 @@ fn empty_document_edits_and_boundary_deletes_are_safe() {
 }
 
 #[test]
+fn reader_loads_unicode_and_normalizes_line_endings_across_small_reads() {
+    use std::io::{self, Read};
+    struct SmallReads<'a> {
+        bytes: &'a [u8],
+        maximum: usize,
+    }
+    impl Read for SmallReads<'_> {
+        fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
+            let length = target.len().min(self.maximum);
+            self.bytes.read(&mut target[..length])
+        }
+    }
+    for source in [
+        String::new(),
+        "Hello 世界\né 👩‍💻".into(),
+        "\r\n\r\r\n\nend\r".into(),
+        format!(
+            "{}\r\n{}\r{}",
+            "x".repeat(1100),
+            "👩‍💻".repeat(800),
+            "\r\n".repeat(1000)
+        ),
+    ] {
+        for maximum in [1, 2, 7, 1024] {
+            let buffer = Buffer::from_reader(SmallReads {
+                bytes: source.as_bytes(),
+                maximum,
+            })
+            .unwrap();
+            assert_eq!(
+                buffer.text().to_string(),
+                source.replace("\r\n", "\n").replace('\r', "\n")
+            );
+            assert_eq!(buffer.selection(), Selection::default());
+            assert_eq!(buffer.revision(), 0);
+            assert!(!buffer.can_undo());
+        }
+    }
+}
+
+#[test]
+fn reader_propagates_invalid_utf8_and_io_errors() {
+    use std::io::{self, Read};
+    assert!(
+        matches!(Buffer::from_reader(&b"bad\xff"[..]), Err(error) if error.kind()==io::ErrorKind::InvalidData)
+    );
+    struct Failed;
+    impl Read for Failed {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "test read failure",
+            ))
+        }
+    }
+    assert!(
+        matches!(Buffer::from_reader(Failed), Err(error) if error.kind()==io::ErrorKind::PermissionDenied)
+    );
+}
+
+#[test]
 fn movement_and_deletion_preserve_combining_marks_and_emoji() {
     let mut b = Buffer::new("a\u{301}👩‍💻🇭🇰z");
     let end = b.text().len_chars();

@@ -6,13 +6,24 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+performance = ["velk-editor-widget/performance"]
+
 [[bin]]
 name = "velk"
 path = "src/main.rs"
 
+[[example]]
+name = "widget-preview"
+path = "examples/widget-preview.rs"
+required-features = ["performance"]
+
 [dependencies]
 rxui.workspace = true
 velk-editor-widget.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

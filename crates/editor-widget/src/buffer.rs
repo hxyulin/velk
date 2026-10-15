@@ -1,5 +1,11 @@
-use ropey::Rope;
-use std::{cell::RefCell, collections::VecDeque, ops::Range, sync::Arc};
+use ropey::{Rope, RopeBuilder};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    io::{self, Read},
+    ops::Range,
+    sync::Arc,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::graphemes;
@@ -48,9 +54,42 @@ impl Default for Buffer {
 
 impl Buffer {
     pub fn new(text: &str) -> Self {
+        Self::from_rope(Rope::from_str(&normalize(text)))
+    }
+
+    /// Read UTF-8 directly into a Rope, normalizing CRLF and CR to LF.
+    /// The loaded document starts with an empty undo history and a caret at zero.
+    pub fn from_reader(reader: impl Read) -> io::Result<Self> {
+        let rope = Rope::from_reader(reader)?;
+        if !rope.chunks().any(|chunk| chunk.contains('\r')) {
+            return Ok(Self::from_rope(rope));
+        }
+        let mut normalized = RopeBuilder::new();
+        let mut after_cr = false;
+        for chunk in rope.chunks() {
+            for piece in chunk.split_inclusive('\r') {
+                let piece = if after_cr {
+                    piece.strip_prefix('\n').unwrap_or(piece)
+                } else {
+                    piece
+                };
+                if let Some(before) = piece.strip_suffix('\r') {
+                    normalized.append(before);
+                    normalized.append("\n");
+                    after_cr = true;
+                } else {
+                    normalized.append(piece);
+                    after_cr = false;
+                }
+            }
+        }
+        Ok(Self::from_rope(normalized.finish()))
+    }
+
+    fn from_rope(text: Rope) -> Self {
         Self {
             current: Snapshot {
-                text: Rope::from_str(&normalize(text)),
+                text,
                 selection: Selection::default(),
             },
             undo: VecDeque::new(),
