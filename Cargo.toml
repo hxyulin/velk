@@ -1,10 +1,10 @@
 [workspace]
-members = ["crates/panels", "plugins/files", "plugins/terminal", "crates/diagnostics", "crates/editor", "crates/search", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/builtin", "plugins/markdown", "plugins/search", "plugins/lsp", "plugins/rust-analyzer", "xtask"]
+members = ["crates/panels", "plugins/files", "plugins/terminal", "crates/diagnostics", "crates/velk", "crates/editor", "crates/search", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/builtin", "plugins/markdown", "plugins/search", "plugins/lsp", "plugins/rust-analyzer", "xtask"]
 default-members = ["crates/editor"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.0-dev"
 edition = "2024"
 rust-version = "1.99.0"
 publish = false

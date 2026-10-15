@@ -1,0 +1,13 @@
+[package]
+name = "velk"
+version = "0.0.0-dev"
+edition = "2024"
+rust-version = "1.85"
+description = "Name reservation for Velk, a Rust desktop editor under active development"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+publish = ["crates-io"]
+include = ["Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "src/lib.rs"]
+
+[lints]
+workspace = true

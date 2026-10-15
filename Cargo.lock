@@ -3966,8 +3966,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
+name = "velk"
+version = "0.0.0-dev"
+
+[[package]]
 name = "velk-diagnostics"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "arc-swap",
  "profiling",
@@ -3981,7 +3985,7 @@ dependencies = [
 
 [[package]]
 name = "velk-editor"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "async-channel",
  "blake3",
@@ -4003,7 +4007,7 @@ dependencies = [
 
 [[package]]
 name = "velk-editor-widget"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "pollster",
  "ropey",
@@ -4020,11 +4024,11 @@ dependencies = [
 
 [[package]]
 name = "velk-markup"
-version = "0.1.0"
+version = "0.0.0-dev"
 
 [[package]]
 name = "velk-panels"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -4032,11 +4036,11 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-api"
-version = "0.1.0"
+version = "0.0.0-dev"
 
 [[package]]
 name = "velk-plugin-builtin"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "velk-plugin-files",
  "velk-plugin-lsp",
@@ -4049,7 +4053,7 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-files"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "blake3",
  "notify",
@@ -4060,7 +4064,7 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-host"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "async-channel",
  "blake3",
@@ -4078,7 +4082,7 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-lsp"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "lsp-types",
  "ropey",
@@ -4092,7 +4096,7 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-markdown"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "pulldown-cmark",
  "velk-plugin-sdk",
@@ -4100,7 +4104,7 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-rust-analyzer"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -4109,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-sdk"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "ropey",
  "velk-diagnostics",
@@ -4120,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-search"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "regex",
  "velk-plugin-sdk",
@@ -4129,7 +4133,7 @@ dependencies = [
 
 [[package]]
 name = "velk-plugin-terminal"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "ghostty-vt",
@@ -4144,7 +4148,7 @@ dependencies = [
 
 [[package]]
 name = "velk-search"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -4152,7 +4156,7 @@ dependencies = [
 
 [[package]]
 name = "velk-semantic"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "async-channel",
  "ropey",
@@ -4162,7 +4166,7 @@ dependencies = [
 
 [[package]]
 name = "velk-syntax"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "async-channel",
  "ropey",
@@ -5027,7 +5031,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "blake3",
  "pollster",

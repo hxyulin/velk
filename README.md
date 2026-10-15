@@ -3,6 +3,16 @@
 A desktop editor built with Rust and [RXUI](https://github.com/hxyulin/rxui).
 The application opens a single UTF-8 file in a native rope-backed text editor.
 
+Current development version: **0.0.0-dev** (set explicitly in `Cargo.toml`).
+The dependency-free [`velk` crate](crates/velk/README.md) reserves the package name
+for this project; it does not distribute the editor or expose a public API.
+The application and internal crates remain unpublished. See the
+[name research and release notes](docs/name-research.md) for registry checks,
+prerelease behavior, publishing, and a later yank.
+
+Licensed under either [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
+option.
+
 ## Development
 
 Install [rustup](https://rustup.rs/). The repository pins Rust 1.99.0 in
