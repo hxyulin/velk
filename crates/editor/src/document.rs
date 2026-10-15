@@ -1,6 +1,7 @@
 mod buffers;
 mod diagnostics;
 mod grid;
+mod icons;
 mod palette;
 mod panels;
 mod plugins;
@@ -9,6 +10,7 @@ mod search;
 mod semantic;
 mod shell;
 use crate::file::FileState;
+use crate::settings;
 use rxui::prelude::*;
 use std::path::PathBuf;
 use velk_editor_widget::Editor;
@@ -65,7 +67,12 @@ impl Document {
     pub fn menus() -> rxui::NativeMenuBar {
         use rxui::{NativeMenu, NativeMenuBar, standard_commands as commands};
         NativeMenuBar::new()
-            .menu(NativeMenu::new("Velk").command::<commands::Quit>("Quit Velk"))
+            .menu(
+                NativeMenu::new("Velk")
+                    .command::<ToggleSettings>("Settings…")
+                    .separator()
+                    .command::<commands::Quit>("Quit Velk"),
+            )
             .menu(
                 NativeMenu::new("File")
                     .command::<buffers::Open>("Open…")
@@ -83,6 +90,21 @@ impl Document {
                     .command::<commands::Copy>("Copy")
                     .command::<commands::Paste>("Paste")
                     .command::<commands::SelectAll>("Select all"),
+            )
+            .menu(
+                NativeMenu::new("View")
+                    .command::<panels::Toggle>("Toggle panels")
+                    .command::<panels::ToggleBottom>("Toggle terminal")
+                    .separator()
+                    .submenu(
+                        NativeMenu::new("Layout")
+                            .command::<shell::LayoutQuiet>("Quiet")
+                            .command::<shell::LayoutRail>("Rail")
+                            .command::<shell::LayoutTiled>("Tiled"),
+                    )
+                    .separator()
+                    .command::<TogglePlugins>("Plugins")
+                    .command::<ToggleSettings>("Settings"),
             )
     }
     pub fn new(
@@ -325,6 +347,7 @@ impl Document {
 }
 impl View for Document {
     fn view(&self, cx: &mut ViewContext<'_, Self>) -> impl IntoElement {
+        let layout = self.layout();
         if self.restore_focus_pending {
             *self.restore_focus_action.borrow_mut() =
                 Some(cx.command(reload::RestoreFocus, |this, _, cx| this.restore_focus(cx)));
@@ -439,19 +462,6 @@ impl View for Document {
             .enabled(self.shell.open)
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
         let settings_menu = self.settings_menu(cx, toggle_settings.clone(), close_settings.clone());
-        let status = self
-            .buffer
-            .status
-            .as_deref()
-            .unwrap_or(if self.buffer.dirty {
-                "Unsaved changes"
-            } else {
-                "Saved"
-            });
-        let status = match self.semantic_status() {
-            Some(semantic) => format!("{status} · {semantic}"),
-            None => status.to_owned(),
-        };
         let toggle_panels = self.panels_action(cx);
         let toggle_terminal = cx
             .command(panels::ToggleBottom, |this, _, cx| this.toggle_bottom(cx))
@@ -473,18 +483,8 @@ impl View for Document {
             .label("Open folder…")
             .enabled(!self.busy() && !self.reloading())
             .shortcut(Shortcut::primary("o").shift());
-        let activity = self.activity_bar(
-            toggle_settings.clone(),
-            toggle_plugins.clone(),
-            toggle_panels.clone(),
-        );
+        let (layout_quiet, layout_rail, layout_tiled) = self.layout_actions(cx);
         let (find, search_bar) = self.search_bar(cx);
-        let status_bar = self.status_bar(
-            status,
-            toggle_settings.clone(),
-            toggle_plugins.clone(),
-            toggle_panels.clone(),
-        );
         let restart_plugins = cx
             .command(reload::RestartPlugins, |this, _, cx| {
                 this.plugin_operation(plugins::Operation::Restart(None), cx)
@@ -584,6 +584,9 @@ impl View for Document {
                     palette::Entry::new("velk.diagnostics.start", trace_start.clone(), ""),
                     palette::Entry::new("velk.diagnostics.stop", trace_stop.clone(), ""),
                     palette::Entry::new("velk.diagnostics.marker", trace_marker.clone(), ""),
+                    palette::Entry::new("velk.layout.quiet", layout_quiet.clone(), ""),
+                    palette::Entry::new("velk.layout.rail", layout_rail.clone(), ""),
+                    palette::Entry::new("velk.layout.tiled", layout_tiled.clone(), ""),
                 ]
             } else {
                 Vec::new()
@@ -625,44 +628,59 @@ impl View for Document {
                     .accessibility_label("Reloading window")
                     .into_element()
             }))
-            .child(self.buffer_bar(cx, open.clone(), close_buffer.clone()))
+            .on_command(layout_quiet)
+            .on_command(layout_rail)
+            .on_command(layout_tiled)
+            .children(self.title_bar(layout, cx))
+            .child(self.body(layout, search_bar, cx))
+            .children(self.status_line(layout, cx))
+    }
+}
+impl Document {
+    /// Rail, sidebar, editor, bottom and right panels, arranged by the layout.
+    fn body(
+        &self,
+        layout: settings::Layout,
+        search_bar: rxui::Element,
+        cx: &mut ViewContext<'_, Self>,
+    ) -> rxui::Element {
+        use velk_panels::Slot;
+        let editor = column()
+            .key("editor-column")
+            .fill_width()
+            .fill_height()
+            .flex_shrink(1.)
+            .min_width(0.)
+            .min_height(0.)
+            .children(self.editor_tabs(layout, cx))
             .child(search_bar)
             .child(
-                row()
+                self.buffer
+                    .editor
+                    .clone()
+                    .into_element()
+                    .focus_handle(self.editor_focus.clone())
                     .fill_width()
                     .fill_height()
                     .flex_shrink(1.)
-                    .min_height(0.)
-                    .children(activity)
-                    .children(self.panel_slot(velk_panels::Slot::Left, cx))
-                    .child(
-                        self.buffer
-                            .editor
-                            .clone()
-                            .into_element()
-                            .focus_handle(self.editor_focus.clone())
-                            .fill_width()
-                            .fill_height()
-                            .flex_shrink(1.)
-                            .min_width(0.)
-                            .min_height(0.),
-                    )
-                    .children(self.panel_slot(velk_panels::Slot::Right, cx)),
-            )
-            .children(self.panel_slot(velk_panels::Slot::Bottom, cx))
-            .children(
-                (!self.shell.store.preferences.status_bar)
-                    .then_some(self.buffer.status.as_ref())
-                    .flatten()
-                    .map(|message| {
-                        label(message.clone())
-                            .key("document-notice")
-                            .font_size(12.)
-                            .padding(6.)
-                            .color(ThemeColor::TextMuted)
-                    }),
-            )
-            .children(status_bar)
+                    .min_width(0.)
+                    .min_height(0.),
+            );
+        let body = row()
+            .key("body")
+            .fill_width()
+            .fill_height()
+            .flex_shrink(1.)
+            .min_height(0.)
+            .children(self.rail(layout, cx));
+        match layout.panels {
+            settings::PanelMode::Tiled => body.child(self.tiled(editor.into_element(), cx)),
+            settings::PanelMode::Docked => body
+                .children(self.panel_slot(Slot::Left, layout, cx))
+                .child(editor.children(self.panel_slot(Slot::Bottom, layout, cx)))
+                .children(self.panel_slot(Slot::Right, layout, cx)),
+        }
+        .into_element()
     }
 }
 

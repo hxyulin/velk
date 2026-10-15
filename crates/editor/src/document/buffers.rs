@@ -299,12 +299,16 @@ impl Document {
         self.title();
         self.restore_focus_pending = true;
     }
-    pub(super) fn buffer_bar(
-        &self,
-        cx: &mut ViewContext<'_, Self>,
-        open: rxui::CommandAction<Open>,
-        close: rxui::CommandAction<Close>,
-    ) -> Element {
+    fn close_buffer(&mut self, id: u64, cx: &mut Context<'_, Self>) {
+        self.select_buffer(id, cx);
+        if self.buffer.id == id {
+            self.intent(super::Intent::Buffer, cx);
+        }
+    }
+    /// Buffer tabs as title-bar pills or as underlined editor tabs. A dirty
+    /// buffer shows a dot where the close button appears on hover.
+    pub(super) fn buffer_tabs(&self, pills: bool, cx: &mut ViewContext<'_, Self>) -> Element {
+        let close_hint = format!("Close buffer ({})", super::palette::primary("W"));
         let tabs = self
             .ids()
             .into_iter()
@@ -318,53 +322,114 @@ impl Document {
                     .path
                     .file_name()
                     .unwrap_or(b.path.as_os_str())
-                    .to_string_lossy();
-                let caption = format!("{}{}", name, if b.dirty { " •" } else { "" });
+                    .to_string_lossy()
+                    .into_owned();
                 let active = id == self.buffer.id;
-                button(label(caption).key("buffer-tab-caption"))
+                let hovered = self.shell.hovered_tab == Some(id);
+                let trailing = if hovered || (active && !b.dirty) {
+                    tooltip(
+                        cx,
+                        button(super::icons::Icon::Close.element(12.))
+                            .key(format!("buffer-close-{id}"))
+                            .accessibility_label(format!("Close {name}"))
+                            .variant(ButtonVariant::Quiet)
+                            .size(16., 16.)
+                            .padding(0.)
+                            .radius(4.)
+                            .color(ThemeColor::TextMuted)
+                            .justify_content(rxui::taffy::prelude::JustifyContent::CENTER)
+                            .align_items(rxui::taffy::prelude::AlignItems::CENTER)
+                            .on_click(cx.listener(move |this, _, cx| this.close_buffer(id, cx))),
+                        close_hint.clone(),
+                    )
+                } else if b.dirty {
+                    row()
+                        .key(format!("buffer-dirty-{id}"))
+                        .size(16., 16.)
+                        .child(
+                            row()
+                                .size(7., 7.)
+                                .margin(4.5)
+                                .radius(3.5)
+                                .background(ThemeColor::Accent),
+                        )
+                } else {
+                    row().size(16., 16.)
+                };
+                let caption = button(label(name).key("buffer-tab-caption"))
                     .on_click(cx.listener(move |this, _, cx| this.select_buffer(id, cx)))
                     .key(format!("buffer-tab-{id}"))
                     .accessibility_label(format!(
-                        "{}{}",
+                        "{}{}{}",
                         b.path.display(),
+                        if b.dirty { ", modified" } else { "" },
                         if active { " (active)" } else { "" }
                     ))
-                    .variant(ButtonVariant::Quiet)
-                    .height(32.)
-                    .padding_y(0.)
-                    .justify_content(rxui::taffy::prelude::JustifyContent::CENTER)
-                    .align_items(rxui::taffy::prelude::AlignItems::CENTER)
                     .accessibility_selected(active)
-                    .flex_shrink(0.)
-                    .background(if active {
-                        ThemeColor::Surface
+                    .variant(ButtonVariant::Quiet)
+                    .background([0.; 4])
+                    .color(if active {
+                        ThemeColor::Text
                     } else {
-                        ThemeColor::Background
+                        ThemeColor::TextMuted
                     })
-                    .into_element()
+                    .fill_height()
+                    .padding_y(0.)
+                    .padding_x(0.)
+                    .justify_content(rxui::taffy::prelude::JustifyContent::CENTER)
+                    .align_items(rxui::taffy::prelude::AlignItems::CENTER);
+                let tab = row()
+                    .key(format!("buffer-pill-{id}"))
+                    .flex_shrink(0.)
+                    .gap(7.)
+                    .align_items(rxui::taffy::prelude::AlignItems::CENTER)
+                    .on_hover(cx.listener(move |this, event: &HoverEvent, cx| {
+                        let next = if event.hovered {
+                            Some(id)
+                        } else {
+                            this.shell.hovered_tab.filter(|h| *h != id)
+                        };
+                        if this.shell.hovered_tab == next {
+                            cx.unchanged();
+                        }
+                        this.shell.hovered_tab = next;
+                    }))
+                    .child(caption)
+                    .child(trailing);
+                if pills {
+                    tab.height(28.)
+                        .padding_x(10.)
+                        .padding_y(0.)
+                        .radius(6.)
+                        .background(if active {
+                            ThemeColor::Raised
+                        } else if hovered {
+                            ThemeColor::Custom(crate::theme::HOVER)
+                        } else {
+                            ThemeColor::Background
+                        })
+                } else {
+                    tab.height(32.)
+                        .padding_x(12.)
+                        .padding_y(0.)
+                        .border_bottom(2.)
+                        .border_color(if active {
+                            ThemeColor::Accent
+                        } else {
+                            ThemeColor::Background
+                        })
+                }
+                .into_element()
             })
             .collect::<Vec<_>>();
         row()
-            .key("buffer-bar")
-            .fill_width()
-            .height(34.)
-            .flex_shrink(0.)
-            .background(ThemeColor::Background)
-            .child(
-                row()
-                    .key("buffer-tabs")
-                    .min_width(0.)
-                    .flex_grow(1.)
-                    .scroll_x()
-                    .children(tabs),
-            )
-            .child(open.label("Open…").button().variant(ButtonVariant::Quiet))
-            .child(
-                close
-                    .label("Close tab")
-                    .button()
-                    .variant(ButtonVariant::Quiet),
-            )
+            .key("buffer-tabs")
+            .min_width(0.)
+            .flex_shrink(1.)
+            .gap(2.)
+            .align_items(rxui::taffy::prelude::AlignItems::CENTER)
+            .scroll_x()
+            .children(tabs)
             .into_element()
     }
 }
@@ -515,7 +580,10 @@ mod tests {
             })
         });
         prepare(&mut ui, &mut runtime);
-        assert!(ui.elements().any(|e| e.text == Some("b.txt •")));
+        assert!(
+            ui.elements()
+                .any(|e| e.key == Some(&rxui::Key::from("buffer-dirty-2")))
+        );
     }
     #[test]
     fn file_open_is_queued_and_failure_keeps_all_existing_buffers() {

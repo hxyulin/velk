@@ -192,6 +192,10 @@ fn run() -> Result<(), Error> {
             } else {
                 WindowOptions::new().title(title).size(size[0], size[1])
             };
+            // Elsewhere the native title bar stays: it has no traffic lights to
+            // share, and drawing window buttons is not worth it yet.
+            #[cfg(target_os = "macos")]
+            let options = options.custom_title_bar();
             if let Some(session) = restored {
                 root.update(cx, |this, _| this.restore_ui(session.ui));
             }
