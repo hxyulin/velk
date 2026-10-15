@@ -114,11 +114,32 @@ the same Unicode identifier does not repeat requests or restart dwell.
 Hit testing uses source grapheme cells rather than nearest caret placement,
 including horizontally virtualized lines and mixed bidirectional text. Blank
 space, line padding, and virtual inline hints do not request source documentation.
-Diagnostic and semantic content share one bounded popup with selectable plain text
+Diagnostic and semantic content share one bounded popup with selectable text
 and an independent scroll area. A 180 ms leave grace permits entering the popup;
 it stays while the pointer is inside or selecting text. Source edits, navigation,
 scrolling, IME activity, Escape, and outside clicks dismiss it. Hover does not move
 the source caret. No per-hover process or UI-thread parsing is introduced.
+
+Markdown hover responses are preferred over plaintext during LSP negotiation.
+`velk-markup` uses [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark)
+to interpret Markdown into owned styled runs. Headings, bold/italic emphasis,
+inline/fenced code, strikethrough, ordered/unordered/task lists, quotes, rules, and
+basic flattened tables are supported. The widget maps these runs to one selectable
+RXUI rich-text element, preserving selection across paragraphs and independent
+popup scrolling. Code uses a monospace face; code syntax highlighting and separate
+code-block backgrounds are deferred. Links receive accent styling and underlines,
+with destinations preserved as data; activation is deferred. Images retain alt
+text without loading resources, and raw HTML is displayed literally. Plaintext
+responses and diagnostic text are never parsed as Markdown.
+
+Interpretation runs through `try_spawn_blocking` and is cached for the active
+hover. Retargeting drops the rendering task; late completion still must pass the
+widget's target/revision/geometry checks. The UI only builds styled text from the
+cached document. The host can inject an `Arc<dyn velk_markup::Renderer>` with
+`enable_semantics_with_renderer`. The document model has no RXUI or LSP types,
+providing a boundary for future plugin implementations. A plugin loader, discovery,
+and a stable dynamic-library/Wasm ABI are separate future work; Rust trait objects
+are currently an in-process extension interface.
 
 Completion, navigation, formatting, inlay hints,
 code actions, pull diagnostics, file-watch registration, and automatic server
@@ -155,6 +176,8 @@ This was run against rust-analyzer 1.99.0. It changed an in-memory declaration f
 and left the file on disk unchanged. Native smoke testing also verified a live
 syntax diagnostic, its removal after undo, and pointer/caret hovers showing the
 variable type. Pointer hover was also checked for entering the popup, selecting
-its text, leaving, and reopening it. Hover content currently uses the provider's
-plain-text representation; Markdown formatting and actionable links are deferred.
+its text, leaving, and reopening it. A native Markdown fixture verified headings,
+emphasis, strikethrough, code, lists, styled links, and text selection. Markdown
+rendering also has a GPU selection regression test and a host test for worker
+execution, renderer injection, and cancellation. Actionable links remain deferred.
 No native end-to-end latency measurement is claimed for this integration.

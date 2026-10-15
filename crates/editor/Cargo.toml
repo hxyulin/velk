@@ -19,6 +19,7 @@ path = "examples/widget-preview.rs"
 required-features = ["performance"]
 
 [dependencies]
+velk-markup.workspace = true
 rxui = { workspace = true, features = ["native-dialogs"] }
 velk-editor-widget.workspace = true
 velk-semantic = { workspace = true, features = ["lsp"] }

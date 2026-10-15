@@ -17,10 +17,22 @@ pub(super) struct State {
     pub target: Option<HoverTarget>,
     pub next_hover: u64,
     pub task: Option<Task>,
+    pub render_task: Option<Task>,
+    pub renderer: Arc<dyn velk_markup::Renderer>,
     pub notice: Option<String>,
 }
 impl Document {
     pub fn enable_semantics(&mut self, service: Arc<Service>, cx: &mut Context<'_, Self>) {
+        self.enable_semantics_with_renderer(service, Arc::new(velk_markup::CommonMark), cx);
+    }
+    /// Host extension point: a future plugin can supply Markdown interpretation
+    /// without knowing about LSP transport or owning the popup's input lifetime.
+    pub fn enable_semantics_with_renderer(
+        &mut self,
+        service: Arc<Service>,
+        renderer: Arc<dyn velk_markup::Renderer>,
+        cx: &mut Context<'_, Self>,
+    ) {
         let snapshot = self.semantic_snapshot(cx);
         service.update(snapshot.clone());
         self.semantic = Some(State {
@@ -32,6 +44,8 @@ impl Document {
             target: None,
             next_hover: 1,
             task: None,
+            render_task: None,
+            renderer,
             notice: None,
         });
         self.arm_semantics(cx);
@@ -53,6 +67,7 @@ impl Document {
         let buffer = editor.buffer();
         let target = editor.hover_request();
         if state.target != target {
+            state.render_task = None;
             state.service.cancel_hover();
             state.target = target;
             state.hover = None;
@@ -113,6 +128,7 @@ impl Document {
                 if matches!(status, Status::Failed(_) | Status::Stopped) {
                     state.count = 0;
                     state.hover = None;
+                    state.render_task = None;
                     self.editor
                         .update(cx, |editor, _| editor.clear_annotations());
                 }
@@ -150,21 +166,69 @@ impl Document {
                 }
                 let target = state.target.unwrap();
                 state.hover = None;
-                let (range, card) = hover.map_or((None, None), |hover| {
-                    (
-                        hover.range,
-                        Some(HoverCard {
-                            title: "Rust".into(),
-                            body: hover.contents,
-                        }),
-                    )
-                });
-                let empty = card.is_none();
-                self.editor.update(cx, |editor, _| {
-                    editor.resolve_hover(target, range, card);
-                });
-                if empty && target.source == HoverSource::Caret {
-                    state.notice = Some("No hover information at the caret".into());
+                if let Some(hover) = hover {
+                    if hover.markdown {
+                        let renderer = state.renderer.clone();
+                        let range = hover.range;
+                        match cx.try_spawn_blocking(
+                            move || Arc::new(renderer.render(&hover.contents)),
+                            move |this, result, cx| {
+                                let Some(state) = &mut this.semantic else {
+                                    return;
+                                };
+                                if state.target != Some(target) {
+                                    cx.unchanged();
+                                    return;
+                                }
+                                state.render_task = None;
+                                match result {
+                                    Ok(document) => {
+                                        this.editor.update(cx, |editor, _| {
+                                            editor.resolve_formatted_hover(
+                                                target,
+                                                range,
+                                                "Rust".into(),
+                                                document,
+                                            );
+                                        });
+                                    }
+                                    Err(_) => {
+                                        this.editor.update(cx, |editor, _| {
+                                            editor.resolve_hover(target, None, None);
+                                        });
+                                    }
+                                }
+                            },
+                        ) {
+                            Ok(task) => state.render_task = Some(task),
+                            Err(error) => {
+                                self.editor.update(cx, |editor, _| {
+                                    editor.resolve_hover(target, None, None);
+                                });
+                                if target.source == HoverSource::Caret {
+                                    state.notice = Some(error.to_string());
+                                }
+                            }
+                        }
+                    } else {
+                        self.editor.update(cx, |editor, _| {
+                            editor.resolve_hover(
+                                target,
+                                hover.range,
+                                Some(HoverCard {
+                                    title: "Rust".into(),
+                                    body: hover.contents,
+                                }),
+                            );
+                        });
+                    }
+                } else {
+                    self.editor.update(cx, |editor, _| {
+                        editor.resolve_hover(target, None, None);
+                    });
+                    if target.source == HoverSource::Caret {
+                        state.notice = Some("No hover information at the caret".into());
+                    }
                 }
             }
             Event::RequestFailed { request, message } => {
@@ -352,6 +416,8 @@ mod tests {
                     target: None,
                     next_hover: 1,
                     task: None,
+                    render_task: None,
+                    renderer: Arc::new(velk_markup::CommonMark),
                     notice: None,
                 });
                 d
@@ -396,6 +462,130 @@ mod tests {
     }
 
     #[test]
+    fn injected_markdown_renderer_runs_off_ui_and_cancelled_work_cannot_reopen_hover() {
+        use rxui::{BackgroundFuture, BlockingJob, SpawnError, TaskExecutor};
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+        #[derive(Default)]
+        struct Queue(Mutex<Vec<BlockingJob>>);
+        impl TaskExecutor for Queue {
+            fn spawn(&self, _: BackgroundFuture) -> Result<(), SpawnError> {
+                Err(SpawnError::Unavailable)
+            }
+            fn spawn_blocking(&self, job: BlockingJob) -> Result<(), SpawnError> {
+                self.0.lock().unwrap().push(job);
+                Ok(())
+            }
+        }
+        struct PluginRenderer {
+            ui_thread: std::thread::ThreadId,
+            calls: Arc<AtomicUsize>,
+        }
+        impl velk_markup::Renderer for PluginRenderer {
+            fn render(&self, _: &str) -> velk_markup::Document {
+                assert_ne!(std::thread::current().id(), self.ui_thread);
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                velk_markup::Document::plain("Plugin-rendered documentation")
+            }
+        }
+        struct Measure;
+        impl rxui::TextMeasure for Measure {
+            fn measure(
+                &mut self,
+                _: rxui::ElementId,
+                _: rxui::TextRequest<'_>,
+            ) -> Result<[f32; 2], rxui::UiError> {
+                Ok([300., 40.])
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.rs");
+        std::fs::write(&path, "fn main() {}").unwrap();
+        let (file, editor) = crate::file::FileState::open(&path).unwrap();
+        let mut runtime = Runtime::new();
+        let queue = Arc::new(Queue::default());
+        runtime.configure_tasks(queue.clone(), || {}).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let editor = runtime.update(|cx| cx.new(|_| editor));
+        let document =
+            runtime.update(|cx| cx.new(|cx| Document::new(editor.clone(), file, path, cx)));
+        runtime.update(|cx| {
+            document.update(cx, |d, _| {
+                d.semantic = Some(State {
+                    service: Service::start(Idle).unwrap(),
+                    revision: 0,
+                    status: Status::Ready(velk_semantic::Capabilities {
+                        hover: true,
+                        diagnostics: true,
+                    }),
+                    count: 0,
+                    hover: None,
+                    target: None,
+                    next_hover: 1,
+                    task: None,
+                    render_task: None,
+                    renderer: Arc::new(PluginRenderer {
+                        ui_thread: std::thread::current().id(),
+                        calls: calls.clone(),
+                    }),
+                    notice: None,
+                });
+            })
+        });
+        let mut ui = rxui::Ui::new(&mut runtime, document.clone()).unwrap();
+        ui.prepare(&mut runtime, [640., 400.], &mut Measure)
+            .unwrap();
+        for cancel in [false, true] {
+            runtime.update(|cx| {
+                document.update(cx, |d, cx| {
+                    d.request_hover(cx);
+                    let request = d.semantic.as_ref().unwrap().hover.unwrap();
+                    d.semantic_event(
+                        Event::Hover {
+                            request,
+                            hover: Some(velk_semantic::Hover {
+                                request,
+                                contents: "**server Markdown**".into(),
+                                markdown: true,
+                                range: None,
+                            }),
+                        },
+                        cx,
+                    );
+                    if cancel {
+                        d.editor.update(cx, |e, _| e.insert("x"));
+                        d.sync_semantics(cx);
+                    }
+                })
+            });
+            // The UI callback only queues interpretation; it has not run here.
+            let before = calls.load(Ordering::SeqCst);
+            assert_eq!(queue.0.lock().unwrap().len(), 1);
+            let jobs = std::mem::take(&mut *queue.0.lock().unwrap());
+            std::thread::spawn(move || {
+                for job in jobs {
+                    job();
+                }
+            })
+            .join()
+            .unwrap();
+            runtime.poll_tasks();
+            runtime.flush().unwrap();
+            ui.prepare(&mut runtime, [640., 400.], &mut Measure)
+                .unwrap();
+            let shown = ui
+                .elements()
+                .any(|e| e.text == Some("Plugin-rendered documentation"));
+            assert_eq!(shown, !cancel);
+            if !cancel {
+                assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+            }
+        }
+    }
+
+    #[test]
     fn obsolete_results_cannot_attach_to_new_text_or_replace_current_hover_request() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("file.rs");
@@ -420,6 +610,8 @@ mod tests {
                     target: None,
                     next_hover: 3,
                     task: None,
+                    render_task: None,
+                    renderer: Arc::new(velk_markup::CommonMark),
                     notice: None,
                 })
             });

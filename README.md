@@ -53,6 +53,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 - `crates/editor-widget`: reusable RXUI editor view and UI-independent rope buffer.
 - `crates/syntax`: in-process Tree-sitter parsing, Rust grammar, and background worker.
 - `crates/semantic`: transport-independent semantic services and the optional LSP backend.
+- `crates/markup`: replaceable Markdown renderer and UI-independent styled documents.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 
 RXUI is pinned to commit `96e1f4a833785edbce5885945a8bf8ba0a9e75f7`
@@ -160,7 +161,10 @@ the status line; plain editing and syntax highlighting keep working.
 Diagnostics appear as colored wavy underlines with message cards. Rest the pointer
 on a symbol for 350 ms to request semantic hover, or press **F1** at the caret.
 The popup combines diagnostic messages and symbol documentation; its body supports
-text selection and independent scrolling. Moving within the same identifier keeps
+text selection and independent scrolling. Markdown documentation renders headings,
+emphasis, code, lists, quotes, and styled links using native rich text. Parsing runs
+on a background worker through the replaceable `velk-markup::Renderer` interface.
+Moving within the same identifier keeps
 the result, and a short leave grace lets you enter the popup. Editing, navigating,
 or scrolling the source dismisses it and cancels obsolete requests.
 The status line shows availability

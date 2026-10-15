@@ -36,6 +36,7 @@ struct Interaction {
     context: [f32; 6],
     annotation: Option<HoverHit>,
     semantic: Option<HoverCard>,
+    formatted: Option<std::sync::Arc<velk_markup::Document>>,
     ready: bool,
     resolved: bool,
     visible: bool,
@@ -78,11 +79,71 @@ impl Editor {
                 active.range = intersection;
             }
         }
+        active.formatted = None;
         active.resolved = true;
         active.semantic = card.filter(|card| !card.body.trim().is_empty());
         active.visible = active.semantic.is_some() || active.annotation.is_some();
         self.hover_changed();
         true
+    }
+    /// Present a provider-rendered document. Parsing belongs on a worker; the
+    /// widget only maps cached runs to native text spans. Target validation is
+    /// identical to plain hover, including stale background-work rejection.
+    pub fn resolve_formatted_hover(
+        &mut self,
+        target: HoverTarget,
+        range: Option<Range<usize>>,
+        title: String,
+        document: std::sync::Arc<velk_markup::Document>,
+    ) -> bool {
+        let body = document.text();
+        if !self.resolve_hover(target, range, Some(HoverCard { title, body })) {
+            return false;
+        }
+        self.hover.active.as_mut().unwrap().formatted = Some(document);
+        true
+    }
+    pub(super) fn hover_body(&self, card: &HoverCard) -> rxui::Element {
+        use rxui::prelude::*;
+        let Some(active) = self.hover.active.as_ref() else {
+            return label(card.body.clone());
+        };
+        let Some(document) = &active.formatted else {
+            return label(card.body.clone());
+        };
+        let mut spans = Vec::new();
+        if let Some(annotation) = &active.annotation {
+            spans.push(rxui::span(format!(
+                "{}\n{}\n\n",
+                annotation.card.title, annotation.card.body
+            )));
+        }
+        spans.extend(document.runs.iter().map(|run| {
+            let mut span = rxui::span(run.text.clone());
+            let style = &run.style;
+            if style.bold {
+                span = span.bold();
+            }
+            if style.italic {
+                span = span.italic();
+            }
+            if style.code {
+                span = span.monospace().color(ThemeColor::Accent);
+            }
+            if style.strikethrough {
+                span = span.strikethrough();
+            }
+            if style.heading > 0 {
+                span = span.font_size(19. - f32::from(style.heading.min(6)));
+            }
+            // Retain the destination in the document for a future host link
+            // action; rendering never opens URLs or executes command URIs.
+            if style.link.is_some() {
+                span = span.underline().color(ThemeColor::Accent);
+            }
+            span
+        }));
+        rxui::rich_text(spans)
     }
     pub fn request_hover_at_caret(&mut self) {
         self.hide_hover();
@@ -184,6 +245,7 @@ impl Editor {
             context: self.hover_context(),
             annotation,
             semantic: None,
+            formatted: None,
             ready: false,
             resolved: false,
             visible: false,

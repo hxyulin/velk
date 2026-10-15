@@ -102,7 +102,7 @@ async fn drive(
             "workspace":{"configuration":true,"workspaceFolders":true,"applyEdit":false},
             "textDocument":{
                 "synchronization":{"dynamicRegistration":false,"didSave":true},
-                "hover":{"dynamicRegistration":false,"contentFormat":["plaintext"]},
+                "hover":{"dynamicRegistration":false,"contentFormat":["markdown","plaintext"]},
                 "publishDiagnostics":{"versionSupport":true,"relatedInformation":false}
             }
         }, "initializationOptions":options
@@ -269,7 +269,13 @@ async fn cancel_hover(
 fn hover_text(contents: HoverContents) -> (String, bool) {
     let marked = |s: MarkedString| match s {
         MarkedString::String(s) => s,
-        MarkedString::LanguageString(s) => format!("{}\n{}", s.language, s.value),
+        MarkedString::LanguageString(s) => {
+            // Pick a fence longer than any backtick run in server content.
+            let longest = s.value.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+            let fence = "`".repeat(longest.max(2) + 1);
+            let language = s.language.replace(['\n', '\r', '`'], "");
+            format!("{fence}{language}\n{}\n{fence}", s.value)
+        }
     };
     match contents {
         HoverContents::Markup(markup) => {
@@ -284,5 +290,34 @@ fn hover_text(contents: HoverContents) -> (String, bool) {
                 .join("\n\n"),
             true,
         ),
+    }
+}
+
+#[cfg(test)]
+mod hover_markup_tests {
+    use super::*;
+    #[test]
+    fn preserves_markup_format_and_fences_legacy_language_strings() {
+        let (text, markdown) = hover_text(HoverContents::Scalar(MarkedString::LanguageString(
+            lsp_types::LanguageString {
+                language: "rust".into(),
+                value: "let fence = \"```\";".into(),
+            },
+        )));
+        assert!(markdown);
+        assert!(text.starts_with("````rust\n"));
+        assert!(text.ends_with("\n````"));
+        for (kind, expected) in [
+            (lsp_types::MarkupKind::PlainText, false),
+            (lsp_types::MarkupKind::Markdown, true),
+        ] {
+            assert_eq!(
+                hover_text(HoverContents::Markup(lsp_types::MarkupContent {
+                    kind,
+                    value: "**same**".into()
+                })),
+                ("**same**".into(), expected)
+            );
+        }
     }
 }

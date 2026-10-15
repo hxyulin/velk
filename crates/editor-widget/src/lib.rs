@@ -531,10 +531,14 @@ impl View for Editor {
                         .on_pointer_up(cx.listener(|this, event: &PointerInput, cx| {
                             this.card_hover(event.bounds.contains(event.position), cx)
                         }))
-                        .child(label(card.title).font_size(14.).color(ThemeColor::Text))
+                        .child(
+                            label(card.title.clone())
+                                .font_size(14.)
+                                .color(ThemeColor::Text),
+                        )
                         .child(
                             scroll_area(
-                                label(card.body)
+                                self.hover_body(&card)
                                     .selectable(true)
                                     .font_size(13.)
                                     .color(ThemeColor::Text)
@@ -607,14 +611,18 @@ mod responsiveness_tests {
                 e.set_semantic_hover(true);
                 e.request_hover_at_caret();
                 let target = e.hover_request().unwrap();
-                assert!(e.resolve_hover(
-                    target,
-                    None,
-                    Some(HoverCard {
-                        title: "Rust".into(),
-                        body: "let value: usize\nVariable documentation".into(),
-                    })
-                ));
+                use velk_markup::Renderer;
+                assert!(
+                    e.resolve_formatted_hover(
+                        target,
+                        None,
+                        "Rust".into(),
+                        Arc::new(
+                            velk_markup::CommonMark
+                                .render("`let value: usize`\n\n**Variable** documentation")
+                        ),
+                    )
+                );
             })
         });
         let before = test.render().unwrap();
