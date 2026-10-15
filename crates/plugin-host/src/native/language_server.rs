@@ -146,6 +146,7 @@ mod tests {
                 loaded_path: PathBuf::new(),
                 description: String::new(),
                 resident_code: false,
+                hooks: vec![],
             },
             api: PluginApi {
                 abi_version: ABI_VERSION,

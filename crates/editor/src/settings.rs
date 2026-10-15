@@ -1,5 +1,6 @@
 //! Small host-owned layout preferences. Plugin settings can use separate schemas.
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{collections::BTreeMap, io::Write, path::PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -17,6 +18,8 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_bar: Option<bool>,
     pub search_backend: String,
+    /// Plugin IDs the user turned off; every other manifest plugin loads.
+    pub disabled_plugins: Vec<String>,
     // Preserve settings written by newer versions when changing the shell.
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
@@ -29,6 +32,7 @@ impl Default for Preferences {
             status_bar: None,
             activity_bar: None,
             search_backend: velk_search::DEFAULT_BACKEND.into(),
+            disabled_plugins: Vec::new(),
             extra: Default::default(),
         }
     }
@@ -166,15 +170,181 @@ impl Preferences {
         custom.status_line = status_line.or(custom.status_line);
         f(custom);
     }
-    /// Returns to the default layout, keeping user-defined layouts.
-    pub fn reset_layout(&mut self) {
-        self.layout = None;
-        self.status_bar = None;
-        self.activity_bar = None;
-        self.layouts
-            .retain(|name, _| Layout::preset(name).is_none());
+}
+
+// Settings are addressed by their settings.json key, so registry rows work the
+// same for typed fields and keys preserved in `extra`. The layout rows are the
+// exception: they read and edit the active layout rather than a key of their own.
+impl Preferences {
+    pub fn get(&self, key: &str) -> Option<Value> {
+        let layout = self.resolve_layout().0;
+        match key {
+            "layout" => return Some(self.layout_name().into()),
+            "status_line" => return Some(layout.status_line.into()),
+            "rail" => return Some(layout.rail.into()),
+            _ => {}
+        }
+        match serde_json::to_value(self) {
+            Ok(Value::Object(mut map)) => map.remove(key),
+            _ => None,
+        }
+    }
+    /// `None` removes the key, restoring a field's default.
+    pub fn set(&mut self, key: &str, value: Option<Value>) -> Result<(), String> {
+        match (key, value) {
+            ("layout", Some(Value::String(name))) => self.set_layout(&name),
+            ("layout", None) => {
+                self.set_layout("quiet");
+                self.layout = None;
+            }
+            ("status_line" | "rail", value @ (Some(Value::Bool(_)) | None)) => {
+                // A value equal to the layout's own is not an override.
+                self.override_layout(|o| *layout_flag(o, key) = None);
+                let base = self.get(key).and_then(|v| v.as_bool());
+                let value = value.and_then(|v| v.as_bool()).filter(|v| Some(*v) != base);
+                self.override_layout(|o| *layout_flag(o, key) = value);
+            }
+            ("layout" | "status_line" | "rail", Some(_)) => {
+                return Err(format!("invalid value for {key}"));
+            }
+            (_, value) => return self.set_generic(key, value),
+        }
+        Ok(())
+    }
+    fn set_generic(&mut self, key: &str, value: Option<Value>) -> Result<(), String> {
+        let Ok(Value::Object(mut map)) = serde_json::to_value(&*self) else {
+            return Err("settings are not an object".into());
+        };
+        match value {
+            Some(value) => map.insert(key.into(), value),
+            None => map.remove(key),
+        };
+        *self = serde_json::from_value(Value::Object(map)).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn is_modified(&self, key: &str) -> bool {
+        let custom = self.layouts.get(self.layout_name());
+        match key {
+            "layout" => self.layout_name() != "quiet",
+            "status_line" => {
+                self.status_bar.is_some() || custom.is_some_and(|c| c.status_line.is_some())
+            }
+            "rail" => self.activity_bar.is_some() || custom.is_some_and(|c| c.rail.is_some()),
+            _ => self.get(key) != Preferences::default().get(key),
+        }
     }
 }
+
+fn layout_flag<'a>(o: &'a mut LayoutOverride, key: &str) -> &'a mut Option<bool> {
+    if key == "rail" {
+        &mut o.rail
+    } else {
+        &mut o.status_line
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Category {
+    Editor,
+    Appearance,
+    Layout,
+    Keymap,
+    Files,
+    Search,
+}
+impl Category {
+    pub const ALL: [Self; 6] = [
+        Self::Editor,
+        Self::Appearance,
+        Self::Layout,
+        Self::Keymap,
+        Self::Files,
+        Self::Search,
+    ];
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Editor => "Editor",
+            Self::Appearance => "Appearance",
+            Self::Layout => "Layout",
+            Self::Keymap => "Keymap",
+            Self::Files => "Files",
+            Self::Search => "Search",
+        }
+    }
+}
+pub enum Control {
+    Toggle,
+    /// Options as (value, caption), computed from the loaded plugins.
+    Choice(fn(&[velk_plugin_host::PluginInfo]) -> Vec<(String, String)>),
+    // Rendered by the settings page; no registered setting uses them yet.
+    #[allow(dead_code)]
+    Text,
+    #[allow(dead_code)]
+    Number,
+}
+/// One settings page row. Static for now; plugin-contributed rows can later be
+/// appended from a plugin hook with the same shape (their keys live in `extra`).
+pub struct Setting {
+    pub key: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub category: Category,
+    pub control: Control,
+}
+impl Setting {
+    /// Every whitespace-separated term must occur in the title, description or key.
+    pub fn matches(&self, query: &str) -> bool {
+        let haystack = format!("{} {} {}", self.title, self.description, self.key).to_lowercase();
+        query
+            .split_whitespace()
+            .all(|term| haystack.contains(&term.to_lowercase()))
+    }
+}
+fn layouts(_: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    ["quiet", "rail", "tiled"]
+        .into_iter()
+        .map(|v| (v.into(), format!("{}{}", v[..1].to_uppercase(), &v[1..])))
+        .collect()
+}
+fn search_backends(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    let mut ids = vec![velk_search::DEFAULT_BACKEND.to_owned()];
+    for plugin in plugins {
+        if plugin.hooks.iter().any(|h| h == velk_search::HOOK) && !ids.contains(&plugin.id) {
+            ids.push(plugin.id.clone());
+        }
+    }
+    ids.into_iter().map(|id| (id.clone(), id)).collect()
+}
+pub static REGISTRY: &[Setting] = &[
+    Setting {
+        key: "layout",
+        title: "Layout preset",
+        description: "Quiet keeps panels hidden until you open them. Rail adds an icon bar and sidebar. Tiled shows panels as splits.",
+        category: Category::Layout,
+        control: Control::Choice(layouts),
+    },
+    Setting {
+        key: "status_line",
+        title: "Status line",
+        description: "File, diagnostics, language and cursor position. Applies to the current layout.",
+        category: Category::Layout,
+        control: Control::Toggle,
+    },
+    Setting {
+        key: "rail",
+        title: "Icon rail",
+        description: "Sidebar panels, plugins and settings on the left edge. Applies to the current layout.",
+        category: Category::Layout,
+        control: Control::Toggle,
+    },
+    Setting {
+        key: "search_backend",
+        title: "Search backend",
+        description: "Plugin that finds matches in the current buffer.",
+        category: Category::Search,
+        control: Control::Choice(search_backends),
+    },
+];
 
 #[derive(Default)]
 pub struct Store {
@@ -318,7 +488,59 @@ mod tests {
         assert!(json.get("activity_bar").is_none() && json["layout"] == "quiet");
         legacy.override_layout(|o| o.rail = Some(true));
         assert!(legacy.resolve_layout().0.rail);
-        legacy.reset_layout();
-        assert_eq!(legacy, Preferences::default());
+    }
+    #[test]
+    fn registry_filters_by_title_description_and_key() {
+        let keys = |query: &str| -> Vec<_> {
+            REGISTRY
+                .iter()
+                .filter(|s| s.matches(query))
+                .map(|s| s.key)
+                .collect()
+        };
+        assert_eq!(keys("").len(), REGISTRY.len());
+        assert_eq!(keys("STATUS"), ["status_line"]);
+        assert_eq!(keys("search_backend"), ["search_backend"]);
+        assert_eq!(keys("splits"), ["layout"]);
+        assert!(keys("nothing-matches-this").is_empty());
+    }
+    #[test]
+    fn settings_by_key_track_modification_reset_and_reject_bad_values() {
+        let mut preferences = Preferences::default();
+        assert!(REGISTRY.iter().all(|s| !preferences.is_modified(s.key)));
+        preferences.set("layout", Some("rail".into())).unwrap();
+        assert_eq!(preferences.layout.as_deref(), Some("rail"));
+        assert!(preferences.is_modified("layout"));
+        // Rail's own icon rail is the preset, not a modification.
+        assert!(!preferences.is_modified("rail"));
+        preferences
+            .set("status_line", Some(Value::Bool(false)))
+            .unwrap();
+        assert!(!preferences.resolve_layout().0.status_line);
+        assert!(preferences.is_modified("status_line"));
+        assert!(preferences.set("status_line", Some("yes".into())).is_err());
+        assert!(
+            preferences
+                .set("search_backend", Some(Value::Bool(true)))
+                .is_err()
+        );
+        for key in ["status_line", "layout"] {
+            preferences.set(key, None).unwrap();
+            assert!(!preferences.is_modified(key));
+        }
+        assert_eq!(preferences.resolve_layout().0, Layout::QUIET);
+    }
+    #[test]
+    fn disabled_plugins_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let preferences = Preferences {
+            disabled_plugins: vec!["velk.terminal".into()],
+            ..Preferences::default()
+        };
+        save(&path, &preferences).unwrap();
+        assert_eq!(Store::read(path).preferences, preferences);
+        let legacy: Preferences = serde_json::from_str(r#"{"status_bar":false}"#).unwrap();
+        assert!(legacy.disabled_plugins.is_empty());
     }
 }

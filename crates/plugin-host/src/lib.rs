@@ -13,6 +13,13 @@ pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
 pub mod hook_kind {
     pub use velk_plugin_api::{CONTRIBUTION, EVENT, REQUEST, SERVICE};
 }
+/// Host-defined hook names, for describing what a plugin provides.
+pub mod hook_name {
+    pub use velk_plugin_api::{
+        DIAGNOSTICS_HOOK, LANGUAGE_HOOK, LIFECYCLE_RESTORE_HOOK, LIFECYCLE_SNAPSHOT_HOOK,
+        MARKUP_HOOK, SEMANTIC_HOOK,
+    };
+}
 pub type PluginStates = Vec<(String, Vec<u8>)>;
 pub const MANIFEST: &str = "plugins.json";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -76,9 +83,11 @@ pub struct Report {
     /// Owned snapshot after this operation, including unchanged active plugins.
     pub plugins: Vec<PluginInfo>,
     pub events: Vec<Event>,
+    /// Manifest IDs, including plugins that are not loaded.
+    pub available: Vec<String>,
 }
 enum Operation {
-    Load,
+    Load(Vec<String>),
     UnloadAll,
     Unload(String),
     Restart(Option<String>),
@@ -130,7 +139,7 @@ impl Sender {
     fn queued(request: Request) -> Queued {
         let operation = match &request {
             Request::Lifecycle { operation, .. } => match operation {
-                Operation::Load => "load",
+                Operation::Load(_) => "load",
                 Operation::UnloadAll => "unload_all",
                 Operation::Unload(_) => "unload",
                 Operation::Restart(_) => "restart",
@@ -235,7 +244,14 @@ impl Client {
     }
 
     pub fn load(&self) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
-        self.request(Operation::Load)
+        self.request(Operation::Load(Vec::new()))
+    }
+    /// Load manifest plugins except the given IDs.
+    pub fn load_except(
+        &self,
+        excluded: Vec<String>,
+    ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
+        self.request(Operation::Load(excluded))
     }
     pub fn unload_all(&self) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
         self.request(Operation::UnloadAll)
@@ -389,7 +405,7 @@ impl Runtime {
                     };
                     let events = match operation {
                         // SAFETY: start's caller guarantees all artifacts obey v1.
-                        Operation::Load => unsafe { manager.load() },
+                        Operation::Load(excluded) => unsafe { manager.load_except(&excluded) },
                         Operation::LoadSelected(ids, states) => {
                             unsafe { manager.load_selected(&ids) }.map(|mut events| {
                                 events.extend(manager.restore_plugins(states));
@@ -414,6 +430,7 @@ impl Runtime {
                         loaded: manager.plugins().count(),
                         plugins: manager.plugins().cloned().collect(),
                         events,
+                        available: manager.available(),
                     });
                     let _ = reply.try_send(result);
                 }

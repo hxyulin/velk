@@ -324,6 +324,7 @@ mod tests {
                     loaded_path: dir.path().into(),
                     description: String::new(),
                     resident_code: false,
+                    hooks: vec![],
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,

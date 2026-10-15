@@ -1,5 +1,5 @@
 //! Host-owned chrome. Feature panels will contribute data, not UI-thread callbacks.
-use super::{CloseSettings, Document, ToggleSettings, icons::Icon};
+use super::{Document, icons::Icon};
 use crate::settings::{self, Layout, Store};
 use rxui::taffy::prelude::{AlignItems, JustifyContent};
 use rxui::{Element, prelude::*};
@@ -11,6 +11,7 @@ pub(super) struct State {
     pub open: bool,
     pub(super) saving: Option<Task>,
     pub(super) hovered_tab: Option<u64>,
+    pub(super) page: super::settings_page::Page,
 }
 
 pub(super) struct LayoutQuiet;
@@ -363,7 +364,7 @@ impl Document {
             let _ = self.editor_focus.focus(cx);
         }
     }
-    fn persist_shell(&mut self, cx: &mut Context<'_, Self>) {
+    pub(super) fn persist_shell(&mut self, cx: &mut Context<'_, Self>) {
         // Serialize writes and coalesce changes made while an earlier write runs.
         if self.shell.saving.is_some() {
             return;
@@ -396,81 +397,6 @@ impl Document {
             Ok(task) => self.shell.saving = Some(task),
             Err(error) => self.shell.store.error = Some(format!("Cannot save settings: {error}")),
         }
-    }
-    pub(super) fn settings_menu(
-        &self,
-        cx: &mut ViewContext<'_, Self>,
-        toggle: rxui::CommandAction<ToggleSettings>,
-        close: rxui::CommandAction<CloseSettings>,
-    ) -> Option<Element> {
-        if !self.shell.open {
-            return None;
-        }
-        let layout = self.layout();
-        let mut content = column()
-            .fill_width()
-            .padding(18.)
-            .gap(12.)
-            .background(ThemeColor::Surface)
-            .on_command(toggle)
-            .on_command(close.clone())
-            .child(label("Settings").font_size(20.))
-            .child(label("Appearance").color(ThemeColor::TextMuted))
-            .child(
-                checkbox(layout.status_line, "Show status line")
-                    .key("show-status-bar")
-                    .on_change(cx.listener(|this, event: &ToggleEvent, cx| {
-                        let checked = event.checked;
-                        let preferences = &mut this.shell.store.preferences;
-                        preferences.override_layout(|o| o.status_line = Some(checked));
-                        this.persist_shell(cx);
-                    })),
-            )
-            .child(
-                checkbox(layout.rail, "Show icon rail")
-                    .key("show-activity-bar")
-                    .on_change(cx.listener(|this, event: &ToggleEvent, cx| {
-                        let checked = event.checked;
-                        let preferences = &mut this.shell.store.preferences;
-                        preferences.override_layout(|o| o.rail = Some(checked));
-                        this.persist_shell(cx);
-                    })),
-            )
-            .child(
-                label("Open Settings anytime with ⌘, on macOS or Ctrl+, elsewhere.")
-                    .font_size(12.)
-                    .color(ThemeColor::TextMuted),
-            );
-        if let Some(error) = &self.shell.store.error {
-            content = content.child(label(error.clone()).font_size(12.));
-        } else if self.shell.saving.is_some() {
-            content = content.child(label("Saving settings…").font_size(12.));
-        }
-        content =
-            content.child(
-                row()
-                    .gap(8.)
-                    .child(button("Reset appearance").key("reset-appearance").on_click(
-                        cx.listener(|this, _, cx| {
-                            // Leave unknown/newer settings intact.
-                            this.shell.store.preferences.reset_layout();
-                            this.persist_shell(cx);
-                        }),
-                    ))
-                    .child(
-                        button("Plugins…")
-                            .on_click(cx.listener(|this, _, cx| this.set_plugin_menu(true, cx))),
-                    )
-                    .child(close.label("Close").button().key("settings-close")),
-            );
-        Some(
-            modal(content)
-                .key("settings-menu")
-                .width(480.)
-                .accessibility_label("Settings")
-                .on_dismiss(cx.listener(|this, _: &DismissEvent, cx| this.set_settings(false, cx)))
-                .into_element(),
-        )
     }
 }
 
@@ -570,21 +496,19 @@ mod tests {
                 ..Default::default()
             }
         };
-        key(
-            &mut ui,
-            &mut runtime,
-            KeyboardKey::Character(",".into()),
-            modifiers,
-        );
-        prepare(&mut ui, &mut runtime);
+        let open = |ui: &mut Ui<Document>, runtime: &mut Runtime| {
+            key(ui, runtime, KeyboardKey::Character(",".into()), modifiers);
+            prepare(ui, runtime);
+        };
+        open(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui), initial);
         assert!(!ui.focus(source));
-        click(&mut ui, &mut runtime, "show-activity-bar");
+        click(&mut ui, &mut runtime, "setting-rail");
         prepare(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui).width, initial.width - 44.);
-        click(&mut ui, &mut runtime, "show-activity-bar");
+        click(&mut ui, &mut runtime, "setting-rail");
         prepare(&mut ui, &mut runtime);
-        click(&mut ui, &mut runtime, "show-status-bar");
+        click(&mut ui, &mut runtime, "setting-status_line");
         prepare(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui).height, initial.height + 26.);
         key(
@@ -595,19 +519,23 @@ mod tests {
         );
         prepare(&mut ui, &mut runtime);
         assert_eq!(ui.focused_element(), Some(source));
-        key(
-            &mut ui,
-            &mut runtime,
-            KeyboardKey::Character(",".into()),
-            modifiers,
-        );
-        prepare(&mut ui, &mut runtime);
+        open(&mut ui, &mut runtime);
         assert!(
             ui.elements()
                 .any(|e| e.key == Some(&rxui::Key::from("settings-menu")))
         );
-        click(&mut ui, &mut runtime, "reset-appearance");
+        let has = |ui: &Ui<Document>, name: &str| {
+            ui.elements().any(|e| e.key == Some(&rxui::Key::from(name)))
+        };
+        // Only the changed row offers a reset; resetting restores its default.
+        assert!(has(&ui, "reset-status_line") && !has(&ui, "reset-rail"));
+        click(&mut ui, &mut runtime, "reset-status_line");
         prepare(&mut ui, &mut runtime);
+        assert!(!has(&ui, "reset-status_line"));
+        runtime.update(|cx| {
+            let preferences = &document.read(cx).shell.store.preferences;
+            assert!(preferences.resolve_layout().0.status_line);
+        });
         click(&mut ui, &mut runtime, "settings-close");
         prepare(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui), initial);

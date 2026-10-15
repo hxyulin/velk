@@ -1,5 +1,5 @@
 use super::{Document, LoadPlugins, UnloadPlugins};
-use rxui::{Element, prelude::*};
+use rxui::prelude::*;
 use velk_plugin_host::{Client, Event};
 pub(super) enum Operation {
     Load,
@@ -14,6 +14,12 @@ pub(super) struct State {
     task: Option<Task>,
     pub status: String,
     pub(super) loaded: Vec<velk_plugin_host::PluginInfo>,
+    /// Last info seen per ID this session, so unloaded plugins keep a description.
+    pub(super) known: std::collections::BTreeMap<String, velk_plugin_host::PluginInfo>,
+    /// Manifest IDs from the latest lifecycle report.
+    pub(super) available: Vec<String>,
+    /// Latest rejection per ID, cleared when that plugin loads.
+    pub(super) failed: std::collections::BTreeMap<String, String>,
 }
 impl Document {
     pub fn enable_plugins(&mut self, client: Client, cx: &mut Context<'_, Self>) {
@@ -31,6 +37,9 @@ impl Document {
             task: None,
             status: String::new(),
             loaded: Vec::new(),
+            known: Default::default(),
+            available: Vec::new(),
+            failed: Default::default(),
         });
         self.plugin_operation(
             selected.map_or(Operation::Load, |ids| Operation::LoadSelected(ids, states)),
@@ -71,9 +80,10 @@ impl Document {
             return;
         }
         self.suspend_panels();
+        let disabled = self.shell.store.preferences.disabled_plugins.clone();
         let state = self.plugins.as_mut().expect("plugin state");
         let receiver = match &operation {
-            Operation::Load => state.client.load(),
+            Operation::Load => state.client.load_except(disabled),
             Operation::LoadSelected(ids, states) => {
                 state.client.load_restored(ids.clone(), states.clone())
             }
@@ -104,6 +114,16 @@ impl Document {
             state.task = None;
             state.status = match result {
                 Ok(Ok(Ok(report))) => {
+                    for event in &report.events {
+                        if let Event::Rejected { id, message } = event {
+                            state.failed.insert(id.clone(), message.clone());
+                        }
+                    }
+                    for plugin in &report.plugins {
+                        state.failed.remove(&plugin.id);
+                        state.known.insert(plugin.id.clone(), plugin.clone());
+                    }
+                    state.available = report.available;
                     state.loaded = report.plugins;
                     let errors: Vec<_> = report
                         .events
@@ -166,103 +186,6 @@ impl Document {
                 !self.plugins_busy() && self.plugins.as_ref().is_some_and(|s| !s.loaded.is_empty()),
             );
         (load, unload)
-    }
-    pub(super) fn plugin_menu(
-        &self,
-        cx: &mut ViewContext<'_, Self>,
-        toggle: rxui::CommandAction<super::TogglePlugins>,
-        close: rxui::CommandAction<super::ClosePlugins>,
-        load: rxui::CommandAction<LoadPlugins>,
-        unload: rxui::CommandAction<UnloadPlugins>,
-    ) -> Option<Element> {
-        if !self.plugin_menu_open {
-            return None;
-        }
-        let close = close.label("Close (F2 / Esc)");
-        let menu = column()
-            .on_command(toggle)
-            .on_command(close.clone())
-            .on_command(load.clone())
-            .on_command(unload.clone())
-            .fill_width()
-            .max_height(360.)
-            .flex_shrink(0.)
-            .padding(10.)
-            .gap(6.)
-            .background(ThemeColor::Surface)
-            .child(label("Plugins").font_size(16.))
-            .child(
-                row()
-                    .gap(8.)
-                    .child(load.button())
-                    .child(unload.button())
-                    .child(close.button().key("plugin-menu-close")),
-            );
-        let mut entries = column()
-            .gap(6.)
-            .fill_width()
-            .scroll_y()
-            .flex_shrink(1.)
-            .min_height(0.);
-        if let Some(state) = &self.plugins {
-            entries = entries.child(label(state.status.clone()).font_size(12.));
-            if state.loaded.is_empty() {
-                entries = entries.child(label(
-                    "No plugins loaded. Load from disk to read plugins.json.",
-                ));
-            }
-            for plugin in &state.loaded {
-                let id = plugin.id.clone();
-                let description = if plugin.resident_code {
-                    format!("{} · Code retained until exit", plugin.description)
-                } else {
-                    plugin.description.clone()
-                };
-                entries = entries.child(
-                    column()
-                        .gap(3.)
-                        .child(
-                            row()
-                                .gap(8.)
-                                .child(label(format!(
-                                    "{} · {} · generation {}",
-                                    plugin.id, plugin.version, plugin.generation
-                                )))
-                                .child(
-                                    button("Restart")
-                                        .disabled(self.plugins_busy() || self.reloading())
-                                        .on_click(cx.listener({
-                                            let id = id.clone();
-                                            move |this, _, cx| {
-                                                this.plugin_operation(
-                                                    Operation::Restart(Some(id.clone())),
-                                                    cx,
-                                                )
-                                            }
-                                        })),
-                                )
-                                .child(button("Unload").disabled(self.plugins_busy()).on_click(
-                                    cx.listener(move |this, _, cx| {
-                                        this.plugin_operation(Operation::Unload(id.clone()), cx);
-                                    }),
-                                )),
-                        )
-                        .child(label(description).font_size(12.)),
-                );
-            }
-        } else {
-            entries = entries.child(label("Plugin worker unavailable."));
-        }
-        Some(
-            modal(menu.child(entries))
-                .key("plugin-menu")
-                .width(560.)
-                .accessibility_label("Plugins")
-                .on_dismiss(cx.listener(|this, _: &DismissEvent, cx| {
-                    this.set_plugin_menu(false, cx);
-                }))
-                .into_element(),
-        )
     }
 }
 
