@@ -18,6 +18,7 @@ impl Document {
         self.shell.open = open;
         if open {
             self.plugin_menu_open = false;
+            self.palette.open = false;
         } else {
             let _ = self.editor_focus.focus(cx);
         }

@@ -55,3 +55,31 @@ first real feature, and measure result transfer, UI preparation, and interaction
 latency with realistic workloads. A C ABI alone is not a performance guarantee;
 unbounded payloads, blocking callbacks, and eager row construction would dominate
 the cost of a function call.
+
+## Command palette
+
+Open the palette with Command+Shift+P on macOS, Control+Shift+P elsewhere, or F3.
+It is a modal and does not resize the editor. It can replace Settings or Plugins,
+including when both shell bars are hidden. Typing filters command captions using
+case-insensitive subsequence matching (`stgs` finds Settings); contiguous matches
+rank ahead of matches with gaps. Up/Down wrap through the results, Enter runs the
+highlighted enabled command, and Escape or a backdrop click restores editor
+focus. Buttons can also be clicked or activated after Tab navigation. Disabled
+commands remain visible, and Enter on a disabled result or an empty list does
+nothing. Reopening starts with an empty query.
+
+The initial catalogue includes Save, Find in file, Settings, Plugins, Show hover,
+Plugins: Load from disk, Plugins: Unload all, Close window, and Quit Velk. Command
+entries wrap the same RXUI actions as existing buttons and shortcuts, sharing
+their current availability and callbacks. Closing or quitting still uses the
+unsaved-changes flow. File search, plugin lifecycle operations, and saves retain
+their existing asynchronous implementations. Palette filtering only examines
+this small host-owned catalogue and adds no worker, dependency, or plugin calls
+per keystroke. The catalogue is only built while the palette is open; at most
+eight results are constructed, following keyboard selection through longer lists.
+
+Stable command IDs are separate from captions. These are host commands for now;
+plugin command contributions and plugin/window reload are not implemented by the
+palette. A future contribution contract can expose owned command descriptors and
+route invocation through the plugin worker, without passing plugin callbacks
+onto the UI thread or changing the native plugin ABI.

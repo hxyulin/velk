@@ -1,3 +1,4 @@
+mod palette;
 mod plugins;
 mod search;
 mod semantic;
@@ -45,6 +46,7 @@ pub struct Document {
     editor_focus: rxui::FocusHandle,
     shell: shell::State,
     search: search::State,
+    palette: palette::State,
 }
 impl Document {
     pub fn new(
@@ -83,6 +85,7 @@ impl Document {
             editor_focus: rxui::FocusHandle::new(),
             shell: shell::State::default(),
             search: search::State::default(),
+            palette: palette::State::default(),
         }
     }
     pub fn title(&self) {
@@ -231,7 +234,14 @@ impl View for Document {
             .label("Close plugins")
             .enabled(self.plugin_menu_open)
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
-        let plugin_menu = self.plugin_menu(cx, toggle_plugins.clone(), close_plugins.clone());
+        let (load_plugins, unload_plugins) = self.plugin_actions(cx);
+        let plugin_menu = self.plugin_menu(
+            cx,
+            toggle_plugins.clone(),
+            close_plugins.clone(),
+            load_plugins.clone(),
+            unload_plugins.clone(),
+        );
         let toggle_settings = cx
             .command(ToggleSettings, |this, _, cx| {
                 this.set_settings(!this.shell.open, cx);
@@ -255,14 +265,66 @@ impl View for Document {
         let activity = self.activity_bar(toggle_settings.clone(), toggle_plugins.clone());
         let (find, search_bar) = self.search_bar(cx);
         let status_bar = self.status_bar(status, toggle_settings.clone(), toggle_plugins.clone());
+        let (toggle_palette, palette) = self.command_palette(
+            cx,
+            if self.palette.open {
+                vec![
+                    palette::Entry::new("velk.file.save", save.clone(), palette::primary("S")),
+                    palette::Entry::new("velk.search.find", find.clone(), palette::primary("F")),
+                    palette::Entry::new(
+                        "velk.settings.open",
+                        toggle_settings.clone(),
+                        palette::primary(","),
+                    ),
+                    palette::Entry::new(
+                        "velk.plugins.open",
+                        toggle_plugins.clone().label("Plugins"),
+                        "F2",
+                    ),
+                    palette::Entry::new("velk.editor.hover", hover.clone(), "F1"),
+                    palette::Entry::new(
+                        "velk.plugins.load",
+                        load_plugins.clone().label("Plugins: Load from disk"),
+                        "",
+                    ),
+                    palette::Entry::new(
+                        "velk.plugins.unload-all",
+                        unload_plugins.clone().label("Plugins: Unload all"),
+                        "",
+                    ),
+                    palette::Entry::new(
+                        "velk.window.close",
+                        cx.command(palette::CloseWindow, |this, _, cx| {
+                            this.intent(Intent::Close, cx)
+                        })
+                        .label("Close window")
+                        .enabled(!self.busy()),
+                        palette::primary("W"),
+                    ),
+                    palette::Entry::new(
+                        "velk.app.quit",
+                        cx.command(palette::Quit, |this, _, cx| this.intent(Intent::Quit, cx))
+                            .label("Quit Velk")
+                            .enabled(!self.busy()),
+                        palette::primary("Q"),
+                    ),
+                ]
+            } else {
+                Vec::new()
+            },
+        );
         column()
             .fill_width()
             .fill_height()
+            .on_command(toggle_palette)
+            .on_command(load_plugins)
+            .on_command(unload_plugins)
             .on_command(save)
             .on_command(hover)
             .on_command(toggle_plugins)
             .on_command(toggle_settings)
             .on_command(find)
+            .children(palette)
             .children(plugin_menu)
             .children(settings_menu)
             .child(search_bar)

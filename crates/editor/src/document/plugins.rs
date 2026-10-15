@@ -113,21 +113,20 @@ impl Document {
     pub(super) fn set_plugin_menu(&mut self, open: bool, cx: &mut Context<'_, Self>) {
         if open {
             self.shell.open = false;
+            self.palette.open = false;
         }
         self.plugin_menu_open = open;
         if !open {
             let _ = self.editor_focus.focus(cx);
         }
     }
-    pub(super) fn plugin_menu(
+    pub(super) fn plugin_actions(
         &self,
-        cx: &mut ViewContext<'_, Self>,
-        toggle: rxui::CommandAction<super::TogglePlugins>,
-        close: rxui::CommandAction<super::ClosePlugins>,
-    ) -> Option<Element> {
-        if !self.plugin_menu_open {
-            return None;
-        }
+        cx: &ViewContext<'_, Self>,
+    ) -> (
+        rxui::CommandAction<LoadPlugins>,
+        rxui::CommandAction<UnloadPlugins>,
+    ) {
         let load = cx
             .command(LoadPlugins, |this, _, cx| this.change_plugins(true, cx))
             .label("Load from disk")
@@ -138,6 +137,19 @@ impl Document {
             .enabled(
                 !self.plugins_busy() && self.plugins.as_ref().is_some_and(|s| !s.loaded.is_empty()),
             );
+        (load, unload)
+    }
+    pub(super) fn plugin_menu(
+        &self,
+        cx: &mut ViewContext<'_, Self>,
+        toggle: rxui::CommandAction<super::TogglePlugins>,
+        close: rxui::CommandAction<super::ClosePlugins>,
+        load: rxui::CommandAction<LoadPlugins>,
+        unload: rxui::CommandAction<UnloadPlugins>,
+    ) -> Option<Element> {
+        if !self.plugin_menu_open {
+            return None;
+        }
         let close = close.label("Close (F2 / Esc)");
         let menu = column()
             .on_command(toggle)
