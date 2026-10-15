@@ -280,26 +280,17 @@ impl Document {
         });
         self.sync_semantics(cx);
     }
-    pub(super) fn semantic_status(&self) -> Option<String> {
-        self.buffer.semantic.as_ref().map(|state| {
-            if let Some(notice) = &state.notice {
-                return notice.clone();
-            }
-            match &state.status {
-                Status::Starting => "Rust: starting…".into(),
-                Status::Ready(capabilities) => format!(
-                    "Rust: {} diagnostics{}",
-                    state.count,
-                    if capabilities.hover {
-                        " · F1 hover"
-                    } else {
-                        ""
-                    }
-                ),
-                Status::Failed(error) => format!("Rust: unavailable — {error}"),
-                Status::Stopped => "Rust: stopped".into(),
-            }
-        })
+    /// Diagnostic count and a notice worth showing; steady states say nothing.
+    pub(super) fn semantic_status(&self) -> (usize, Option<String>) {
+        let Some(state) = &self.buffer.semantic else {
+            return (0, None);
+        };
+        let notice = state.notice.clone().or_else(|| match &state.status {
+            Status::Starting => Some("rust-analyzer starting…".into()),
+            Status::Failed(error) => Some(format!("rust-analyzer unavailable: {error}")),
+            Status::Ready(_) | Status::Stopped => None,
+        });
+        (state.count, notice)
     }
 }
 fn annotations(buffer: &Buffer, diagnostics: &[velk_semantic::Diagnostic]) -> Annotations {

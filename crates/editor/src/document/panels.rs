@@ -1,5 +1,6 @@
 //! Host-owned panel snapshots and virtualized controls; plugin calls stay off UI.
 use super::Document;
+use rxui::taffy::prelude::{AlignItems, JustifyContent};
 use rxui::{Element, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -30,7 +31,7 @@ pub(crate) struct UiState {
     pub(super) source: Option<NativePath>,
     #[serde(default)]
     pub(super) root: Option<NativePath>,
-    visible: bool,
+    pub(super) visible: bool,
     tabs: BTreeMap<Slot, String>,
     closed: BTreeSet<Slot>,
     views: BTreeMap<String, ViewState>,
@@ -54,6 +55,9 @@ pub(super) struct State {
     watch_providers: BTreeSet<String>,
     stream_providers: BTreeSet<String>,
     slow_checked: Option<Instant>,
+    // Tiled pane sizes and the active pane; None is the editor.
+    pub(super) split: BTreeMap<Slot, SplitPosition>,
+    pub(super) active: Option<Slot>,
     focus_bottom: bool,
     refresh_pending: bool,
     error: Option<String>,
@@ -817,6 +821,17 @@ impl Document {
         self.suspend_panels();
         self.refresh_panels(cx);
     }
+    /// Applies a layout's panel default; `cx` restarts watching for streams.
+    pub(super) fn show_panels(&mut self, show: bool, cx: Option<&mut Context<'_, Self>>) {
+        self.panels.ui.visible = show;
+        if show {
+            self.panels.ui.closed.clear();
+        }
+        if let Some(cx) = cx {
+            self.panels.watching = None;
+            self.watch_panels(cx);
+        }
+    }
     pub(super) fn panels_action(&self, cx: &ViewContext<'_, Self>) -> rxui::CommandAction<Toggle> {
         cx.command(Toggle, |this, _, cx| {
             let showing = this.panels.ui.visible
@@ -840,51 +855,123 @@ impl Document {
         .label("Panels: Toggle visibility")
         .shortcut(Shortcut::primary("b"))
     }
-    pub(super) fn panel_slot(&self, slot: Slot, cx: &mut ViewContext<'_, Self>) -> Option<Element> {
-        if !self.panels.ui.visible || self.panels.ui.closed.contains(&slot) {
-            return None;
-        }
-        let entries: Vec<_> = self
-            .panels
+    fn slot_open(&self, slot: Slot) -> bool {
+        self.panels.ui.visible && !self.panels.ui.closed.contains(&slot)
+    }
+    fn slot_entries(&self, slot: Slot) -> Vec<&Entry> {
+        self.panels
             .entries
             .iter()
             .filter(|e| e.panel.slot == slot)
-            .collect();
-        let entry = self
-            .panels
+            .collect()
+    }
+    /// The selected panel for a role, if that role is open and has panels.
+    fn slot_entry(&self, slot: Slot) -> Option<&Entry> {
+        if !self.slot_open(slot) {
+            return None;
+        }
+        let entries = self.slot_entries(slot);
+        self.panels
             .ui
             .tabs
             .get(&slot)
             .and_then(|key| entries.iter().find(|e| &e.key == key).copied())
-            .or_else(|| entries.first().copied())?;
-        let mut tabs = row().fill_width().gap(3.).flex_shrink(0.).padding(4.);
-        for tab in &entries {
+            .or_else(|| entries.first().copied())
+    }
+    pub(super) fn panel_titles(&self, slot: Slot) -> Vec<(String, String)> {
+        self.slot_entries(slot)
+            .into_iter()
+            .map(|e| (e.key.clone(), e.panel.title.clone()))
+            .collect()
+    }
+    /// Key of the sidebar panel currently shown.
+    pub(super) fn sidebar_panel(&self) -> Option<String> {
+        self.slot_entry(Slot::Left).map(|e| e.key.clone())
+    }
+    /// Shows a sidebar panel, or collapses the sidebar if it is already shown.
+    pub(super) fn toggle_sidebar(&mut self, key: &str, cx: &mut Context<'_, Self>) {
+        if self.sidebar_panel().as_deref() == Some(key) {
+            self.panels.ui.closed.insert(Slot::Left);
+            let _ = self.editor_focus.focus(cx);
+        } else {
+            if !self.panels.ui.visible {
+                // Opening the sidebar must not also open the bottom drawer.
+                self.panels.ui.visible = true;
+                self.panels.ui.closed = [Slot::Right, Slot::Bottom].into();
+            }
+            self.panels.ui.closed.remove(&Slot::Left);
+            self.panels.ui.tabs.insert(Slot::Left, key.into());
+        }
+        self.panels.watching = None;
+        self.watch_panels(cx);
+    }
+    fn close_slot(&mut self, slot: Slot, cx: &mut Context<'_, Self>) {
+        self.panels.ui.closed.insert(slot);
+        self.panels.watching = None;
+        self.watch_panels(cx);
+        let _ = self.editor_focus.focus(cx);
+    }
+    /// Panel titles as text tabs, then a close button. With `tabs` false only the
+    /// selected title is shown, for when the rail switches panels.
+    fn panel_header(
+        &self,
+        slot: Slot,
+        selected: &str,
+        tabs: bool,
+        cx: &mut ViewContext<'_, Self>,
+    ) -> Element {
+        let mut header = row()
+            .fill_width()
+            .flex_shrink(0.)
+            .gap(2.)
+            .padding_y(0.)
+            .align_items(AlignItems::CENTER)
+            .font_size(12.);
+        for tab in self.slot_entries(slot) {
+            let active = tab.key == selected;
+            if !tabs && !active {
+                continue;
+            }
             let key = tab.key.clone();
-            tabs = tabs.child(
+            header = header.child(
                 button(tab.panel.title.clone())
                     .key(format!("panel-tab-{}", tab.key))
-                    .variant(if tab.key == entry.key {
-                        rxui::ButtonVariant::Default
+                    .accessibility_selected(active)
+                    .variant(rxui::ButtonVariant::Quiet)
+                    .background([0.; 4])
+                    .color(if active {
+                        ThemeColor::Text
                     } else {
-                        rxui::ButtonVariant::Quiet
+                        ThemeColor::TextMuted
                     })
-                    .font_size(12.)
+                    .height(22.)
+                    .padding_y(0.)
+                    .padding_x(6.)
                     .on_click(cx.listener(move |this, _, _| {
                         this.panels.ui.tabs.insert(slot, key.clone());
                     })),
             );
         }
-        tabs = tabs.child(row().flex_grow(1.)).child(
-            button("×")
+        header.child(row().flex_grow(1.)).child(tooltip(
+            cx,
+            button(super::icons::Icon::Close.element(12.))
                 .accessibility_label("Close panel")
                 .key(format!("panel-close-{slot:?}"))
-                .on_click(cx.listener(move |this, _, cx| {
-                    this.panels.ui.closed.insert(slot);
-                    this.panels.watching = None;
-                    this.watch_panels(cx);
-                    let _ = this.editor_focus.focus(cx);
-                })),
-        );
+                .variant(rxui::ButtonVariant::Quiet)
+                .color(ThemeColor::TextMuted)
+                .size(22., 22.)
+                .padding(0.)
+                .radius(5.)
+                .justify_content(JustifyContent::CENTER)
+                .align_items(AlignItems::CENTER)
+                .on_click(cx.listener(move |this, _, cx| this.close_slot(slot, cx))),
+            match slot {
+                Slot::Bottom => "Close panel (Ctrl+`)".to_owned(),
+                _ => format!("Close panels ({})", super::palette::primary("B")),
+            },
+        ))
+    }
+    fn panel_content(&self, entry: &Entry, cx: &mut ViewContext<'_, Self>) -> Element {
         let view = self.panels.ui.views.get(&entry.key);
         let content = match &entry.panel.content {
             Content::Text(text) => column()
@@ -901,7 +988,7 @@ impl Document {
                 .map(|connection| connection.element(grid.clone(), cx))
                 .unwrap_or_else(|| label("Interactive panel unavailable").into_element()),
             Content::Tree(nodes) => {
-                virtual_list(entry.visible.len(), 26., &entry.scroll, cx, |i| {
+                virtual_list(entry.visible.len(), 24., &entry.scroll, cx, |i| {
                     let node = &nodes[entry.visible[i]];
                     let expanded = view.is_some_and(|v| v.expanded.contains(&node.id));
                     let selected = view.is_some_and(|v| v.selected.as_deref() == Some(&node.id));
@@ -938,17 +1025,24 @@ impl Document {
                                 ""
                             }
                         ))
-                        .font_size(13.)
-                        .height(26.)
+                        .font_size(12.5)
+                        .height(24.)
                         .fill_width()
-                        .justify_content(rxui::taffy::prelude::JustifyContent::CENTER)
-                        .align_items(rxui::taffy::prelude::AlignItems::START)
+                        .radius(0.)
+                        .justify_content(JustifyContent::CENTER)
+                        .align_items(AlignItems::START)
                         .padding_y(0.)
-                        .padding_x(8. + f32::from(node.depth) * 14.)
-                        .variant(if selected {
-                            rxui::ButtonVariant::Default
+                        .padding_x(12. + f32::from(node.depth) * 14.)
+                        .variant(rxui::ButtonVariant::Quiet)
+                        .color(if selected {
+                            ThemeColor::Text
                         } else {
-                            rxui::ButtonVariant::Quiet
+                            ThemeColor::TextMuted
+                        })
+                        .background(if selected {
+                            ThemeColor::Custom(crate::theme::HOVER)
+                        } else {
+                            ThemeColor::Surface
                         })
                         .on_click(
                             cx.listener(move |this, _, cx| this.activate_panel_row(&key, &id, cx)),
@@ -959,35 +1053,193 @@ impl Document {
                 .into_element()
             }
         };
-        let content = content.min_height(0.).min_width(0.).flex_shrink(1.);
-        let mut panel = column()
+        let mut content = column()
+            .fill_width()
+            .fill_height()
+            .min_height(0.)
+            .min_width(0.)
+            .flex_shrink(1.)
+            .child(content.min_height(0.).min_width(0.).flex_shrink(1.));
+        if self.panels.task.is_some() {
+            content = content.child(label("Loading…").font_size(12.).padding(6.));
+        }
+        if let Some(error) = &self.panels.error {
+            content = content.child(label(error.clone()).font_size(12.).padding(6.));
+        }
+        content.into_element()
+    }
+    /// A panel role docked beside or below the editor.
+    pub(super) fn panel_slot(
+        &self,
+        slot: Slot,
+        layout: crate::settings::Layout,
+        cx: &mut ViewContext<'_, Self>,
+    ) -> Option<Element> {
+        let entry = self.slot_entry(slot)?;
+        // With a rail, its icons switch sidebar panels instead of tabs.
+        let tabs = !(layout.rail && slot == Slot::Left);
+        let header = self
+            .panel_header(slot, &entry.key, tabs, cx)
+            .height(if slot == Slot::Bottom { 28. } else { 32. })
+            .padding_x(6.);
+        let panel = column()
             .key(format!("panel-slot-{slot:?}"))
             .accessibility_label(entry.panel.title.clone())
             .background(ThemeColor::Surface)
+            .border_color(ThemeColor::Divider)
             .clip()
             .flex_shrink(0.)
             .min_height(0.)
-            .child(tabs)
-            .child(content);
-        if self.panels.task.is_some() {
-            panel = panel.child(label("Loading…").font_size(12.).padding(6.));
-        }
-        if let Some(error) = &self.panels.error {
-            panel = panel.child(label(error.clone()).font_size(12.).padding(6.));
-        }
+            .child(header)
+            .child(self.panel_content(entry, cx));
         Some(match slot {
-            Slot::Bottom => {
-                panel
-                    .fill_width()
-                    .height(if matches!(entry.panel.content, Content::Grid(_)) {
-                        320.
-                    } else {
-                        180.
-                    })
-            }
-            _ => panel.width(280.).fill_height(),
+            Slot::Bottom => panel.fill_width().border_top(1.).height(
+                if matches!(entry.panel.content, Content::Grid(_)) {
+                    320.
+                } else {
+                    180.
+                },
+            ),
+            Slot::Left => panel.width(280.).fill_height().border_right(1.),
+            Slot::Right => panel.width(280.).fill_height().border_left(1.),
         })
     }
+    /// Tiled layout: the editor and each open panel role are panes in a split
+    /// tree, each with a thin winbar. The active pane's winbar has an accent edge.
+    pub(super) fn tiled(&self, editor: Element, cx: &mut ViewContext<'_, Self>) -> Element {
+        let mut tree = DockTree::from_panels(["editor"]).expect("one panel");
+        let editor_group = tree.root().id();
+        for (slot, side) in [
+            (Slot::Left, DockSide::Left),
+            (Slot::Right, DockSide::Right),
+            (Slot::Bottom, DockSide::Bottom),
+        ] {
+            if self.slot_entry(slot).is_some() {
+                let position = self.panels.split.get(&slot).copied().unwrap_or(match slot {
+                    Slot::Left => SplitPosition::Pixels(240.),
+                    Slot::Right => SplitPosition::Fraction(0.75),
+                    Slot::Bottom => SplitPosition::Fraction(0.7),
+                });
+                tree.split(editor_group, side, pane_key(slot), position)
+                    .expect("split the editor group");
+            }
+        }
+        self.tiled_node(tree.root(), &mut Some(editor), cx)
+    }
+    fn tiled_node(
+        &self,
+        node: &DockNode,
+        editor: &mut Option<Element>,
+        cx: &mut ViewContext<'_, Self>,
+    ) -> Element {
+        let slot_of = |node: &DockNode| match node {
+            DockNode::Tabs(group) => group.selected().and_then(|key| {
+                [Slot::Left, Slot::Right, Slot::Bottom]
+                    .into_iter()
+                    .find(|slot| &pane_key(*slot) == key)
+            }),
+            DockNode::Split(_) => None,
+        };
+        match node {
+            DockNode::Tabs(_) => match slot_of(node) {
+                None => {
+                    let (directory, name) = self.path_parts();
+                    let winbar = row()
+                        .child(label(directory).color(ThemeColor::TextDisabled))
+                        .child(label(name));
+                    self.pane(None, winbar, editor.take().expect("one editor pane"), cx)
+                }
+                Some(slot) => {
+                    let entry = self.slot_entry(slot).expect("open pane");
+                    let winbar = self.panel_header(slot, &entry.key, true, cx);
+                    let content = self.panel_content(entry, cx);
+                    self.pane(Some(slot), winbar, content, cx)
+                }
+            },
+            DockNode::Split(split) => {
+                let slot = slot_of(split.first())
+                    .or_else(|| slot_of(split.second()))
+                    .unwrap_or(Slot::Bottom);
+                let first = self.tiled_node(split.first(), editor, cx);
+                let second = self.tiled_node(split.second(), editor, cx);
+                match split.axis() {
+                    rxui::Axis::Horizontal => split_row(first, second),
+                    rxui::Axis::Vertical => split_column(first, second),
+                }
+                .position(split.position())
+                .min_first(120.)
+                .min_second(120.)
+                .divider_size(4.)
+                .on_resize(cx.listener(move |this, event: &ResizeEvent, _| {
+                    this.panels.split.insert(slot, event.position);
+                }))
+                .into_element()
+                .key(format!("tiled-split-{slot:?}"))
+            }
+        }
+    }
+    fn pane(
+        &self,
+        slot: Option<Slot>,
+        winbar: Element,
+        content: Element,
+        cx: &mut ViewContext<'_, Self>,
+    ) -> Element {
+        let active = self.panels.active == slot;
+        let background = if slot.is_some() {
+            ThemeColor::Surface
+        } else {
+            ThemeColor::Background
+        };
+        column()
+            .key(format!("pane-{slot:?}"))
+            .fill_width()
+            .fill_height()
+            .min_width(0.)
+            .min_height(0.)
+            .background(background)
+            .on_pointer_down_capture(cx.listener(move |this, _: &PointerInput, cx| {
+                if this.panels.active == slot {
+                    cx.unchanged();
+                }
+                this.panels.active = slot;
+            }))
+            .child(
+                row()
+                    .key("winbar-edge")
+                    .fill_width()
+                    .height(2.)
+                    .flex_shrink(0.)
+                    .background(if active {
+                        ThemeColor::Accent
+                    } else {
+                        background
+                    }),
+            )
+            .child(
+                winbar
+                    .key("winbar")
+                    .fill_width()
+                    .height(24.)
+                    .flex_shrink(0.)
+                    .padding_x(12.)
+                    .padding_y(0.)
+                    .align_items(AlignItems::CENTER)
+                    .font_size(12.)
+                    .color(if active {
+                        ThemeColor::Text
+                    } else {
+                        ThemeColor::TextDisabled
+                    })
+                    .border_bottom(1.)
+                    .border_color(ThemeColor::Divider),
+            )
+            .child(content)
+            .into_element()
+    }
+}
+fn pane_key(slot: Slot) -> Key {
+    Key::from(format!("{slot:?}"))
 }
 
 #[cfg(test)]
@@ -1207,6 +1459,50 @@ mod tests {
         prepare(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui), full);
         runtime.update(|cx| assert_eq!(editor.read(cx).buffer().text().to_string(), "original"));
+    }
+    #[test]
+    fn rail_toggles_one_sidebar_and_tiled_places_roles_in_panes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let (file, editor) = crate::file::FileState::open(&path).unwrap();
+        let mut runtime = Runtime::new();
+        let editor = runtime.update(|cx| cx.new(|_| editor));
+        let document = runtime.update(|cx| cx.new(|cx| Document::new(editor, file, path, cx)));
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.panels.entries = vec![
+                    entry(Slot::Left, Content::Text("Files".into())),
+                    entry(Slot::Bottom, Content::Text("Output".into())),
+                ];
+                this.set_layout("rail", cx);
+            })
+        });
+        let mut ui = Ui::new(&mut runtime, document.clone()).unwrap();
+        let prepare = |ui: &mut Ui<Document>, r: &mut Runtime| {
+            ui.prepare(r, [1000., 700.], &mut Measure).unwrap()
+        };
+        let has = |ui: &Ui<Document>, key: &str| {
+            ui.elements().any(|e| e.key == Some(&rxui::Key::from(key)))
+        };
+        prepare(&mut ui, &mut runtime);
+        assert!(has(&ui, "rail-test:Left") && !has(&ui, "panel-slot-Left"));
+        click(&mut ui, &mut runtime, "rail-test:Left");
+        prepare(&mut ui, &mut runtime);
+        // The sidebar opens alone; the bottom drawer stays closed.
+        assert!(has(&ui, "panel-slot-Left") && !has(&ui, "panel-slot-Bottom"));
+        click(&mut ui, &mut runtime, "rail-test:Left");
+        prepare(&mut ui, &mut runtime);
+        assert!(!has(&ui, "panel-slot-Left"));
+        runtime.update(|cx| document.update(cx, |this, cx| this.set_layout("tiled", cx)));
+        prepare(&mut ui, &mut runtime);
+        for key in ["pane-None", "pane-Some(Left)", "pane-Some(Bottom)"] {
+            assert!(has(&ui, key), "{key}");
+        }
+        assert!(!has(&ui, "rail"));
+        click(&mut ui, &mut runtime, "panel-close-Bottom");
+        prepare(&mut ui, &mut runtime);
+        assert!(!has(&ui, "pane-Some(Bottom)") && has(&ui, "pane-Some(Left)"));
     }
     #[test]
     fn choosing_folder_preserves_buffers_and_persists_exact_root() {

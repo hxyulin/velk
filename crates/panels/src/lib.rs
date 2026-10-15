@@ -9,6 +9,8 @@ pub const HOOK: &str = "velk.ui.panels.v1";
 pub const MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_PANELS: usize = 16;
 pub const MAX_NODES: usize = 10_000;
+/// A panel's role. `Left` is a sidebar and `Bottom` a bottom panel; the host's
+/// active layout decides where each role is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Slot {
