@@ -1,5 +1,6 @@
 mod document;
 mod file;
+mod plugins;
 mod theme;
 
 use rxui::{WeakEntity, prelude::*};
@@ -56,6 +57,8 @@ fn run() -> Result<(), Error> {
     let path = file_argument(std::env::args_os().skip(1))?;
     let (file, editor) = open(&path)?;
     let title = format!("Velk — {}", path.display());
+    let plugins = plugins::start();
+    let plugin_client = plugins.as_ref().map(velk_plugin_host::Runtime::client);
     let document: Rc<RefCell<Option<WeakEntity<document::Document>>>> = Rc::default();
     let created = document.clone();
     let closing = document.clone();
@@ -87,6 +90,9 @@ fn run() -> Result<(), Error> {
             let editor = cx.new(|_| editor);
             let rust = Language::for_path(&path) == Some(Language::Rust);
             let root = cx.new(|cx| document::Document::new(editor, file, path, cx));
+            if let Some(client) = plugin_client {
+                root.update(cx, |this, cx| this.enable_plugins(client, cx));
+            }
             if rust {
                 root.update(cx, |this, cx| {
                     match velk_semantic::Service::start(

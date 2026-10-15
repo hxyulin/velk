@@ -52,6 +52,85 @@ UI surfaces, focus outlines, links, and selections use that explicit palette,
 independent of the OS accent color or appearance. Markdown code uses the text
 foreground with a monospace face. The source editor retains its syntax palette.
 
+## Local native plugins (experimental)
+
+Build the editor and bundled plugins together:
+
+```sh
+cargo xtask build --release
+cargo xtask run --release -- path/to/file.rs
+```
+
+`cargo xtask build` uses the debug profile. The tool respects Cargo's target
+directory (`CARGO_TARGET_DIR` included) and stages native artifacts into
+`target/<profile>/plugins/`, beside the editor. `cargo xtask run` sets
+`VELK_PLUGIN_DIR` explicitly. Direct launches search `plugins/` beside the
+executable; `VELK_PLUGIN_DIR=/absolute/path` overrides that directory.
+
+Plugins listed in `plugins.json` load asynchronously at startup. While the editor
+is open, use these application commands (the source editor has focus):
+
+- **Command/Ctrl+Alt+P**: load plugins from disk. Already-loaded IDs stay active.
+- **Command/Ctrl+Alt+Shift+P**: unload all plugins.
+
+The status line reports the loaded count and failures. Disk I/O, library loading,
+plugin calls, and teardown run serially on one sleeping background worker. There
+is no filesystem watcher, polling timer, automatic replacement, or state migration.
+Rebuild a plugin, explicitly unload it, then load it to use the new implementation:
+
+```sh
+cargo xtask plugins --release
+```
+
+This only builds/stages the bundled plugins. Editor recompilation is unnecessary.
+The current bundled `velk.lifecycle-demo` plugin is a small lifecycle proof, not an
+editor feature; Markdown, LSP, and Rust support remain built in for now. To make a
+changed implementation easy to observe during development:
+
+```sh
+VELK_PLUGIN_DEMO_MESSAGE="Second implementation" cargo xtask plugins --release
+```
+
+The staging tool publishes immutable, content-addressed libraries and atomically
+replaces `plugins.json`. The loader verifies BLAKE3 digests, ABI/layout, metadata,
+and lifecycle entry points, then loads a private generation copy. Instance
+teardown precedes library release and temporary-copy cleanup. Host-owned result
+strings survive unload. Missing/bad artifacts are reported without stopping
+editing; a broken manifest does not remove active plugins. Unloading does not
+need the manifest to be readable. Old staged build artifacts are retained on disk;
+a package cache/cleanup policy is future work.
+
+Plugin authors implement `velk_plugin_sdk::Plugin` and invoke
+`velk_plugin_sdk::export_plugin!(Type)` in a `cdylib` crate. The SDK generates the
+C entry point, catches unwinding panics inside lifecycle wrappers, and copies
+results into host-owned buffers. The experimental ABI contains fixed metadata,
+opaque instances, and function pointers; it does not exchange Rust containers or
+trait objects. Its contracts are not frozen. Distribution, dependency resolution,
+inter-plugin services, and async plugin work are deliberately deferred.
+
+These are trusted in-process native plugins. The v1 contract requires serialized,
+returning calls, no retained host pointers, no background threads/tasks/callbacks,
+and no unload-sensitive thread-local destructors. Safe author-facing methods do
+not enforce those restrictions on arbitrary Rust code. A reported destructor
+failure leaves the library mapped, blocks reactivation of that ID, and requires
+restart. A hung or aborting native plugin cannot be recovered by this loader;
+logical deactivation and actual OS unmapping are distinct. The editor/SDK/loader
+use `deny(unsafe_code)` with narrowly allowed FFI modules and generated exports;
+the rest of the workspace continues to forbid unsafe code.
+
+Exercise actual native libraries without starting the UI:
+
+```sh
+cargo xtask test-plugins
+```
+
+This compiles two implementations, verifies that staging does not replace an
+active instance, explicitly unloads/loads the new implementation, checks repeated
+lifecycle cleanup, host-owned data, missing/corrupt libraries, digest mismatches,
+and malformed manifests. It restores the ordinary demo build afterward. Build
+commands target the local native platform; cross-compilation and distribution are
+not part of this tooling yet.
+
 ## Workspace
 
 - `crates/editor`: the `velk-editor` package and `velk` application binary.
@@ -59,6 +138,9 @@ foreground with a monospace face. The source editor retains its syntax palette.
 - `crates/syntax`: in-process Tree-sitter parsing, Rust grammar, and background worker.
 - `crates/semantic`: transport-independent semantic services and the optional LSP backend.
 - `crates/markup`: replaceable Markdown renderer and UI-independent styled documents.
+- `crates/plugin-api`, `crates/plugin-sdk`, `crates/plugin-host`: experimental native ABI, author SDK, and lifecycle worker.
+- `plugins/lifecycle-demo`: bundled native plugin used to prove the loading workflow.
+- `xtask`: local editor/plugin build and staging commands.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 
 RXUI is pinned to commit `96e1f4a833785edbce5885945a8bf8ba0a9e75f7`

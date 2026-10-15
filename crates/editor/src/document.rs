@@ -1,3 +1,4 @@
+mod plugins;
 mod semantic;
 use crate::file::FileState;
 use rxui::{Subscription, prelude::*};
@@ -6,6 +7,10 @@ use velk_editor_widget::Editor;
 
 struct Save;
 impl Command for Save {}
+struct LoadPlugins;
+impl Command for LoadPlugins {}
+struct UnloadPlugins;
+impl Command for UnloadPlugins {}
 struct Hover;
 impl Command for Hover {}
 #[derive(Clone, Copy)]
@@ -25,6 +30,7 @@ pub struct Document {
     dialog: Option<DialogTask>,
     _subscription: Subscription,
     semantic: Option<semantic::State>,
+    plugins: Option<plugins::State>,
 }
 impl Document {
     pub fn new(
@@ -57,6 +63,7 @@ impl Document {
             dialog: None,
             _subscription: subscription,
             semantic: None,
+            plugins: None,
         }
     }
     pub fn title(&self) {
@@ -187,6 +194,16 @@ impl View for Document {
                 KeyboardKey::Other("Named(F1)".into()),
                 Default::default(),
             ));
+        let load_plugins = cx
+            .command(LoadPlugins, |this, _, cx| this.change_plugins(true, cx))
+            .label("Load plugins from disk")
+            .enabled(!self.plugins_busy())
+            .shortcut(Shortcut::primary("p").alt());
+        let unload_plugins = cx
+            .command(UnloadPlugins, |this, _, cx| this.change_plugins(false, cx))
+            .label("Unload plugins")
+            .enabled(!self.plugins_busy())
+            .shortcut(Shortcut::primary("p").alt().shift());
         let status = self.status.as_deref().unwrap_or(if self.dirty {
             "Unsaved changes"
         } else {
@@ -196,11 +213,17 @@ impl View for Document {
             Some(semantic) => format!("{status} · {semantic}"),
             None => status.to_owned(),
         };
+        let status = self
+            .plugins
+            .as_ref()
+            .map_or(status.clone(), |p| format!("{status} · {}", p.status));
         column()
             .fill_width()
             .fill_height()
             .on_command(save)
             .on_command(hover)
+            .on_command(load_plugins)
+            .on_command(unload_plugins)
             .child(
                 self.editor
                     .clone()

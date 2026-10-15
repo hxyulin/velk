@@ -229,7 +229,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -780,7 +780,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1351,6 +1351,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -3056,6 +3066,7 @@ dependencies = [
  "tempfile",
  "velk-editor-widget",
  "velk-markup",
+ "velk-plugin-host",
  "velk-semantic",
 ]
 
@@ -3078,6 +3089,37 @@ name = "velk-markup"
 version = "0.1.0"
 dependencies = [
  "pulldown-cmark",
+]
+
+[[package]]
+name = "velk-plugin-api"
+version = "0.1.0"
+
+[[package]]
+name = "velk-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "blake3",
+ "libloading 0.9.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "velk-plugin-api",
+]
+
+[[package]]
+name = "velk-plugin-lifecycle-demo"
+version = "0.1.0"
+dependencies = [
+ "velk-plugin-sdk",
+]
+
+[[package]]
+name = "velk-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "velk-plugin-api",
 ]
 
 [[package]]
@@ -3418,7 +3460,7 @@ dependencies = [
  "gpu-allocator",
  "hashbrown 0.17.1",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "naga",
  "naga-types",
@@ -3861,7 +3903,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.5",
  "x11rb-protocol",
@@ -3897,6 +3939,16 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde_json",
+ "tempfile",
+ "velk-plugin-host",
+]
 
 [[package]]
 name = "yazi"
