@@ -379,6 +379,7 @@ impl Buffer {
     /// an existing grapheme; only the final caret/selection is snapped to edges.
     /// Each effective replacement advances the monotonic syntax revision; the
     /// entire transaction occupies one history entry. Errors leave state intact.
+    #[tracing::instrument(level = "debug", skip_all, fields(revision = self.revision, edits = transaction.edits.len()))]
     pub fn apply_transaction(
         &mut self,
         mut transaction: Transaction,

@@ -1,3 +1,4 @@
+mod diagnostics;
 mod palette;
 mod plugins;
 pub(crate) mod reload;
@@ -40,6 +41,7 @@ pub struct Document {
     status: Option<String>,
     saving: Option<Task>,
     reload: Option<Task>,
+    diagnostics: Option<Task>,
     restore_focus_pending: bool,
     restore_focus_action: std::cell::RefCell<Option<rxui::CommandAction<reload::RestoreFocus>>>,
     dialog: Option<DialogTask>,
@@ -82,6 +84,7 @@ impl Document {
             status: None,
             saving: None,
             reload: None,
+            diagnostics: None,
             restore_focus_pending: false,
             restore_focus_action: Default::default(),
             dialog: None,
@@ -107,6 +110,7 @@ impl Document {
     fn busy(&self) -> bool {
         self.saving.is_some() || self.dialog.is_some() || self.reloading()
     }
+    #[tracing::instrument(level = "debug", skip_all)]
     fn save(&mut self, then: Option<Intent>, cx: &mut Context<'_, Self>) {
         if self.busy() {
             return;
@@ -117,10 +121,28 @@ impl Document {
         };
         let saved_snapshot = self.semantic.as_ref().map(|_| self.semantic_snapshot(cx));
         let file = self.file.clone();
+        let save_trace = tracing::debug_span!(
+            "save.transaction",
+            async_work = true,
+            revision = self.editor.read(cx).buffer().revision()
+        );
+        let worker_trace = save_trace.clone();
+        let queued = (!worker_trace.is_disabled()).then(std::time::Instant::now);
         self.status = Some("Saving…".into());
         match cx.try_spawn_blocking(
-            move || file.save(text),
+            move || {
+                worker_trace.in_scope(|| {
+                    if let Some(start) = queued {
+                        tracing::debug!(
+                            queue_wait_ms = start.elapsed().as_secs_f64() * 1000.,
+                            "save dequeued"
+                        );
+                    }
+                    file.save(text)
+                })
+            },
             move |this, result, cx| {
+                let _entered = save_trace.enter();
                 this.saving = None;
                 match result {
                     Ok(Ok(file)) => {
@@ -289,6 +311,27 @@ impl View for Document {
             .enabled(self.can_reload(cx))
             .allow_in_modal(true)
             .shortcut(Shortcut::primary("r").alt());
+        let trace_available =
+            velk_diagnostics::available() && self.diagnostics.is_none() && !self.reloading();
+        let trace_start = cx
+            .command(diagnostics::Start, |this, _, cx| {
+                this.trace_capture(true, cx)
+            })
+            .label("Diagnostics: Start trace capture")
+            .enabled(trace_available && !velk_diagnostics::recording());
+        let trace_stop = cx
+            .command(diagnostics::Stop, |this, _, cx| {
+                this.trace_capture(false, cx)
+            })
+            .label("Diagnostics: Stop trace capture")
+            .enabled(trace_available && velk_diagnostics::status().is_some());
+        let trace_marker = cx
+            .command(diagnostics::Marker, |this, _, _| {
+                velk_diagnostics::marker("User marker");
+                this.status = Some("Trace marker added".into());
+            })
+            .label("Diagnostics: Add trace marker")
+            .enabled(trace_available && velk_diagnostics::recording());
         let (toggle_palette, palette) = self.command_palette(
             cx,
             if self.palette.open {
@@ -342,6 +385,9 @@ impl View for Document {
                             "Ctrl+Alt+R"
                         },
                     ),
+                    palette::Entry::new("velk.diagnostics.start", trace_start.clone(), ""),
+                    palette::Entry::new("velk.diagnostics.stop", trace_stop.clone(), ""),
+                    palette::Entry::new("velk.diagnostics.marker", trace_marker.clone(), ""),
                 ]
             } else {
                 Vec::new()
@@ -350,6 +396,9 @@ impl View for Document {
         column()
             .fill_width()
             .fill_height()
+            .on_command(trace_start)
+            .on_command(trace_stop)
+            .on_command(trace_marker)
             .on_command(restart_plugins)
             .on_command(reload_window)
             .on_command(toggle_palette)

@@ -4,10 +4,12 @@ use std::{
     process::{Command, ExitCode},
 };
 use velk_plugin_host::{MANIFEST, Manifest, PluginSpec};
+mod diagnostics_smoke;
 mod hooks_smoke;
 mod lsp_smoke;
 mod pack_smoke;
 mod search_smoke;
+mod trace_summary;
 const PLUGIN: &str = "velk-plugin-markdown";
 const ID: &str = "velk.markdown";
 fn main() -> ExitCode {
@@ -182,9 +184,40 @@ fn run() -> Result<(), String> {
             Path::new(&args[2]),
         );
     }
+    if action == "test-diagnostics" && args.is_empty() && !release {
+        let (root, output) = paths(false)?;
+        return diagnostics_smoke::run(&root, &output);
+    }
+    if action == "trace-summary" && args.len() == 1 {
+        return trace_summary::run(Path::new(&args[0]));
+    }
+    if action == "profile" && args.len() == 1 && !release {
+        let (root, output) = paths(false)?;
+        let output = output.parent().unwrap().join("profiling");
+        checked(cargo().current_dir(&root).args([
+            "build",
+            "--locked",
+            "--profile",
+            "profiling",
+            "--features",
+            "velk-editor/performance",
+            "-p",
+            "velk-editor",
+            "-p",
+            "velk-plugin-builtin",
+        ]))?;
+        let directory = output.join("plugins");
+        publish(&directory, stage_builtins(&output, &directory)?)?;
+        return checked(
+            Command::new(output.join(format!("velk{}", std::env::consts::EXE_SUFFIX)))
+                .env("VELK_PLUGIN_DIR", directory)
+                .env("VELK_TRACE", "1")
+                .arg(&args[0]),
+        );
+    }
     if action == "help" {
         println!(
-            "cargo xtask build [--release]\ncargo xtask plugins [--release]\ncargo xtask run [--release] -- <file>\ncargo xtask test-plugins [--release]"
+            "cargo xtask build [--release]\ncargo xtask plugins [--release]\ncargo xtask run [--release] -- <file>\ncargo xtask test-plugins [--release]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
         );
         return Ok(());
     }

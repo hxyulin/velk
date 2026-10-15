@@ -29,7 +29,18 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         manager.load()?;
     }
     let registered = manager.hooks("test.hooks")?;
-    assert_eq!(registered.len(), 5);
+    assert_eq!(
+        registered
+            .iter()
+            .filter(|hook| hook.name.starts_with("test."))
+            .count(),
+        5
+    );
+    assert!(
+        registered
+            .iter()
+            .any(|hook| hook.name == "velk.diagnostics.attach.v1")
+    );
     assert!(
         registered
             .iter()

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/editor", "crates/search", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/builtin", "plugins/markdown", "plugins/search", "plugins/lsp", "plugins/rust-analyzer", "xtask"]
+members = ["crates/diagnostics", "crates/editor", "crates/search", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/builtin", "plugins/markdown", "plugins/search", "plugins/lsp", "plugins/rust-analyzer", "xtask"]
 default-members = ["crates/editor"]
 resolver = "3"
 
@@ -10,6 +10,8 @@ rust-version = "1.99.0"
 publish = false
 
 [workspace.dependencies]
+velk-diagnostics = { path = "crates/diagnostics" }
+tracing = "0.1.44"
 velk-search = { path = "crates/search" }
 velk-plugin-api = { path = "crates/plugin-api" }
 velk-plugin-sdk = { path = "crates/plugin-sdk" }
@@ -27,3 +29,9 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[profile.profiling]
+inherits = "release"
+debug = 2
+split-debuginfo = "packed"
+strip = "none"

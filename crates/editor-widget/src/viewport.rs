@@ -385,6 +385,7 @@ impl Default for ViewportState {
 }
 
 impl ViewportState {
+    #[tracing::instrument(level = "trace", skip_all, fields(line, offset))]
     fn prepare_line(
         &mut self,
         surface: &Surface,
@@ -656,6 +657,7 @@ impl ViewportState {
         self.heights.set(line, layout.size()[1].max(LINE_HEIGHT));
         Ok(())
     }
+    #[tracing::instrument(level = "debug", skip_all)]
     fn prepare_cpu(
         &mut self,
         surface: &Surface,
@@ -902,6 +904,7 @@ impl CachedLine {
 
 impl CustomElement for ViewportSurface {
     type State = ViewportState;
+    #[tracing::instrument(level = "debug", skip_all, fields(revision = self.0.revision))]
     fn prepare(
         &self,
         state: &mut ViewportState,
@@ -984,6 +987,20 @@ impl CustomElement for ViewportSurface {
             });
         }
         geometry.epoch = Some(surface.epoch);
+        if let Some((start, input_id)) = geometry.traced_input.take() {
+            tracing::debug!(
+                input_id,
+                revision = surface.revision,
+                input_to_prepare_ms = start.elapsed().as_secs_f64() * 1000.,
+                "input prepared"
+            );
+        }
+        tracing::debug!(
+            revision = surface.revision,
+            visible_lines = state.visible.len(),
+            cached_lines = state.cache.len(),
+            "viewport prepared"
+        );
         #[cfg(any(test, feature = "performance"))]
         {
             state.metrics.gpu_prepare_ms = started_gpu.elapsed().as_secs_f64() * 1000.;
@@ -995,12 +1012,25 @@ impl CustomElement for ViewportSurface {
                 geometry.last_input = surface.input_started;
             }
             geometry.metrics = state.metrics;
+            tracing::debug!(
+                shaped_lines = state.metrics.shaped_lines,
+                cache_hits = state.metrics.cache_hits,
+                gpu_prepared_lines = state.metrics.gpu_prepared_lines,
+                cached_source_bytes = state.metrics.cached_source_bytes,
+                horizontal_lines = state.metrics.horizontal_lines,
+                rich_horizontal_lines = state.metrics.rich_horizontal_lines,
+                unicode_horizontal_lines = state.metrics.unicode_horizontal_lines,
+                cpu_layout_ms = state.metrics.cpu_layout_ms,
+                cpu_resource_prepare_ms = state.metrics.gpu_prepare_ms,
+                "viewport metrics"
+            );
             if std::env::var_os("VELK_PROFILE").is_some() {
                 eprintln!("Velk frame: {:?}", state.metrics);
             }
         }
         Ok(())
     }
+    #[tracing::instrument(level = "debug", skip_all)]
     fn paint(
         &self,
         state: &ViewportState,

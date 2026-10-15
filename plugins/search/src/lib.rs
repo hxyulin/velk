@@ -93,6 +93,7 @@ impl Plugin for Search {
 
 impl Search {
     fn request(&mut self, request: Request) -> Result<Reply, String> {
+        let _trace = velk_plugin_sdk::diagnostics::scope!("search.protocol");
         match request {
             Request::Begin {
                 id,
@@ -169,6 +170,7 @@ impl Search {
     }
 }
 fn find(job: &Job, current: &AtomicU64) -> Result<Results, String> {
+    let _trace = velk_plugin_sdk::diagnostics::scope!("search.match");
     let literal = regex::escape(&job.query.text);
     let pattern = if job.query.whole_word {
         format!(r"\b(?:{literal})\b")

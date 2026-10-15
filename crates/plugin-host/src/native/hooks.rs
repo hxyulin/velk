@@ -94,6 +94,16 @@ impl Generation {
                 }};
             }
             match contract.as_str() {
+                DIAGNOSTICS_HOOK if name == DIAGNOSTICS_HOOK => {
+                    let api = typed!(DiagnosticsApi, SERVICE);
+                    if let Some(sink) = velk_diagnostics::host_sink() {
+                        // The copied callback table is executable-owned until
+                        // process exit. It never holds a plugin callback alive.
+                        if unsafe { (api.attach)(&sink) } != OK {
+                            return Err("cannot attach plugin diagnostics".into());
+                        }
+                    }
+                }
                 MARKUP_CONTRACT if name == MARKUP_HOOK => {
                     self.markdown = Some(typed!(MarkupApi, REQUEST))
                 }
@@ -172,6 +182,7 @@ impl Manager {
             slot,
         })
     }
+    #[tracing::instrument(level = "trace", skip_all, fields(bytes = input.len()))]
     pub fn call_hook(&mut self, handle: &HookHandle, input: &[u8]) -> Result<Vec<u8>, String> {
         if handle.owner != self.owner {
             return Err("hook handle belongs to another runtime".into());

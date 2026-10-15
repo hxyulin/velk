@@ -424,7 +424,7 @@ mod tests {
         );
         assert!(
             ui.elements()
-                .any(|e| e.key == Some(&rxui::Key::from("velk.window.reload")))
+                .any(|e| e.key == Some(&rxui::Key::from("velk.diagnostics.marker")))
         );
         key(
             &mut ui,

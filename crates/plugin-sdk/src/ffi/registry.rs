@@ -396,7 +396,7 @@ mod tests {
             assert_eq!(
                 get::<Sample>(
                     instance,
-                    1,
+                    count::<Sample>(instance),
                     bytes(BYTES_CONTRACT),
                     1,
                     std::mem::size_of::<BytesApi>(),

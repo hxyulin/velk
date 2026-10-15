@@ -119,10 +119,56 @@ enum Request {
     },
     Stop,
 }
+struct Queued {
+    request: Request,
+    span: tracing::Span,
+    queued: Option<std::time::Instant>,
+}
+#[derive(Clone)]
+struct Sender(mpsc::SyncSender<Queued>);
+impl Sender {
+    fn queued(request: Request) -> Queued {
+        let operation = match &request {
+            Request::Lifecycle { operation, .. } => match operation {
+                Operation::Load => "load",
+                Operation::UnloadAll => "unload_all",
+                Operation::Unload(_) => "unload",
+                Operation::Restart(_) => "restart",
+                Operation::LoadSelected(..) => "restore",
+            },
+            Request::Render { .. } => "markdown",
+            Request::OpenSemantic { .. } => "semantic.open",
+            Request::WakeSemantic => "semantic.wake",
+            Request::Bind { .. } => "hook.bind",
+            Request::Call { .. } => "hook.call",
+            Request::Emit { .. } => "hook.emit",
+            Request::Snapshot { .. } => "snapshot",
+            Request::Stop => "stop",
+        };
+        let span = tracing::debug_span!("plugin.request", async_work = true, operation);
+        let queued = (!span.is_disabled()).then(std::time::Instant::now);
+        Queued {
+            request,
+            span,
+            queued,
+        }
+    }
+    fn try_send(&self, request: Request) -> Result<(), String> {
+        self.0.try_send(Self::queued(request)).map_err(|error| {
+            tracing::warn!("plugin queue rejected request");
+            error.to_string()
+        })
+    }
+    fn send(&self, request: Request) -> Result<(), String> {
+        self.0
+            .send(Self::queued(request))
+            .map_err(|error| error.to_string())
+    }
+}
 /// Safe command endpoint. Lifecycle work is serialized on a sleeping worker.
 #[derive(Clone)]
 pub struct Client {
-    sender: mpsc::SyncSender<Request>,
+    sender: Sender,
     next_session: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Client {
@@ -277,12 +323,20 @@ impl Runtime {
     // trust, and tests can supply a controlled in-process provider.
     #[allow(unsafe_code)]
     fn spawn(make_manager: impl FnOnce() -> Manager + Send + 'static) -> Result<Self, String> {
-        let (sender, receive) = mpsc::sync_channel::<Request>(16);
+        let (sender, receive) = mpsc::sync_channel::<Queued>(16);
         let worker = thread::Builder::new()
             .name("velk-plugins".into())
             .spawn(move || {
                 let mut manager = make_manager();
-                while let Ok(request) = receive.recv() {
+                while let Ok(queued) = receive.recv() {
+                    let _entered = queued.span.enter();
+                    if let Some(start) = queued.queued {
+                        tracing::debug!(
+                            queue_wait_ms = start.elapsed().as_secs_f64() * 1000.,
+                            "plugin request dequeued"
+                        );
+                    }
+                    let request = queued.request;
                     let (operation, reply) = match request {
                         Request::Stop => break,
                         Request::Snapshot { ids, reply } => {
@@ -349,14 +403,9 @@ impl Runtime {
                     if let Ok(events) = &events {
                         for event in events {
                             match event {
-                                Event::Loaded(info) => eprintln!(
-                                    "velk: loaded plugin {} {} generation {}: {}",
-                                    info.id, info.version, info.generation, info.description
-                                ),
-                                Event::Removed(id) => eprintln!("velk: unloaded plugin {id}"),
-                                Event::Rejected { id, message } => {
-                                    eprintln!("velk: plugin {id} rejected: {message}")
-                                }
+                                Event::Loaded(info) => tracing::info!(plugin = %info.id, version = %info.version, generation = info.generation, "plugin loaded"),
+                                Event::Removed(id) => tracing::info!(plugin = %id, "plugin unloaded"),
+                                Event::Rejected { id, message } => tracing::warn!(plugin = %id, error = %message, "plugin rejected"),
                             }
                         }
                     }
@@ -372,7 +421,7 @@ impl Runtime {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             client: Client {
-                sender,
+                sender: Sender(sender),
                 next_session: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             },
             worker: Some(worker),

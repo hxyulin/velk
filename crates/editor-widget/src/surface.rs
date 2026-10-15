@@ -41,6 +41,7 @@ pub(crate) struct Geometry {
     pub(super) metrics: crate::viewport::FrameMetrics,
     #[cfg(any(test, feature = "performance"))]
     pub(super) last_input: Option<std::time::Instant>,
+    pub(super) traced_input: Option<(std::time::Instant, u64)>,
     pub(super) composed: Option<crate::composition::ComposedGeometry>,
 }
 

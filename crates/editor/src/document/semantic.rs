@@ -119,12 +119,14 @@ impl Document {
             }
         }
     }
+    #[tracing::instrument(level = "debug", skip_all)]
     fn semantic_event(&mut self, event: Event, cx: &mut Context<'_, Self>) {
         let Some(state) = &mut self.semantic else {
             return;
         };
         match event {
             Event::Status(status) => {
+                tracing::debug!(?status, "semantic status");
                 if matches!(status, Status::Failed(_) | Status::Stopped) {
                     state.count = 0;
                     state.hover = None;
@@ -141,6 +143,11 @@ impl Document {
                 revision,
                 diagnostics,
             } => {
+                tracing::debug!(
+                    revision,
+                    diagnostics = diagnostics.len(),
+                    "diagnostics received"
+                );
                 if matches!(state.status, Status::Failed(_) | Status::Stopped)
                     || self.editor.read(cx).buffer().revision() != revision
                 {
@@ -154,6 +161,12 @@ impl Document {
                 });
             }
             Event::Hover { request, hover } => {
+                tracing::debug!(
+                    request_id = request.id,
+                    revision = request.revision,
+                    found = hover.is_some(),
+                    "hover received"
+                );
                 let current = self.editor.read(cx);
                 let valid = state.hover == Some(request)
                     && state.target.is_some()

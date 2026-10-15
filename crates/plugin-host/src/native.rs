@@ -42,6 +42,7 @@ struct Generation {
 }
 impl Generation {
     /// Caller guarantees the plugin ABI and unload contract.
+    #[tracing::instrument(level = "debug", skip_all, fields(plugin = %spec.id, generation))]
     unsafe fn load(spec: &PluginSpec, generation: u64, code: Arc<Code>) -> Result<Self, String> {
         let api = *code
             .apis
@@ -200,6 +201,7 @@ impl Generation {
     }
 }
 impl Generation {
+    #[tracing::instrument(level = "debug", skip_all, fields(plugin = %self.info.id, generation = self.info.generation))]
     fn retire(&mut self) -> bool {
         if self.destroyed {
             return self.library.is_some();
@@ -306,6 +308,7 @@ impl Manager {
     /// # Safety
     /// All libraries selected by the directory must implement the trusted v1 ABI,
     /// including its join-before-release semantic session contract.
+    #[tracing::instrument(level = "debug", skip_all)]
     pub unsafe fn load(&mut self) -> Result<Vec<Event>, String> {
         if !self.directory.join(crate::MANIFEST).exists() {
             return Ok(vec![]);
@@ -396,6 +399,7 @@ impl Manager {
     /// inactive. Optional named hooks transfer owned bytes, never native handles.
     /// # Safety
     /// As with `load`, all selected native libraries must obey the v1 contract.
+    #[tracing::instrument(level = "debug", skip_all, fields(plugin = id))]
     pub unsafe fn restart(&mut self, id: Option<&str>) -> Result<Vec<Event>, String> {
         let ids: Vec<_> = self
             .plugins
@@ -467,6 +471,7 @@ impl Manager {
         }
         events
     }
+    #[tracing::instrument(level = "debug", skip_all, fields(plugin = id))]
     pub fn unload(&mut self, id: &str) -> Option<Event> {
         let sessions_retired = self.retire_semantics(id);
         let mut plugin = self.plugins.remove(id)?;

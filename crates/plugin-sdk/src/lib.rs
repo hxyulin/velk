@@ -1,5 +1,6 @@
 //! Safe author-facing lifecycle. Raw ABI operations are confined to `ffi`.
 pub use ffi::registry::{Provider, Registrar};
+pub use velk_diagnostics as diagnostics;
 pub use velk_markup as markup;
 pub use velk_plugin_api as api;
 pub use velk_semantic as semantic;

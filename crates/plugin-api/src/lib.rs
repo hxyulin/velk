@@ -157,3 +157,29 @@ pub struct HookInfo {
 /// Snapshot accepts empty input; restore accepts the snapshot (at most 1 MiB).
 pub const LIFECYCLE_SNAPSHOT_HOOK: &str = "velk.lifecycle.snapshot.v1";
 pub const LIFECYCLE_RESTORE_HOOK: &str = "velk.lifecycle.restore.v1";
+
+/// Optional SDK-to-host timing bridge. Callbacks are process-owned and thread
+/// safe. Borrowed UTF-8 is copied before returning; no Rust objects cross the ABI.
+pub const DIAGNOSTICS_HOOK: &str = "velk.diagnostics.attach.v1";
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TraceSink {
+    pub enabled: unsafe extern "C" fn() -> bool,
+    pub now_ns: unsafe extern "C" fn() -> u64,
+    pub next_id: unsafe extern "C" fn() -> u64,
+    /// kind: 0 complete CPU scope, 1 instant, 2 async begin, 3 async end.
+    /// Async ends retain original start_ns; duration_ns gives their end offset.
+    pub record: unsafe extern "C" fn(
+        kind: u32,
+        id: u64,
+        name: Bytes,
+        target: Bytes,
+        start_ns: u64,
+        duration_ns: u64,
+    ),
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DiagnosticsApi {
+    pub attach: unsafe extern "C" fn(*const TraceSink) -> i32,
+}

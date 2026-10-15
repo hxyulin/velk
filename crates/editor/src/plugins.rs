@@ -5,7 +5,7 @@ pub fn start() -> Option<velk_plugin_host::Runtime> {
     let directory = match velk_plugin_host::default_directory() {
         Ok(directory) => directory,
         Err(error) => {
-            eprintln!("velk: plugins unavailable: {error}");
+            tracing::warn!(%error, "plugins unavailable");
             return None;
         }
     };
@@ -14,7 +14,7 @@ pub fn start() -> Option<velk_plugin_host::Runtime> {
     match unsafe { velk_plugin_host::Runtime::start(directory) } {
         Ok(runtime) => Some(runtime),
         Err(error) => {
-            eprintln!("velk: plugins unavailable: {error}");
+            tracing::warn!(%error, "plugins unavailable");
             None
         }
     }

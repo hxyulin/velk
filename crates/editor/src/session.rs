@@ -39,6 +39,7 @@ pub struct Session {
     pub plugin_states: Vec<(String, Vec<u8>)>,
 }
 impl Pending {
+    #[tracing::instrument(level = "debug", skip_all)]
     fn encode(self) -> Result<Session, String> {
         let plugin_states = if let Some(client) = &self.client {
             pollster::block_on(client.snapshot_plugins(self.ui.plugins.clone()))?
@@ -83,6 +84,7 @@ impl Session {
 /// Runs only on the blocking pool. Keep the old app alive until the replacement
 /// has restored the session and created its window. Failed startup kills/reaps
 /// the child, removes private handoff files, and leaves the old document intact.
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn launch(pending: Pending) -> Result<Child, String> {
     launch_with(
         pending,
@@ -101,6 +103,14 @@ fn launch_with(pending: Pending, executable: PathBuf, timeout: Duration) -> Resu
     writer.get_ref().sync_all().map_err(|e| e.to_string())?;
     let mut child = Command::new(executable)
         .arg(&session.path)
+        .env(
+            "VELK_TRACE",
+            if velk_diagnostics::recording() {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .env(SNAPSHOT_ENV, snapshot)
         .env(READY_ENV, &ready)
         .spawn()

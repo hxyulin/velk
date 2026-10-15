@@ -95,6 +95,7 @@ fn run() -> Result<(), Error> {
     let closing = document.clone();
     let quitting = document.clone();
     let focus_restoring = document.clone();
+    let mut frame_id = 0u64;
     let mut reload_frames = if std::env::var_os(session::READY_ENV).is_some() {
         2
     } else {
@@ -121,6 +122,8 @@ fn run() -> Result<(), Error> {
             Ok(())
         })
         .render_graphics(move |window, _, _| {
+            frame_id += 1;
+            tracing::debug!(frame_id, "frame recording");
             if reload_frames > 0 {
                 reload_frames -= 1;
                 if reload_frames == 0 {
@@ -175,7 +178,7 @@ fn run() -> Result<(), Error> {
                         .and_then(velk_plugin_host::Client::semantic_service)
                     {
                         Ok(service) => this.enable_semantics(service, cx),
-                        Err(error) => eprintln!("velk: cannot start semantic service: {error}"),
+                        Err(error) => tracing::warn!(%error, "cannot start semantic service"),
                     }
                 });
             }
@@ -202,10 +205,17 @@ fn run() -> Result<(), Error> {
 }
 
 fn main() -> ExitCode {
+    let _diagnostics = match velk_diagnostics::init() {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("velk: diagnostics initialization failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("velk: {error}");
+            tracing::error!(%error, "application failed");
             if matches!(error, Error::Usage) {
                 ExitCode::from(2)
             } else {

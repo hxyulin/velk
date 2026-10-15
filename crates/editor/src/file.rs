@@ -62,6 +62,7 @@ impl FileState {
     pub fn path(&self) -> &Path {
         &self.path
     }
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn open(path: &Path) -> io::Result<(Self, Editor)> {
         let path = fs::canonicalize(path)?;
         let file = File::open(&path)?;
@@ -91,6 +92,7 @@ impl FileState {
     /// Write and sync a sibling temporary file, then replace the original.
     /// The content check detects ordinary external modifications. It is not an
     /// OS compare-and-swap: another process can still race the final rename.
+    #[tracing::instrument(level = "debug", skip_all, fields(bytes = text.len_bytes()))]
     pub fn save(mut self, text: Rope) -> io::Result<Self> {
         let parent = self
             .path

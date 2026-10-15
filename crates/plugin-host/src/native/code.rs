@@ -35,6 +35,7 @@ fn validate(api: &PluginApi) -> Result<String, String> {
     Ok(id)
 }
 impl Code {
+    #[tracing::instrument(level = "debug", skip_all, fields(plugin = %spec.id))]
     pub unsafe fn load(
         directory: &std::path::Path,
         spec: &PluginSpec,

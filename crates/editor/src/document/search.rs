@@ -64,6 +64,7 @@ async fn accepted(client: &Client, handle: &HookHandle, request: Request) -> Res
         _ => Err("Search backend returned an unexpected acknowledgement".into()),
     }
 }
+#[tracing::instrument(level = "debug", skip_all, fields(async_work = true, query_id = id, revision, bytes = text.len_bytes()))]
 async fn run(
     client: Client,
     backend: String,

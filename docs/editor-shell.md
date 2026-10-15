@@ -83,3 +83,7 @@ plugin command contributions are not implemented by the palette. Plugin restart
 and Reload Window are described in [reloading.md](reloading.md). A future contribution contract can expose owned command descriptors and
 route invocation through the plugin worker, without passing plugin callbacks
 onto the UI thread or changing the native plugin ABI.
+
+The palette also exposes Diagnostics commands to start/stop a trace capture and
+add a marker. See [profiling.md](profiling.md) for capture limits, structured logs,
+plugin instrumentation and sampling builds.

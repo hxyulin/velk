@@ -29,6 +29,7 @@ impl Document {
     }
     pub(super) fn can_reload(&self, cx: &impl rxui::ReadContext) -> bool {
         !self.busy()
+            && self.diagnostics.is_none()
             && !self.plugins.as_ref().is_some_and(|_| self.plugins_busy())
             && self.shell.saving.is_none()
             && !self.editor.read(cx).has_composition()
@@ -43,7 +44,13 @@ impl Document {
         self.search.open = state.search_open;
         self.search.query = state.search_query;
         self.search.preserve_selection = true;
-        self.status = state.notice;
+        self.status = match velk_diagnostics::status().filter(|status| status.recording) {
+            Some(status) => Some(format!(
+                "Trace capture continued: {}",
+                status.path.display()
+            )),
+            None => state.notice,
+        };
         self.restore_focus_pending = true;
     }
     pub fn focus_restoration(&self) -> Option<rxui::CommandAction<RestoreFocus>> {

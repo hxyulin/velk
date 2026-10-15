@@ -170,6 +170,7 @@ pub struct HighlightSnapshot {
     prefix_end: Vec<usize>,
 }
 impl HighlightSnapshot {
+    #[tracing::instrument(level = "debug", skip_all, fields(revision = snapshot.revision, viewport, ranges = ranges.len()))]
     pub fn prepare(
         snapshot: &Snapshot,
         viewport: u64,
@@ -252,6 +253,7 @@ pub struct Engine {
     snapshot: Option<Arc<Snapshot>>,
 }
 impl Engine {
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn new(language: Language) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let language = match language {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
@@ -264,6 +266,7 @@ impl Engine {
             snapshot: None,
         })
     }
+    #[tracing::instrument(level = "debug", skip_all, fields(revision, bytes = text.len_bytes(), edits = edits.len()))]
     pub fn update(
         &mut self,
         revision: u64,
@@ -327,6 +330,7 @@ impl Engine {
 }
 
 struct Request {
+    trace: tracing::Span,
     revision: u64,
     text: Rope,
     edits: Vec<Edit>,
@@ -397,14 +401,21 @@ impl Worker {
                 let mut parsed_generation = 0;
                 let mut published = None;
                 while wakes.recv_blocking().is_ok() {
-                    if let Ok(request) = requests.try_recv()
-                        && let Some(snapshot) =
+                    if let Ok(request) = requests.try_recv() {
+                        let _entered = request.trace.enter();
+                        if let Some(snapshot) =
                             engine.update(request.revision, request.text, &request.edits, || {
                                 current.load(Ordering::Relaxed) != request.generation
                             })
-                    {
-                        parsed_generation = request.generation;
-                        parsed = Some(snapshot);
+                        {
+                            parsed_generation = request.generation;
+                            parsed = Some(snapshot);
+                        } else {
+                            tracing::debug!(
+                                revision = request.revision,
+                                "syntax request cancelled"
+                            );
+                        }
                     }
                     if let Ok(request) = viewports.try_recv() {
                         viewport = Some(request);
@@ -445,6 +456,12 @@ impl Worker {
             &self.sender,
             &self.pending,
             Request {
+                trace: tracing::debug_span!(
+                    "syntax.request",
+                    async_work = true,
+                    revision,
+                    generation
+                ),
                 revision,
                 text,
                 edits,

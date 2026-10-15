@@ -23,6 +23,7 @@ impl Connection {
         root: &Path,
         configuration: Value,
     ) -> Result<Self, String> {
+        let _trace = velk_plugin_sdk::diagnostics::scope!("lsp.spawn_server");
         let mut child = Command::new(executable)
             .args(arguments)
             .current_dir(root)
@@ -64,13 +65,18 @@ impl Connection {
         })
     }
     pub async fn read(&mut self) -> Result<Value, String> {
+        let _trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.wait_message");
         self.messages
             .recv()
             .await
             .ok_or_else(|| "language server disconnected".to_string())?
     }
     async fn send(&mut self, message: Value) -> Result<(), String> {
-        let bytes = serde_json::to_vec(&message).map_err(|e| e.to_string())?;
+        let _trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.write_message");
+        let bytes = {
+            let _cpu = velk_plugin_sdk::diagnostics::scope!("lsp.encode");
+            serde_json::to_vec(&message).map_err(|e| e.to_string())?
+        };
         self.stdin
             .write_all(format!("Content-Length: {}\r\n\r\n", bytes.len()).as_bytes())
             .await
@@ -109,6 +115,7 @@ impl Connection {
             .await
     }
     pub async fn shutdown(&mut self) {
+        let _trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.shutdown");
         let _ = tokio::time::timeout(Duration::from_secs(2), async {
             if let Some(uri) = self.document_uri.take() {
                 self.notify("textDocument/didClose", json!({"textDocument":{"uri":uri}}))
@@ -177,6 +184,7 @@ async fn read_frame(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Result<Valu
         .ok_or_else(|| io::Error::other("missing or excessive LSP Content-Length"))?;
     let mut body = vec![0; length];
     reader.read_exact(&mut body).await?;
+    let _cpu = velk_plugin_sdk::diagnostics::scope!("lsp.decode");
     let message: Value = serde_json::from_slice(&body).map_err(io::Error::other)?;
     if message["jsonrpc"] != "2.0" || !message.is_object() {
         return Err(io::Error::other("invalid JSON-RPC envelope"));

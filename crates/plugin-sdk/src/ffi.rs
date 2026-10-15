@@ -94,7 +94,9 @@ unsafe extern "C" fn create<P: Plugin>(output: *mut *mut c_void) -> i32 {
     guard(|| {
         let mut plugin = Box::new(P::default());
         let mut registry = registry::Registrar::new(&mut *plugin);
-        if P::register(&mut registry).is_err() {
+        if P::register(&mut registry).is_err()
+            || (registry.entries.len() < MAX_HOOKS && register_diagnostics(&mut registry).is_err())
+        {
             return INVALID;
         }
         let instance = Box::into_raw(Box::new(Instance { registry, plugin })).cast();
@@ -203,6 +205,32 @@ where
         unsafe { sink(context, runs.as_ptr(), runs.len()) }
     })
 }
+fn register_diagnostics<P: Plugin>(reg: &mut registry::Registrar<P>) -> Result<(), String> {
+    unsafe extern "C" fn attach(sink: *const TraceSink) -> i32 {
+        guard(|| {
+            if sink.is_null() {
+                return INVALID;
+            }
+            // SAFETY: the host lends a valid table and owns its callbacks until
+            // process exit. SDK copies the table, retaining no borrowed pointer.
+            unsafe {
+                velk_diagnostics::attach(*sink);
+            }
+            OK
+        })
+    }
+    unsafe {
+        reg.register_raw(
+            DIAGNOSTICS_HOOK,
+            DIAGNOSTICS_HOOK,
+            1,
+            SERVICE,
+            DiagnosticsApi { attach },
+            (),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -185,7 +185,9 @@ impl Editor {
         self.insert(text);
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(bytes = text.len(), revision = self.buffer.revision()))]
     pub fn insert(&mut self, text: &str) {
+        self.note_input();
         #[cfg(any(test, feature = "performance"))]
         {
             self.input_started = Some(Instant::now());
@@ -210,7 +212,24 @@ impl Editor {
         self.buffer.mark_saved(checkpoint)
     }
 
+    fn note_input(&mut self) {
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            static INPUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let id = INPUT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.geometry.borrow_mut().traced_input = Some((std::time::Instant::now(), id));
+            tracing::debug!(
+                input_id = id,
+                revision = self.buffer.revision(),
+                "input received"
+            );
+        }
+    }
     fn edited(&mut self) {
+        tracing::debug!(
+            revision = self.buffer.revision(),
+            bytes = self.buffer.text().len_bytes(),
+            "editor state updated"
+        );
         if self.syntax_revision != self.buffer.revision() {
             self.syntax_revision = self.buffer.revision();
             if let Some(worker) = &self.syntax_worker {
@@ -236,7 +255,9 @@ impl Editor {
         self.reveal_caret = true;
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(revision = self.buffer.revision()))]
     fn key(&mut self, event: &KeyInput, cx: &mut Context<'_, Self>) {
+        self.note_input();
         #[cfg(any(test, feature = "performance"))]
         let input_started = Instant::now();
         let key = &event.event;
@@ -335,7 +356,9 @@ impl Editor {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(drag))]
     fn pointer(&mut self, event: &PointerInput, drag: bool) {
+        self.note_input();
         if !drag && event.button != Some(PointerButton::Primary) {
             return;
         }
@@ -436,6 +459,7 @@ impl View for Editor {
                 {
                     this.input_started = Some(Instant::now());
                 }
+                this.note_input();
                 this.buffer.undo();
                 this.edited();
             })
@@ -447,6 +471,7 @@ impl View for Editor {
                 {
                     this.input_started = Some(Instant::now());
                 }
+                this.note_input();
                 this.buffer.redo();
                 this.edited();
             })

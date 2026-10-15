@@ -23,6 +23,7 @@ impl Plugin for CommonMark {
 pub struct CommonMark;
 impl CommonMark {
     fn render(&self, markdown: &str) -> Document {
+        let _trace = velk_plugin_sdk::diagnostics::scope!("markdown.parse");
         let mut doc = Document::default();
         let mut style = Style::default();
         let mut stack = Vec::new();

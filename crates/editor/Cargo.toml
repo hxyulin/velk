@@ -19,6 +19,8 @@ path = "examples/widget-preview.rs"
 required-features = ["performance"]
 
 [dependencies]
+velk-diagnostics = { workspace = true, features = ["collector"] }
+tracing.workspace = true
 pollster = "0.4"
 velk-search.workspace = true
 velk-plugin-host.workspace = true

@@ -20,6 +20,7 @@ path = "tests/fixtures/duplicate-pack.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+velk-diagnostics.workspace = true
 ropey.workspace = true
 velk-semantic.workspace = true
 velk-markup.workspace = true

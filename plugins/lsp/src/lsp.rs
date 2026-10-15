@@ -31,6 +31,7 @@ pub struct LspBackend {
 impl Backend for LspBackend {
     fn run(self: Box<Self>, session: Session) -> BackendFuture {
         Box::pin(async move {
+            let _trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.session");
             let first = loop {
                 match session.next().await {
                     Some(Input::Document(document)) => break document,
@@ -94,6 +95,7 @@ async fn drive(
         }, "initializationOptions":options
     });
     connection.root_uri = root_uri;
+    let initialize_trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.initialize");
     connection.request(1, "initialize", initialize).await?;
     let initialized = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -110,6 +112,7 @@ async fn drive(
     })
     .await
     .map_err(|_| "LSP initialization timed out".to_string())??;
+    drop(initialize_trace);
     let encoding = Encoding::negotiate(initialized.capabilities.position_encoding.as_ref())?;
     let capabilities = Capabilities {
         diagnostics: true,
@@ -140,9 +143,13 @@ async fn drive(
         .events()
         .publish(Event::Status(Status::Ready(capabilities)));
     let mut pending: Option<(u64, HoverRequest, Instant)> = None;
+    let mut hover_trace = None;
     let mut next_id = 2u64;
     let mut tick = interval(Duration::from_millis(250));
     loop {
+        if pending.is_none() {
+            drop(hover_trace.take());
+        }
         tokio::select! {
             input = session.next() => match input {
                 None => return Ok(()),
@@ -184,6 +191,7 @@ async fn drive(
                     }
                     if next_id >= i32::MAX as u64 { return Err("LSP request ID space exhausted".into()); }
                     let id = next_id; next_id += 1;
+                    hover_trace = Some(velk_plugin_sdk::diagnostics::async_scope!("lsp.hover.round_trip"));
                     connection.request(id,"textDocument/hover", json!({"textDocument":{"uri":document_uri},"position":encoding.position(&document.text, request.position)})).await?;
                     pending = Some((id,request,Instant::now()+Duration::from_secs(5)));
                 }
@@ -209,6 +217,7 @@ async fn drive(
                 } else if let Some((id,request,_)) = pending {
                     if message.get("id") != Some(&json!(id)) { continue; }
                     pending = None;
+                    drop(hover_trace.take());
                     if let Some(error) = message.get("error") {
                         session.events().publish(Event::RequestFailed { request, message:format!("Hover failed: {error}") });
                     } else if message["result"].is_null() {
