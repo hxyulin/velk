@@ -28,7 +28,11 @@ Exactly one file path is required. Quote paths containing spaces. The app report
 usage errors, unreadable files and invalid UTF-8 on stderr before starting the UI.
 Files load directly into a Rope; CRLF and CR line endings normalize to LF in the
 editing buffer. Loading creates no undo entry and leaves the source file unchanged.
-Editing is currently in memory; file saving is not implemented yet.
+Command/Ctrl+S saves to the opened file asynchronously. A `*` in the window title
+and the status line indicate unsaved changes; undo/redo can return to a saved
+checkpoint. Closing or quitting a dirty document asks whether to save, discard,
+or cancel. Editing stays available while a save runs, and newer edits remain
+unsaved when the snapshot finishes writing.
 
 The normal binary has no showcase or stress-test switches. Widget profiling,
 frame counters and input timing are compiled only for tests or the opt-in
@@ -61,6 +65,38 @@ native profiling improvements. All three crates resolve from Git revisions;
 no sibling RXUI or Astrelis checkout or local Cargo patch is required. The
 [Astrelis performance report](docs/performance/astrelis-local.md) records the
 earlier experiments and their measurement revisions.
+
+## Saving
+
+Saving clones the Rope and checkpoint on the UI thread, then writes, hashes, and
+synchronizes on RXUI's blocking pool. Only one save can run at a time; if you edit
+during a save, save again afterward to persist the newer edits. Failures appear
+in the status line and retain the dirty state and undo history.
+
+The application uses `tempfile` for a sibling temporary file and atomic
+replacement, and BLAKE3 to compare the original bytes before replacement. A file
+changed or deleted externally is preserved and saving reports an error; reload or
+conflict resolution is not implemented yet. The comparison is best effort, not
+an operating-system compare-and-swap: another writer can race the final rename.
+
+The dominant LF, CRLF, or CR line-ending style is detected during loading and
+restored on save. Ties prefer LF, then CRLF, then CR; files without newlines use
+LF. Mixed endings normalize to the chosen style on an edited save. Trailing
+newlines, Unicode text, and any UTF-8 BOM are retained. Saving an opened symlink
+updates its resolved target and preserves the link. File permissions are copied;
+read-only files are refused. Atomic replacement creates a new file identity, so
+hard-link relationships, extended attributes, and ACLs are not preserved by this
+initial implementation. Save As and automatic external-file reload are deferred.
+
+## Transactions
+
+`Buffer::apply_transaction` and `Editor::apply_transaction` apply validated,
+non-overlapping replacements atomically as one undo step. Existing input uses
+this mechanism without changing indentation, Tab, or pairing behavior. Stale
+versions and invalid edits leave document state untouched; per-replacement
+coordinates continue to support incremental parsing through undo/redo.
+See [edit transactions and saved checkpoints](docs/edit-transactions.md) for the
+API, selection mapping, revision rules, and dirty-state semantics.
 
 ## Rust syntax highlighting
 

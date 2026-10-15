@@ -1,11 +1,14 @@
-use rxui::prelude::*;
+mod document;
+mod file;
+
+use rxui::{WeakEntity, prelude::*};
 use std::{
+    cell::RefCell,
     ffi::OsString,
-    fmt,
-    fs::File,
-    io,
+    fmt, io,
     path::{Path, PathBuf},
     process::ExitCode,
+    rc::Rc,
 };
 use velk_editor_widget::{Editor, Language};
 
@@ -34,32 +37,59 @@ fn file_argument(mut arguments: impl Iterator<Item = OsString>) -> Result<PathBu
     Ok(PathBuf::from(path))
 }
 
-fn open(path: &Path) -> Result<Editor, Error> {
-    File::open(path)
-        .and_then(Editor::from_reader)
-        .map_err(|source| Error::Open {
-            path: path.to_path_buf(),
-            source,
-        })
-        .and_then(|mut editor| {
-            editor
-                .set_language(Language::for_path(path))
-                .map_err(|error| Error::Open {
-                    path: path.to_path_buf(),
-                    source: io::Error::other(error),
-                })?;
-            Ok(editor)
-        })
+fn open(path: &Path) -> Result<(file::FileState, Editor), Error> {
+    (|| {
+        let (file, mut editor) = file::FileState::open(path)?;
+        editor
+            .set_language(Language::for_path(path))
+            .map_err(io::Error::other)?;
+        Ok((file, editor))
+    })()
+    .map_err(|source| Error::Open {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn run() -> Result<(), Error> {
     let path = file_argument(std::env::args_os().skip(1))?;
-    let editor = open(&path)?;
+    let (file, editor) = open(&path)?;
     let title = format!("Velk — {}", path.display());
+    let document: Rc<RefCell<Option<WeakEntity<document::Document>>>> = Rc::default();
+    let created = document.clone();
+    let closing = document.clone();
+    let quitting = document.clone();
     Application::new()
+        .window_created(move |_, cx| {
+            if let Some(document) = created.borrow().as_ref().and_then(WeakEntity::upgrade) {
+                document.read(cx).title();
+            }
+        })
+        .close_requested(move |_, cx| {
+            if let Some(document) = closing.borrow().as_ref().and_then(WeakEntity::upgrade) {
+                document.update(cx, |this, cx| this.intent(document::Intent::Close, cx));
+                CloseResponse::KeepOpen
+            } else {
+                CloseResponse::Close
+            }
+        })
+        .quit_requested(move |cx| {
+            if let Some(document) = quitting.borrow().as_ref().and_then(WeakEntity::upgrade) {
+                document.update(cx, |this, cx| this.intent(document::Intent::Quit, cx));
+                CloseResponse::KeepOpen
+            } else {
+                CloseResponse::Close
+            }
+        })
         .run(move |cx| {
             let editor = cx.new(|_| editor);
-            cx.open_window(WindowOptions::new().title(title).size(1280., 800.), editor)?;
+            let root = cx.new(|cx| document::Document::new(editor, file, path, cx));
+            *document.borrow_mut() = Some(root.downgrade());
+            let window = cx.open_window(
+                WindowOptions::new().title(title).size(1280., 800.),
+                root.clone(),
+            )?;
+            root.update(cx, |this, _| this.window = Some(window));
             Ok(())
         })
         .map_err(Error::Application)
@@ -115,7 +145,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("real.rs");
         std::fs::write(&path, include_str!("main.rs")).unwrap();
-        let editor = open(&path).unwrap();
+        let (_, editor) = open(&path).unwrap();
         assert_eq!(editor.buffer().text(), include_str!("main.rs"));
     }
 
@@ -137,7 +167,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("a file 世界.txt");
         std::fs::write(&path, "Hello 世界\r\né 👩‍💻\r").unwrap();
-        let editor = open(&path).unwrap();
+        let (_, editor) = open(&path).unwrap();
         assert_eq!(editor.buffer().text().to_string(), "Hello 世界\né 👩‍💻\n");
         assert!(!editor.buffer().can_undo());
         assert_eq!(editor.buffer().revision(), 0);

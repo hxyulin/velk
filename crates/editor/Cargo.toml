@@ -19,10 +19,10 @@ path = "examples/widget-preview.rs"
 required-features = ["performance"]
 
 [dependencies]
-rxui.workspace = true
+rxui = { workspace = true, features = ["native-dialogs"] }
 velk-editor-widget.workspace = true
-
-[dev-dependencies]
+ropey.workspace = true
+blake3 = "1.8"
 tempfile = "3.27.0"
 
 [lints]
