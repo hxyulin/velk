@@ -229,8 +229,13 @@ async fn hover_deadline_reports_failure_and_drop_cancels_stalled_initialization(
 }
 #[tokio::test(flavor = "current_thread")]
 async fn missing_server_is_an_async_failure() {
-    let mut config = LspBackend::rust_analyzer();
-    config.executable = "/velk-test-nonexistent-language-server".into();
+    let config = LspBackend {
+        executable: "/velk-test-nonexistent-language-server".into(),
+        arguments: vec![],
+        root: None,
+        initialization_options: serde_json::Value::Null,
+        configuration: serde_json::Value::Null,
+    };
     let service = Service::start(config).unwrap();
     service.update(document(Path::new("/tmp/file.rs"), 0, "fn main() {}"));
     let event = tokio::time::timeout(Duration::from_secs(2), async {
@@ -261,7 +266,15 @@ async fn real_rust_analyzer_hover_uses_unsaved_document() {
     .unwrap();
     let source = "fn main() { let value: usize = 1; }\n";
     std::fs::write(&path, source).unwrap();
-    let service = Service::start(LspBackend::rust_analyzer()).unwrap();
+    let service = Service::start(LspBackend {
+        executable: std::env::var_os("VELK_RUST_ANALYZER")
+            .unwrap_or_else(|| "rust-analyzer".into()),
+        arguments: vec![],
+        root: None,
+        initialization_options: serde_json::json!({"checkOnSave":false}),
+        configuration: serde_json::json!({"rust-analyzer":{"checkOnSave":false}}),
+    })
+    .unwrap();
     service.update(document(&path, 0, source));
     until(&service.events, |e| {
         matches!(e, Event::Status(Status::Ready(_)))

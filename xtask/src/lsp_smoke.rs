@@ -9,10 +9,21 @@ pub(super) fn run(root: &Path, output: &Path) -> Result<(), String> {
     let directory = temp.path().join("plugins");
     let markdown = stage(output, &directory)?;
     let lsp = stage_plugin(output, &directory, "velk.lsp", "velk_plugin_lsp")?;
-    publish(&directory, vec![markdown, lsp])?;
+    let rust = stage_plugin(
+        output,
+        &directory,
+        "velk.language-server.rust-analyzer",
+        "velk_plugin_rust_analyzer",
+    )?;
     let source = temp.path().join("file 世界.rs");
     std::fs::write(&source, "fn café() {}\n").map_err(|e| e.to_string())?;
-    for mode in ["normal", "stall-init"] {
+    for mode in ["normal", "stall-init", "no-profile", "missing-transport"] {
+        let specs = match mode {
+            "no-profile" => vec![markdown.clone(), lsp.clone()],
+            "missing-transport" => vec![markdown.clone(), rust.clone()],
+            _ => vec![markdown.clone(), lsp.clone(), rust.clone()],
+        };
+        publish(&directory, specs)?;
         let log = temp.path().join(format!("{mode}.jsonl"));
         let config = temp.path().join(format!("{mode}.json"));
         std::fs::write(
@@ -38,7 +49,7 @@ pub(super) fn run(root: &Path, output: &Path) -> Result<(), String> {
         )?;
     }
     println!(
-        "LSP plugin smoke passed: native async diagnostics/hover, cancellation, save, unload during requests/initialization, process reaping, latest-document reattachment, resident image reuse, independent Markdown."
+        "LSP plugin smoke passed: native async diagnostics/hover, cancellation, save, unload during requests/initialization, process reaping, latest-document reattachment, resident image reuse, independent Markdown, namespaced Rust definition dependency/unload/reload, no server without its profile or transport."
     );
     Ok(())
 }
@@ -54,11 +65,11 @@ async fn until(events: &Events, predicate: impl Fn(&Event) -> bool) -> Result<Ev
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let event = events.recv().await.map_err(|e| e.to_string())?;
-            if let Event::Status(Status::Failed(message)) = &event {
-                return Err(message.clone());
-            }
             if predicate(&event) {
                 return Ok(event);
+            }
+            if let Event::Status(Status::Failed(message)) = &event {
+                return Err(message.clone());
             }
         }
     })
@@ -118,7 +129,15 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
         .map_err(|e| e.to_string())?
         .block_on(async {
             let loaded = client.load()?.recv().await.map_err(|e| e.to_string())??;
-            assert_eq!(loaded.loaded, 2);
+            let mode=std::env::var("VELK_LSP_SMOKE_MODE").unwrap();
+            if mode=="no-profile" || mode=="missing-transport" {
+                assert_eq!(loaded.loaded,2);
+                until(&service.events,|e| if mode=="no-profile" {matches!(e,Event::Status(Status::Stopped))} else {matches!(e,Event::Status(Status::Failed(message)) if message.contains("requires velk.lsp"))}).await?;
+                assert!(!log.exists(),"transport must not start a server without a resolvable language definition");
+                return Ok::<_,String>(());
+            }
+            assert_eq!(loaded.loaded, 3);
+            let profile_image=loaded.plugins.iter().find(|p|p.id=="velk.language-server.rust-analyzer").unwrap().loaded_path.clone();
             let image = loaded
                 .plugins
                 .iter()
@@ -134,7 +153,7 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                     .recv()
                     .await
                     .map_err(|e| e.to_string())??;
-                assert_eq!(report.loaded, 1);
+                assert_eq!(report.loaded, 2);
                 assert!(
                     started.elapsed() < Duration::from_secs(5),
                     "unload waited for initialize's 30-second timeout"
@@ -203,9 +222,9 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 .recv()
                 .await
                 .map_err(|e| e.to_string())??;
-            assert_eq!(report.loaded, 1);
+            assert_eq!(report.loaded, 2);
             until(&service.events, |e| {
-                matches!(e, Event::Status(Status::Stopped))
+                matches!(e, Event::Status(Status::Failed(message)) if message.contains("requires velk.lsp"))
             })
             .await?;
             assert_reaped(log);
@@ -218,7 +237,7 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
             let newest = format!("{initial}// edited while LSP was unloaded\n");
             service.update(snapshot(path, 100, &newest));
             let report = client.load()?.recv().await.map_err(|e| e.to_string())??;
-            assert_eq!(report.loaded, 2);
+            assert_eq!(report.loaded, 3);
             assert_eq!(
                 report
                     .plugins
@@ -258,16 +277,24 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
             })
             .await?;
             let report = client
-                .unload("velk.lsp".into())?
+                .unload("velk.language-server.rust-analyzer".into())?
                 .recv()
                 .await
                 .map_err(|e| e.to_string())??;
-            assert_eq!(report.loaded, 1);
+            assert_eq!(report.loaded, 2);
             assert_reaped(log);
+            assert!(!profile_image.exists(),"profile code/copy is ordinarily reclaimable");
             until(&service.events, |e| {
                 matches!(e, Event::Status(Status::Stopped))
             })
             .await?;
+            let latest=format!("{initial}// edited while Rust profile was unloaded\n");
+            service.update(snapshot(path,101,&latest));
+            assert_eq!(client.load()?.recv().await.map_err(|e|e.to_string())??.loaded,3);
+            until(&service.events,|e|matches!(e,Event::Status(Status::Ready(_)))).await?;
+            until(&service.events,|e|matches!(e,Event::Diagnostics {revision:101,..})).await?;
+            assert_eq!(client.unload_all()?.recv().await.map_err(|e|e.to_string())??.loaded,0);
+            assert_reaped(log);
             Ok(())
         })
 }

@@ -3115,7 +3115,6 @@ version = "0.1.0"
 dependencies = [
  "lsp-types",
  "ropey",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3129,6 +3128,15 @@ name = "velk-plugin-markdown"
 version = "0.1.0"
 dependencies = [
  "pulldown-cmark",
+ "velk-plugin-sdk",
+]
+
+[[package]]
+name = "velk-plugin-rust-analyzer"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "velk-plugin-sdk",
 ]
 

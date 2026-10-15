@@ -87,10 +87,23 @@ cargo xtask plugins --release
 
 This only builds/stages the bundled plugins. Editor recompilation is unnecessary.
 The bundled `velk.markdown` plugin renders hover documentation. `velk.lsp` owns
-language-server transport, protocol handling, configuration, and the persistent
-rust-analyzer session for Rust files. Unloading LSP clears diagnostics and semantic
-hover; loading it reattaches the latest unsaved document. Rust Tree-sitter syntax
-highlighting stays built in. Without Markdown, hover displays literal provider text.
+generic language-server transport, protocol handling, and persistent sessions.
+`velk.language-server.rust-analyzer` supplies Rust's executable, arguments, settings,
+and language match, declaring `velk.lsp` as its transport dependency. There is no
+Rust-analyzer default inside the generic transport, and neither plugin links the
+other's Rust implementation. The host copies a typed server definition between
+them. Unloading either stops dependent sessions; loading it reattaches the latest
+unsaved document. Rust Tree-sitter syntax highlighting stays built in. Without
+Markdown, hover displays literal provider text.
+
+Plugin IDs use **`author.[namespace.]name`**, with zero or more namespace segments:
+`velk.markdown`, `velk.language-server.rust-analyzer`, or
+`author.tools.language.server.rust`. The full ID is limited to 63 ASCII bytes;
+each segment starts with a lowercase letter and contains lowercase letters,
+digits, hyphens, or underscores. Empty segments, uppercase letters, and unscoped
+names are rejected by shared SDK/manifest validation. IDs are exact flat keys:
+namespace prefixes do not imply dependencies, permissions, ownership, or wildcard
+matching. There is no fixed nesting depth beyond the total length bound.
 
 The staging tool publishes immutable, content-addressed libraries and atomically
 replaces `plugins.json`. The loader verifies BLAKE3 digests, ABI/layout, metadata,
@@ -106,9 +119,12 @@ Plugin authors implement `velk_plugin_sdk::Plugin` and invoke
 C entry point, catches unwinding panics inside lifecycle wrappers, and copies
 results into host-owned buffers. The experimental ABI contains fixed metadata,
 opaque instances, and function pointers; it does not exchange Rust containers or
-trait objects. Its contracts are not frozen. Distribution, dependency resolution,
-and generic inter-plugin services are deferred. The semantic capability is the
-first explicitly scoped asynchronous plugin service.
+trait objects. Its contracts are not frozen. Language definitions provide the
+first typed inter-plugin dependency: they name an exact semantic transport ID.
+Missing transports produce an availability error, and competing definitions for a
+language are rejected. Resolution retries when relevant plugins change; ordinary
+edits do not re-query definitions. Distribution, general dependency graphs/version
+constraints, and generic service discovery remain deferred.
 
 Markdown requests are asynchronous to the editor. The host uses a bounded queue
 (16 pending operations) and executes the synchronous C function on its plugin
@@ -152,9 +168,9 @@ modal identifies this with “Code retained until exit”. Markdown retains ordi
 library release behavior. Fully reclaimable LSP code would require moving process
 and reactor ownership into a host service or an unregisterable transport.
 
-LSP defaults to `rust-analyzer` on PATH (`VELK_RUST_ANALYZER` overrides it).
-`VELK_LSP_CONFIG=/path/to/config.json` optionally selects a server privately in the
-plugin, using `executable`, `arguments`, `root`, `initialization_options`, and
+The Rust support plugin defaults to `rust-analyzer` on PATH
+(`VELK_RUST_ANALYZER` overrides it). It also owns the existing
+`VELK_LSP_CONFIG=/path/to/config.json` override, using `executable`, `arguments`, `root`, `initialization_options`, and
 `configuration`. The current editor still routes only Rust documents to semantics.
 One session owns one document/server; multi-document sharing is future work.
 
@@ -186,6 +202,8 @@ tests cover queued and active cancellation and unload ordering. The LSP DSO smok
 uses a deterministic Python peer to check async diagnostics/hover, cancellation,
 saves, unload during initialization and held requests, process reaping, latest
 snapshot reattachment, resident image reuse, and independent Markdown operation.
+It also checks definition unload/reload, reclaimable Rust plugin copies, missing
+transport/profile behavior, and absence of an implicit server fallback.
 Build commands
 target the local native platform; cross-compilation and distribution are not part
 of this tooling yet.
@@ -199,7 +217,8 @@ of this tooling yet.
 - `crates/markup`: UI-independent styled documents and host-facing async renderer contract.
 - `crates/plugin-api`, `crates/plugin-sdk`, `crates/plugin-host`: experimental native ABI, author SDK, and lifecycle worker.
 - `plugins/markdown`: native CommonMark provider; owns the `pulldown-cmark` dependency.
-- `plugins/lsp`: stateful native LSP provider; owns protocol types, JSON-RPC, URIs, and language-server processes.
+- `plugins/lsp`: generic native LSP transport; owns protocol types, JSON-RPC, URIs, and language-server processes.
+- `plugins/rust-analyzer`: namespaced Rust language-server definition; depends on the LSP plugin at runtime.
 - `xtask`: local editor/plugin build and staging commands.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 

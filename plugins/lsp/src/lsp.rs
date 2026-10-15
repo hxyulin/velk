@@ -28,20 +28,6 @@ pub struct LspBackend {
     pub configuration: Value,
     pub root: Option<PathBuf>,
 }
-impl LspBackend {
-    pub fn rust_analyzer() -> Self {
-        Self {
-            executable: std::env::var_os("VELK_RUST_ANALYZER")
-                .unwrap_or_else(|| "rust-analyzer".into()),
-            arguments: Vec::new(),
-            root: None,
-            // Keep compiler checks explicit initially. Analysis and Cargo project
-            // discovery still work; Cargo/build-script/proc-macro helpers may run.
-            initialization_options: json!({"checkOnSave":false}),
-            configuration: json!({"rust-analyzer":{"checkOnSave":false}}),
-        }
-    }
-}
 impl Backend for LspBackend {
     fn run(self: Box<Self>, session: Session) -> BackendFuture {
         Box::pin(async move {

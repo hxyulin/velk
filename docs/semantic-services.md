@@ -2,8 +2,10 @@
 
 Velk's semantic boundary is `velk-semantic`, independent of RXUI, widgets,
 Tree-sitter, and LSP wire types. LSP implementation and dependencies live in the
-loadable `plugins/lsp` library; the editor routes Rust documents to a neutral
-plugin-host endpoint. There is no built-in LSP fallback.
+loadable `plugins/lsp` library. Rust policy lives separately in
+`plugins/rust-analyzer` (ID `velk.language-server.rust-analyzer`), which supplies a
+typed definition naming its `velk.lsp` dependency. The editor routes Rust documents
+to a neutral plugin-host endpoint. There is no built-in LSP or Rust-analyzer fallback.
 
 ## Public boundary
 
@@ -50,6 +52,21 @@ snapshot. Reload attaches a new session and replays that snapshot. Pending old
 results are cleared at generation changes. Markdown is an independent capability:
 unloading LSP leaves its renderer available, and unloading Markdown leaves LSP
 working with literal Markdown presentation.
+
+Language definitions are synchronous configuration queries with typed borrowed
+records. The host copies executable/argument/root/settings strings, resolves the
+exact transport ID, then supplies another borrowed record when creating a session.
+The receiving SDK copies it again into transport-owned data. No plugin links the
+other implementation or retains its pointers. Unload of a definition or transport
+joins its dependent sessions; the definition's library can then be released.
+Missing transport dependencies and conflicting definitions fail visibly without
+starting a server. Relevant plugin generations and document language form the
+resolution key, so ordinary edits do not repeat configuration queries.
+
+Plugin IDs follow `author.[namespace.]name` with arbitrarily nested namespaces
+within 63 ASCII bytes. Segments start with a lowercase letter and otherwise allow
+lowercase letters, digits, hyphens, and underscores. SDK exports and manifests use
+the same parser. IDs resolve exactly; namespace prefixes have no implicit behavior.
 
 Tokio's process-global Unix signal hooks require `velk.lsp` to request resident
 code. Successful logical unload reaps servers and joins/destroys sessions and
@@ -103,15 +120,16 @@ stay within its supported integer range, including shutdown.
 
 ## Rust and presentation
 
-Opening `.rs` creates an endpoint which uses the loaded LSP plugin. Its default
-backend is persistent rust-analyzer. The plugin discovers the
+Opening `.rs` creates an endpoint which resolves the Rust support plugin and its
+LSP transport dependency. The Rust definition selects persistent rust-analyzer;
+the generic transport has no language-specific default. The transport discovers the
 nearest ancestor Cargo manifest on the worker; an explicit `LspBackend::root`
-can override it. The binary defaults to `rust-analyzer` on PATH and can be
+can override it. The Rust definition defaults to `rust-analyzer` on PATH and can be
 replaced with `VELK_RUST_ANALYZER=/absolute/path/to/rust-analyzer`. Initialization
 options and workspace configuration are separate configurable JSON objects in
 the LSP adapter. `VELK_LSP_CONFIG=/path/to/config.json` can set `executable`,
 `arguments`, `root`, `initialization_options`, and `configuration` privately in the
-plugin; the file is limited to 1 MiB. The editor has no user-configurable language
+Rust definition plugin; the file and copied definition are limited to 1 MiB. The editor has no user-configurable language
 routing yet, and one session still owns one document/server.
 
 `checkOnSave` is initially disabled. Native analyzer diagnostics still arrive,
@@ -196,7 +214,9 @@ cargo xtask test-plugins
 The actual native-library smoke additionally verifies unload during a held hover
 and stalled initialization, server process reaping before the unload reply, host
 results surviving unload, latest-document reattachment, resident image reuse,
-and independent Markdown rendering. Unit tests check typed ABI record validation,
+independent Markdown rendering, Rust definition unload/reload, no implicit server
+without a definition, and missing transport errors. Unit tests check typed ABI record validation,
+namespace parsing, exact dependency lookup, conflicting definitions,
 Unicode/non-UTF-8 Unix paths, joining final callbacks, and failed-session teardown.
 
 Scripted LSP tests use `python3` and only its standard library. They check UTF-16

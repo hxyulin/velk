@@ -1,5 +1,6 @@
 //! Native plugins with host-scheduled async requests and scoped semantic sessions.
-//! No Rust future crosses the ABI; dependency resolution remains deferred.
+//! No Rust future crosses the ABI. Language definitions resolve exact transport
+//! dependencies; general dependency graphs remain deferred.
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Component, Path, PathBuf},
@@ -27,14 +28,11 @@ impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
         let mut ids = std::collections::HashSet::new();
         for p in &self.plugins {
-            if p.id.is_empty()
-                || p.id.len() >= 64
-                || !p
-                    .id
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b".-_".contains(&c))
-            {
-                return Err(format!("invalid plugin ID: {}", p.id));
+            if velk_plugin_api::parse_plugin_id(&p.id).is_none() {
+                return Err(format!(
+                    "invalid plugin ID: {} (expected author.[namespace.]name)",
+                    p.id
+                ));
             }
             if !ids.insert(&p.id) {
                 return Err(format!("duplicate plugin ID: {}", p.id));

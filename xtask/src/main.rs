@@ -52,9 +52,16 @@ fn paths(release: bool) -> Result<(PathBuf, PathBuf), String> {
 }
 fn build(root: &Path, release: bool, editor: bool) -> Result<(), String> {
     let mut command = cargo();
-    command
-        .current_dir(root)
-        .args(["build", "--locked", "-p", PLUGIN, "-p", "velk-plugin-lsp"]);
+    command.current_dir(root).args([
+        "build",
+        "--locked",
+        "-p",
+        PLUGIN,
+        "-p",
+        "velk-plugin-lsp",
+        "-p",
+        "velk-plugin-rust-analyzer",
+    ]);
     if editor {
         command.args(["-p", "velk-editor"]);
     }
@@ -164,7 +171,13 @@ fn run() -> Result<(), String> {
     let directory = output.join("plugins");
     let spec = stage(&output, &directory)?;
     let lsp = stage_plugin(&output, &directory, "velk.lsp", "velk_plugin_lsp")?;
-    publish(&directory, vec![spec, lsp])?;
+    let rust = stage_plugin(
+        &output,
+        &directory,
+        "velk.language-server.rust-analyzer",
+        "velk_plugin_rust_analyzer",
+    )?;
+    publish(&directory, vec![spec, lsp, rust])?;
     println!("Built plugins: {}", directory.display());
     if action == "run" {
         checked(

@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 use crate::{Plugin, api::*};
+pub mod language_server;
 pub mod semantic;
 use std::{
     ffi::c_void,
@@ -28,6 +29,9 @@ pub unsafe fn entry<P: Plugin>(abi: u32, output: *mut PluginApi, size: usize) ->
         return INVALID;
     }
     guard(|| {
+        if parse_plugin_id(P::ID).is_none() {
+            return INVALID;
+        }
         let api = PluginApi {
             abi_version: ABI_VERSION,
             struct_size: size as u32,
@@ -37,6 +41,7 @@ pub unsafe fn entry<P: Plugin>(abi: u32, output: *mut PluginApi, size: usize) ->
             create: Some(create::<P>),
             destroy: Some(destroy::<P>),
             describe: Some(describe::<P>),
+            language_server: P::LANGUAGE_SERVER.then_some(language_server::query::<P>),
             semantic_create: P::SEMANTIC.then_some(semantic::create::<P>),
             semantic_input: P::SEMANTIC.then_some(semantic::input),
             semantic_destroy: P::SEMANTIC.then_some(semantic::destroy),

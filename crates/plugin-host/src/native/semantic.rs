@@ -39,6 +39,7 @@ unsafe extern "C" fn emit(
 }
 struct NativeSession {
     provider: String,
+    profile: String,
     instance: NonNull<c_void>,
     input: SendSemantic,
     destroy: DestroySemantic,
@@ -70,11 +71,16 @@ impl NativeSession {
         true
     }
 }
+#[derive(Clone, PartialEq, Eq)]
+struct ResolutionKey {
+    language: String,
+    plugins: Vec<(String, u64)>,
+}
 pub(super) struct DocumentSession {
     session: Session,
     latest: Option<DocumentSnapshot>,
     native: Option<NativeSession>,
-    attempted: Option<u64>,
+    attempted: Option<ResolutionKey>,
 }
 impl Manager {
     pub(crate) fn open_semantics(&mut self, id: u64, session: Session) {
@@ -92,12 +98,6 @@ impl Manager {
         );
     }
     pub(crate) fn drive_semantics(&mut self) {
-        let providers: Vec<_> = self
-            .plugins
-            .values()
-            .filter(|p| !p.destroyed && p.api.semantic_create.is_some())
-            .map(|p| (p.info.id.clone(), p.info.generation))
-            .collect();
         // Temporarily remove entries to keep their callback/storage ownership
         // explicit while invoking a provider's serialized instance methods.
         let ids: Vec<_> = self.sessions.keys().copied().collect();
@@ -134,67 +134,102 @@ impl Manager {
                         .publish(SemanticEvent::Status(Status::Failed(error)));
                 }
             }
-            if doc.native.is_none() {
-                if let [(provider, generation)] = providers.as_slice() {
-                    if doc.attempted != Some(*generation)
-                        && self.plugins.get(provider).is_some_and(|p| !p.destroyed)
-                    {
-                        doc.attempted = Some(*generation);
-                        doc.session.events().clear();
-                        let plugin = self.plugins.get_mut(provider).unwrap();
-                        let mut callback = Box::new(Callback {
-                            active: AtomicBool::new(true),
-                            events: doc.session.events(),
-                        });
-                        let mut instance = std::ptr::null_mut();
-                        doc.session
-                            .events()
-                            .publish(SemanticEvent::Status(Status::Starting));
-                        // SAFETY: live instance, stable boxed thread-safe sink,
-                        // retained through joining semantic_destroy.
-                        let status = unsafe {
-                            plugin.api.semantic_create.unwrap()(
-                                plugin.instance.as_ptr(),
-                                emit,
-                                (&mut *callback as *mut Callback).cast(),
-                                &mut instance,
-                            )
-                        };
-                        if status == OK
-                            && let Some(instance) = NonNull::new(instance)
-                        {
-                            let native = NativeSession {
-                                provider: provider.clone(),
-                                instance,
-                                input: plugin.api.semantic_input.unwrap(),
-                                destroy: plugin.api.semantic_destroy.unwrap(),
-                                callback,
-                            };
-                            if let Some(snapshot) = &doc.latest
-                                && let Err(error) = native.send(&Input::Document(snapshot.clone()))
-                            {
+            if let Some(snapshot) = &doc.latest {
+                let key = ResolutionKey {
+                    language: snapshot.language.clone(),
+                    plugins: self
+                        .plugins
+                        .values()
+                        .filter(|p| {
+                            !p.destroyed
+                                && (p.api.language_server.is_some()
+                                    || p.api.semantic_create.is_some())
+                        })
+                        .map(|p| (p.info.id.clone(), p.info.generation))
+                        .collect(),
+                };
+                if doc.attempted.as_ref() != Some(&key) {
+                    doc.attempted = Some(key.clone());
+                    let retired = if let Some(native) = doc.native.take() {
+                        let provider = native.provider.clone();
+                        if native.retire() {
+                            true
+                        } else {
+                            self.quarantine_semantic_provider(&provider);
+                            false
+                        }
+                    } else {
+                        true
+                    };
+                    doc.session.events().clear();
+                    let result = if !retired {
+                        Err("previous semantic session failed shutdown; restart required".into())
+                    } else {
+                        self.resolve_language_server(&key.language)
+                            .and_then(|definition| {
+                                let Some((profile, definition)) = definition else {
+                                    return Ok(None);
+                                };
+                                let plugin = self.plugins.get_mut(&definition.transport).unwrap();
+                                let mut callback = Box::new(Callback {
+                                    active: AtomicBool::new(true),
+                                    events: doc.session.events(),
+                                });
+                                let mut instance = std::ptr::null_mut();
+                                doc.session
+                                    .events()
+                                    .publish(SemanticEvent::Status(Status::Starting));
+                                let status =
+                                    velk_plugin_sdk::ffi::language_server::with_definition(
+                                        &definition,
+                                        |raw| {
+                                            // SAFETY: live transport, copied definition borrowed
+                                            // for this call, stable callback retained until join.
+                                            unsafe {
+                                                plugin.api.semantic_create.unwrap()(
+                                                    plugin.instance.as_ptr(),
+                                                    raw,
+                                                    emit,
+                                                    (&mut *callback as *mut Callback).cast(),
+                                                    &mut instance,
+                                                )
+                                            }
+                                        },
+                                    )?;
+                                if status != OK || instance.is_null() {
+                                    return Err(format!(
+                                        "{}: semantic session creation failed ({status})",
+                                        definition.transport
+                                    ));
+                                }
+                                Ok(Some(NativeSession {
+                                    provider: definition.transport,
+                                    profile,
+                                    instance: NonNull::new(instance).unwrap(),
+                                    input: plugin.api.semantic_input.unwrap(),
+                                    destroy: plugin.api.semantic_destroy.unwrap(),
+                                    callback,
+                                }))
+                            })
+                    };
+                    match result {
+                        Ok(Some(native)) => {
+                            if let Err(error) = native.send(&Input::Document(snapshot.clone())) {
                                 doc.session
                                     .events()
                                     .publish(SemanticEvent::Status(Status::Failed(error)));
                             }
                             doc.native = Some(native);
-                        } else {
-                            // A failed create must leave no live producer or retained
-                            // sink. This is part of the trusted ABI contract.
-                            doc.session
-                                .events()
-                                .publish(SemanticEvent::Status(Status::Failed(format!(
-                                    "semantic session creation failed ({status})"
-                                ))));
                         }
+                        Ok(None) => doc
+                            .session
+                            .events()
+                            .publish(SemanticEvent::Status(Status::Stopped)),
+                        Err(error) => doc
+                            .session
+                            .events()
+                            .publish(SemanticEvent::Status(Status::Failed(error))),
                     }
-                } else if providers.len() > 1 && doc.attempted != Some(0) {
-                    doc.attempted = Some(0);
-                    doc.session
-                        .events()
-                        .publish(SemanticEvent::Status(Status::Failed(
-                            "multiple semantic providers loaded".into(),
-                        )));
                 }
             }
             self.sessions.insert(id, doc);
@@ -211,13 +246,19 @@ impl Manager {
     }
     pub(super) fn retire_semantics(&mut self, id: &str) -> bool {
         let mut success = true;
+        let mut failed_providers = Vec::new();
         for doc in self.sessions.values_mut() {
             if doc
                 .native
                 .as_ref()
-                .is_some_and(|native| native.provider == id)
+                .is_some_and(|native| native.provider == id || native.profile == id)
             {
-                success &= doc.native.take().unwrap().retire();
+                let native = doc.native.take().unwrap();
+                let provider = native.provider.clone();
+                if !native.retire() {
+                    success = false;
+                    failed_providers.push(provider);
+                }
                 doc.attempted = None;
                 doc.session.events().clear();
                 doc.session
@@ -226,6 +267,9 @@ impl Manager {
             }
         }
         if !success {
+            for provider in failed_providers {
+                self.quarantine_semantic_provider(&provider);
+            }
             self.quarantine_semantic_provider(id);
         }
         success
@@ -262,9 +306,10 @@ mod tests {
             DocumentSession {
                 session,
                 latest: None,
-                attempted: Some(1),
+                attempted: None,
                 native: Some(NativeSession {
                     provider: "test.stateful".into(),
+                    profile: "test.profile".into(),
                     instance: NonNull::dangling(),
                     input,
                     destroy: fail_session,
@@ -293,6 +338,7 @@ mod tests {
                     destroy: Some(destroy_instance),
                     describe: None,
                     render_markdown: None,
+                    language_server: None,
                     semantic_create: None,
                     semantic_input: None,
                     semantic_destroy: None,
@@ -302,16 +348,35 @@ mod tests {
                 library: None,
             },
         );
+        // Removing a definition must quarantine the actual transport too if
+        // joining one of its dependent sessions fails.
+        let transport = manager.plugins.get("test.stateful").unwrap();
+        let profile = Generation {
+            info: PluginInfo {
+                id: "test.profile".into(),
+                ..transport.info.clone()
+            },
+            api: transport.api,
+            instance: NonNull::dangling(),
+            destroyed: false,
+            library: None,
+        };
+        manager.plugins.insert("test.profile".into(), profile);
         assert!(matches!(
-            manager.unload("test.stateful"),
+            manager.unload("test.profile"),
             Some(Event::Rejected { .. })
         ));
         assert_eq!(INSTANCE_DESTROYS.load(Ordering::SeqCst), 0);
         assert!(manager.blocked.contains("test.stateful"));
+        assert!(manager.blocked.contains("test.profile"));
         assert_eq!(manager.plugins().count(), 0);
         // SAFETY: failed retirement intentionally retained this callback. Late
         // producer calls stay valid but are silenced after deactivation.
         assert!(!unsafe { &*retained }.active.load(Ordering::Acquire));
+        assert!(matches!(
+            manager.unload("test.stateful"),
+            Some(Event::Rejected { .. })
+        ));
         assert!(manager.unload("test.stateful").is_none());
         assert_eq!(INSTANCE_DESTROYS.load(Ordering::SeqCst), 0);
     }

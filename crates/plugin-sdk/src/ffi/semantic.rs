@@ -347,16 +347,20 @@ struct OwnedSession {
 }
 pub(super) unsafe extern "C" fn create<P: Plugin>(
     instance: *mut c_void,
+    definition: *const LanguageServerDefinition,
     sink: SemanticSink,
     context: *mut c_void,
     output: *mut *mut c_void,
 ) -> i32 {
-    if instance.is_null() || output.is_null() {
+    if instance.is_null() || definition.is_null() || output.is_null() {
         return INVALID;
     }
     guard(|| {
         // SAFETY: serialized lifecycle call on a live plugin instance.
-        let backend = unsafe { (&mut *instance.cast::<P>()).semantic_backend() };
+        let Ok(definition) = (unsafe { super::language_server::decode(&*definition) }) else {
+            return INVALID;
+        };
+        let backend = unsafe { (&mut *instance.cast::<P>()).semantic_backend(definition) };
         let host = HostSink {
             callback: sink,
             context,

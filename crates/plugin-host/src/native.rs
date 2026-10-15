@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 use crate::{Event, PluginSpec, read_manifest};
+mod language_server;
 mod semantic;
 use libloading::Library;
 use std::{
@@ -451,6 +452,7 @@ mod tests {
                     destroy: Some(fails_to_destroy),
                     describe: None,
                     render_markdown: None,
+                    language_server: None,
                     semantic_create: None,
                     semantic_input: None,
                     semantic_destroy: None,
@@ -565,6 +567,7 @@ pub(super) mod test_provider {
                     destroy: Some(destroy),
                     describe: None,
                     render_markdown: Some(render),
+                    language_server: None,
                     semantic_create: None,
                     semantic_input: None,
                     semantic_destroy: None,
