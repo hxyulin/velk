@@ -356,7 +356,7 @@ impl Document {
                 } else {
                     row().size(16., 16.)
                 };
-                let caption = button(label(name).key("buffer-tab-caption"))
+                let caption = button(name.as_str())
                     .on_click(cx.listener(move |this, _, cx| this.select_buffer(id, cx)))
                     .key(format!("buffer-tab-{id}"))
                     .accessibility_label(format!(
@@ -375,9 +375,7 @@ impl Document {
                     })
                     .fill_height()
                     .padding_y(0.)
-                    .padding_x(0.)
-                    .justify_content(rxui::taffy::prelude::JustifyContent::CENTER)
-                    .align_items(rxui::taffy::prelude::AlignItems::CENTER);
+                    .padding_x(0.);
                 let tab = row()
                     .key(format!("buffer-pill-{id}"))
                     .flex_shrink(0.)
@@ -534,12 +532,9 @@ mod tests {
         });
         let mut ui = Ui::new(&mut runtime, document.clone()).unwrap();
         prepare(&mut ui, &mut runtime);
-        assert_eq!(
-            ui.elements()
-                .filter(|e| e.key == Some(&rxui::Key::from("buffer-tab-caption")))
-                .count(),
-            2
-        );
+        for tab in ["buffer-tab-1", "buffer-tab-2"] {
+            assert!(ui.elements().any(|e| e.key == Some(&rxui::Key::from(tab))));
+        }
         let surface = ui
             .elements()
             .find(|e| e.key == Some(&rxui::Key::from("editor-surface")))

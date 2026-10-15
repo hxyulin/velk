@@ -106,6 +106,11 @@ fn run() -> Result<(), Error> {
     let application = application.menu_bar(document::Document::menus());
     application
         .theme(theme::dark())
+        // Unmapped, RXUI's generic monospace is Courier New; match the editor.
+        .map_font_family(
+            rxui::FontFamily::Monospace,
+            velk_editor_widget::MONOSPACE_FAMILY,
+        )
         .window_created(move |_, cx| {
             if let Some(document) = created.borrow().as_ref().and_then(WeakEntity::upgrade) {
                 document.read(cx).title();

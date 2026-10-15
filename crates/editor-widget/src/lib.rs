@@ -30,6 +30,7 @@ use std::sync::Arc;
 #[cfg(any(test, feature = "performance"))]
 use std::time::Instant;
 use std::{cell::RefCell, rc::Rc};
+pub use surface::MONOSPACE_FAMILY;
 use surface::{Composition, Geometry, Surface};
 pub use velk_syntax::Language;
 

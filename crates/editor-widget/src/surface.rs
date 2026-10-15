@@ -800,18 +800,20 @@ fn boundary_after(layout: &TextLayout, byte: usize) -> usize {
     }
 }
 
+/// Platform monospace family for source text. Named families keep Cosmic Text
+/// from requiring monospaced fallback faces for CJK and emoji, which can produce
+/// nonfinite advances on macOS.
+pub const MONOSPACE_FAMILY: &str = if cfg!(target_os = "macos") {
+    "Menlo"
+} else if cfg!(target_os = "windows") {
+    "Consolas"
+} else {
+    "DejaVu Sans Mono"
+};
+
 pub(super) fn editor_text_style() -> TextStyle {
-    // Named families keep Cosmic Text from requiring monospaced fallback faces
-    // for CJK and emoji, which can produce nonfinite advances on macOS.
-    let family = if cfg!(target_os = "macos") {
-        "Menlo"
-    } else if cfg!(target_os = "windows") {
-        "Consolas"
-    } else {
-        "DejaVu Sans Mono"
-    };
     TextStyle::new()
-        .family(FontFamily::from(family))
+        .family(FontFamily::from(MONOSPACE_FAMILY))
         .font_size(16.)
         .line_height(LINE_HEIGHT)
         .feature(*b"liga", 0)
