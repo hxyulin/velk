@@ -8,8 +8,8 @@ use std::{
     },
 };
 use tree_sitter::{
-    InputEdit, Node, ParseOptions, Parser, Point, Query, QueryCursor, StreamingIterator,
-    TextProvider, Tree,
+    InputEdit, Node, ParseOptions, Parser, Point, Query, QueryCursor, QueryCursorOptions,
+    StreamingIterator, TextProvider, Tree,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,16 +96,40 @@ impl<'a> TextProvider<&'a [u8]> for RopeText<'a> {
 impl Snapshot {
     /// Query only the requested character window; text predicates borrow Rope chunks.
     pub fn highlights(&self, range: Range<usize>) -> Vec<Highlight> {
+        self.highlights_cancellable(range, || false).unwrap()
+    }
+    fn highlights_cancellable(
+        &self,
+        range: Range<usize>,
+        cancelled: impl Fn() -> bool,
+    ) -> Option<Vec<Highlight>> {
+        if cancelled() {
+            return None;
+        }
         if range.is_empty() {
-            return Vec::new();
+            return Some(Vec::new());
         }
         let mut cursor = QueryCursor::new();
         cursor
             .set_byte_range(self.text.char_to_byte(range.start)..self.text.char_to_byte(range.end));
-        let mut captures =
-            cursor.captures(&self.query, self.tree.root_node(), RopeText(&self.text));
+        let mut progress = |_: &tree_sitter::QueryCursorState| {
+            if cancelled() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let mut captures = cursor.captures_with_options(
+            &self.query,
+            self.tree.root_node(),
+            RopeText(&self.text),
+            QueryCursorOptions::new().progress_callback(&mut progress),
+        );
         let mut result = Vec::new();
         while let Some((m, index)) = captures.next() {
+            if cancelled() {
+                return None;
+            }
             let capture = m.captures()[*index];
             let start = self
                 .text
@@ -127,8 +151,99 @@ impl Snapshot {
         }
         // Later query patterns specialize earlier generic identifier captures.
         result.sort_by_key(|(priority, _)| *priority);
-        result.into_iter().map(|(_, h)| h).collect()
+        if cancelled() {
+            None
+        } else {
+            Some(result.into_iter().map(|(_, h)| h).collect())
+        }
     }
+}
+
+/// Immutable, indexed viewport captures. Contains no parser, query, or syntax tree.
+/// Constructed entirely on the syntax worker; UI reads only intersecting captures.
+pub struct HighlightSnapshot {
+    pub revision: u64,
+    pub viewport: u64,
+    pub text: Rope,
+    pub coverage: Vec<Range<usize>>,
+    captures: Vec<(usize, Highlight)>,
+    prefix_end: Vec<usize>,
+}
+impl HighlightSnapshot {
+    pub fn prepare(
+        snapshot: &Snapshot,
+        viewport: u64,
+        ranges: Vec<Range<usize>>,
+        cancelled: impl Fn() -> bool,
+    ) -> Option<Arc<Self>> {
+        let coverage = merge_ranges(ranges, snapshot.text.len_chars());
+        let mut captures = Vec::new();
+        for range in &coverage {
+            for highlight in snapshot.highlights_cancellable(range.clone(), &cancelled)? {
+                captures.push((captures.len(), highlight));
+            }
+        }
+        if cancelled() {
+            return None;
+        }
+        captures.sort_by_key(|(_, h)| h.range.start);
+        let mut end = 0;
+        let prefix_end = captures
+            .iter()
+            .map(|(_, h)| {
+                end = end.max(h.range.end);
+                end
+            })
+            .collect();
+        Some(Arc::new(Self {
+            revision: snapshot.revision,
+            viewport,
+            text: snapshot.text.clone(),
+            coverage,
+            captures,
+            prefix_end,
+        }))
+    }
+    pub fn highlights(&self, range: Range<usize>) -> Vec<Highlight> {
+        if range.is_empty() {
+            return Vec::new();
+        }
+        let first = self.prefix_end.partition_point(|&end| end <= range.start);
+        let last = self
+            .captures
+            .partition_point(|(_, h)| h.range.start < range.end);
+        let mut result: Vec<_> = self.captures[first..last.max(first)]
+            .iter()
+            .filter(|(_, h)| h.range.end > range.start)
+            .collect();
+        result.sort_by_key(|(order, _)| *order);
+        result
+            .into_iter()
+            .map(|(_, h)| Highlight {
+                range: h.range.start.max(range.start)..h.range.end.min(range.end),
+                capture: h.capture.clone(),
+            })
+            .collect()
+    }
+}
+fn merge_ranges(mut ranges: Vec<Range<usize>>, length: usize) -> Vec<Range<usize>> {
+    for range in &mut ranges {
+        range.start = range.start.min(length);
+        range.end = range.end.min(length).max(range.start);
+    }
+    ranges.retain(|r| !r.is_empty());
+    ranges.sort_by_key(|r| r.start);
+    let mut result: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        if let Some(last) = result.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            result.push(range);
+        }
+    }
+    result
 }
 
 pub struct Engine {
@@ -217,60 +332,148 @@ struct Request {
     edits: Vec<Edit>,
     generation: u64,
 }
+struct ViewportRequest {
+    revision: u64,
+    ranges: Vec<Range<usize>>,
+    generation: u64,
+}
+pub type Update = Result<Arc<HighlightSnapshot>, Arc<str>>;
+
+/// Single UI producer, one persistent CPU worker. Document and viewport mailboxes
+/// each retain only the latest request; neither submission waits for computation.
 pub struct Worker {
     sender: async_channel::Sender<Request>,
     pending: async_channel::Receiver<Request>,
-    pub updates: async_channel::Receiver<Arc<Snapshot>>,
+    viewport_sender: async_channel::Sender<ViewportRequest>,
+    viewport_pending: async_channel::Receiver<ViewportRequest>,
+    wake: async_channel::Sender<()>,
+    pub updates: async_channel::Receiver<Update>,
     generation: Arc<AtomicU64>,
+    viewport_generation: Arc<AtomicU64>,
     pub id: u64,
 }
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+fn send_latest<T>(
+    sender: &async_channel::Sender<T>,
+    pending: &async_channel::Receiver<T>,
+    value: T,
+) {
+    let _ = pending.try_recv();
+    let _ = sender.try_send(value);
+}
 impl Worker {
     pub fn new(language: Language) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let mut engine = Engine::new(language)?;
+        Self::spawn(move || Engine::new(language))
+    }
+    fn spawn(
+        initialize: impl FnOnce() -> Result<Engine, Box<dyn std::error::Error + Send + Sync>>
+        + Send
+        + 'static,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (sender, pending) = async_channel::bounded::<Request>(1);
+        let (viewport_sender, viewport_pending) = async_channel::bounded::<ViewportRequest>(1);
+        let (wake, wakes) = async_channel::bounded(1);
         let (results, updates) = async_channel::bounded(1);
         let requests = pending.clone();
+        let viewports = viewport_pending.clone();
         let stale_results = updates.clone();
         let generation = Arc::new(AtomicU64::new(0));
         let current = generation.clone();
+        let viewport_generation = Arc::new(AtomicU64::new(0));
+        let current_viewport = viewport_generation.clone();
         std::thread::Builder::new()
             .name("velk-syntax".into())
             .spawn(move || {
-                while let Ok(request) = requests.recv_blocking() {
-                    if let Some(snapshot) =
-                        engine.update(request.revision, request.text, &request.edits, || {
-                            current.load(Ordering::Relaxed) != request.generation
-                        })
+                // Grammar/query compilation and destruction belong to this worker too.
+                let mut engine = match initialize() {
+                    Ok(engine) => engine,
+                    Err(error) => {
+                        send_latest(&results, &stale_results, Err(Arc::from(error.to_string())));
+                        return;
+                    }
+                };
+                let mut parsed: Option<Arc<Snapshot>> = None;
+                let mut viewport: Option<ViewportRequest> = None;
+                let mut parsed_generation = 0;
+                let mut published = None;
+                while wakes.recv_blocking().is_ok() {
+                    if let Ok(request) = requests.try_recv()
+                        && let Some(snapshot) =
+                            engine.update(request.revision, request.text, &request.edits, || {
+                                current.load(Ordering::Relaxed) != request.generation
+                            })
                     {
-                        let _ = stale_results.try_recv();
-                        let _ = results.try_send(snapshot);
+                        parsed_generation = request.generation;
+                        parsed = Some(snapshot);
+                    }
+                    if let Ok(request) = viewports.try_recv() {
+                        viewport = Some(request);
+                    }
+                    if let (Some(snapshot), Some(view)) = (&parsed, &viewport)
+                        && snapshot.revision == view.revision
+                        && published != Some((snapshot.revision, view.generation))
+                        && let Some(highlights) = HighlightSnapshot::prepare(
+                            snapshot,
+                            view.generation,
+                            view.ranges.clone(),
+                            || {
+                                current.load(Ordering::Relaxed) != parsed_generation
+                                    || current_viewport.load(Ordering::Relaxed) != view.generation
+                            },
+                        )
+                    {
+                        published = Some((snapshot.revision, view.generation));
+                        send_latest(&results, &stale_results, Ok(highlights));
                     }
                 }
             })?;
         Ok(Self {
             sender,
             pending,
+            viewport_sender,
+            viewport_pending,
+            wake,
             updates,
             generation,
+            viewport_generation,
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         })
     }
     pub fn request(&self, revision: u64, text: Rope, edits: Vec<Edit>) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self.pending.try_recv();
-        let _ = self.sender.try_send(Request {
-            revision,
-            text,
-            edits,
-            generation,
-        });
+        send_latest(
+            &self.sender,
+            &self.pending,
+            Request {
+                revision,
+                text,
+                edits,
+                generation,
+            },
+        );
+        let _ = self.wake.try_send(());
+    }
+    pub fn request_viewport(&self, revision: u64, ranges: Vec<Range<usize>>) {
+        let generation = self.viewport_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        send_latest(
+            &self.viewport_sender,
+            &self.viewport_pending,
+            ViewportRequest {
+                revision,
+                ranges,
+                generation,
+            },
+        );
+        let _ = self.wake.try_send(());
     }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+        self.viewport_generation.fetch_add(1, Ordering::Relaxed);
+        self.wake.close();
         self.sender.close();
+        self.viewport_sender.close();
     }
 }
 
@@ -394,6 +597,147 @@ mod tests {
         assert_eq!(next.highlights(0..after.len_chars()), fresh(&after));
     }
 
+    fn receive(
+        worker: &Worker,
+        predicate: impl Fn(&HighlightSnapshot) -> bool,
+    ) -> Arc<HighlightSnapshot> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(update) = worker.updates.try_recv() {
+                let snapshot = update.unwrap();
+                if predicate(&snapshot) {
+                    return snapshot;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker result timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    #[test]
+    fn initialization_errors_are_delivered_asynchronously() {
+        let worker =
+            Worker::spawn(|| Err(Box::new(std::io::Error::other("grammar unavailable")))).unwrap();
+        let Err(message) = worker.updates.recv_blocking().unwrap() else {
+            panic!("expected initialization error");
+        };
+        assert_eq!(&*message, "grammar unavailable");
+    }
+
+    #[test]
+    fn initialization_and_busy_worker_never_block_submissions_or_drop() {
+        let caller = std::thread::current().id();
+        let (started, on_worker) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let worker = Worker::spawn(move || {
+            started.send(std::thread::current().id()).unwrap();
+            blocked.recv().unwrap();
+            Engine::new(Language::Rust)
+        })
+        .unwrap();
+        assert_ne!(
+            on_worker
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            caller
+        );
+        // The worker cannot process any of these until the gate opens. This
+        // deterministically checks progress without a wall-clock latency assertion.
+        for revision in 0..1000 {
+            worker.request(revision, Rope::from_str("fn main() {}"), vec![]);
+            worker.request_viewport(revision, std::iter::once(0..12).collect::<Vec<_>>());
+        }
+        drop(worker);
+        release.send(()).unwrap();
+    }
+    #[test]
+    fn scrolling_requests_new_captures_without_a_document_edit() {
+        let worker = Worker::new(Language::Rust).unwrap();
+        let text = Rope::from_str("fn first() {}\nfn second() {}\n");
+        worker.request(0, text.clone(), vec![]);
+        worker.request_viewport(0, std::iter::once(0..13).collect::<Vec<_>>());
+        let first = receive(&worker, |s| s.revision == 0);
+        assert_eq!(first.coverage, std::iter::once(0..13).collect::<Vec<_>>());
+        worker.request_viewport(0, std::iter::once(14..text.len_chars()).collect::<Vec<_>>());
+        let next = receive(&worker, |s| s.revision == 0 && s.viewport > first.viewport);
+        assert_eq!(
+            next.coverage,
+            std::iter::once(14..text.len_chars()).collect::<Vec<_>>()
+        );
+        assert!(next.highlights(0..14).is_empty());
+        assert!(
+            next.highlights(14..text.len_chars())
+                .iter()
+                .any(|h| h.capture == "function")
+        );
+    }
+    #[test]
+    fn indexed_captures_match_queries_with_overlaps_clipping_and_priority() {
+        let text = Rope::from_str(
+            "#[derive(Debug)]\nfn café() { let s = \"hello\\n世界\"; } // comment\n",
+        );
+        let snapshot = Engine::new(Language::Rust)
+            .unwrap()
+            .update(0, text.clone(), &[], || false)
+            .unwrap();
+        let highlights = HighlightSnapshot::prepare(
+            &snapshot,
+            1,
+            vec![5..30, 0..10, 25..text.len_chars()],
+            || false,
+        )
+        .unwrap();
+        assert_eq!(
+            highlights.coverage,
+            std::iter::once(0..text.len_chars()).collect::<Vec<_>>()
+        );
+        for start in 0..text.len_chars() {
+            let end = (start + 7).min(text.len_chars());
+            assert_eq!(
+                highlights.highlights(start..end),
+                snapshot.highlights(start..end)
+            );
+        }
+        assert!(
+            HighlightSnapshot::prepare(
+                &snapshot,
+                2,
+                std::iter::once(0..text.len_chars()).collect::<Vec<_>>(),
+                || true
+            )
+            .is_none()
+        );
+        assert!(
+            snapshot
+                .highlights_cancellable(0..text.len_chars(), || true)
+                .is_none()
+        );
+    }
+    #[test]
+    fn viewport_requests_coalesce_and_do_not_cancel_initial_parsing() {
+        let worker = Worker::new(Language::Rust).unwrap();
+        let text = Rope::from_str(&"fn sample() { let value = Some(42); }\n".repeat(10_000));
+        worker.request(0, text.clone(), vec![]);
+        for start in 0..1000 {
+            worker.request_viewport(0, std::iter::once(start..start + 100).collect::<Vec<_>>());
+        }
+        let final_snapshot = receive(&worker, |s| s.viewport == 1000);
+        assert_eq!(
+            final_snapshot.coverage,
+            std::iter::once(999..1099).collect::<Vec<_>>()
+        );
+        let expected = Engine::new(Language::Rust)
+            .unwrap()
+            .update(0, text, &[], || false)
+            .unwrap();
+        assert_eq!(
+            final_snapshot.highlights(999..1099),
+            expected.highlights(999..1099)
+        );
+    }
+
     #[test]
     fn worker_coalesces_to_final_revision() {
         let worker = Worker::new(Language::Rust).unwrap();
@@ -404,9 +748,10 @@ mod tests {
                 vec![],
             );
         }
+        worker.request_viewport(99, std::iter::once(0..100).collect::<Vec<_>>());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if let Ok(snapshot) = worker.updates.try_recv()
+            if let Ok(Ok(snapshot)) = worker.updates.try_recv()
                 && snapshot.revision == 99
             {
                 break;

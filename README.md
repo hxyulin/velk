@@ -76,22 +76,35 @@ Try the app on its own source:
 cargo run --release --locked -- crates/editor/src/main.rs
 ```
 
-One persistent worker per language-enabled editor parses borrowed Rope chunks.
-Edits, undo, and redo provide Tree-sitter byte/point coordinates. Pending work is
-coalesced and obsolete parses are cancelled cooperatively. If the worker falls
-behind the bounded edit log, it performs a fresh parse. While waiting, the UI
-maps existing highlights around edits, leaving inserted text plain until the new
-parse arrives. Multiline syntax changes become accurate when that result arrives.
+One persistent worker per language-enabled editor compiles the grammar/query,
+parses borrowed Rope chunks, queries the requested viewport, and builds a capture
+index. Edits, undo, and redo provide Tree-sitter byte/point coordinates. Document
+and viewport requests each keep only their latest pending value; obsolete parsing
+and querying are cancelled cooperatively. If the worker falls behind the bounded
+edit log, it performs a fresh parse.
 
-The renderer queries visible lines and horizontal windows, caches their syntax
-spans, and layers explicit annotations over syntax colors. Syntax does not add
-font metric changes. IME preedit projects existing colors around the temporary
-replacement without parsing uncommitted input. The tree is retained for future
-structural features; semantic information such as resolved types still needs a
-separate provider.
+The UI requests visible lines and horizontal windows without waiting. It reads
+immutable, indexed captures and projects their colors into cached line layouts;
+no Tree-sitter parser, query, or tree is used or destroyed on the UI thread. While
+waiting, existing captures are mapped around edits and newly inserted or newly
+exposed text stays plain until the result arrives. Multiline syntax changes
+become accurate when that result arrives. Explicit annotations override syntax
+colors, and syntax does not add font metric changes. IME preedit projects colors
+around the temporary replacement and requests only represented source ranges,
+excluding uncommitted text and the replaced selection.
+
+The pinned RXUI host already supplies shared pools with two async and two blocking
+workers. Async result delivery reuses that executor; the persistent syntax CPU
+worker is separate. No second runtime or Tokio dependency is required for this
+pipeline. Input handling, immediate Rope edits, viewport layout and GPU work
+remain UI responsibilities. File loading currently finishes before the native
+event loop starts; an in-window asynchronous loading flow is not implemented.
+The syntax tree remains on the worker for future structural features; resolved
+types and other semantic information still need a separate provider.
 
 Parser benchmarks: `cargo bench -p velk-syntax --bench syntax --locked`.
-See [initial syntax measurements](docs/performance/syntax.md) for results and limits.
+See [initial syntax measurements](docs/performance/syntax.md) and the
+[async syntax audit](docs/performance/async-syntax.md) for results and limits.
 
 ## Editor widget
 
@@ -167,8 +180,9 @@ rope, selection text, clipboard, or undo history.
 Snapshots are rejected if their document revision is stale. Edits, undo, and redo
 clear annotations; navigation and appearance changes preserve them. In the
 prototype, use **Refresh annotations** after editing, or **Reset sample** to
-restore the showcase. A future syntax/LSP producer should recompute and submit
-an updated snapshot after document changes. `Editor::set_text` replaces the
+restore the showcase. External diagnostic/LSP producers should recompute and
+submit an updated snapshot after document changes. Built-in syntax uses its own
+background capture pipeline. `Editor::set_text` replaces the
 whole document as one undoable edit.
 
 `OverlayPlacement::LineEnd` stacks labels after the source line. `AtAnchor`

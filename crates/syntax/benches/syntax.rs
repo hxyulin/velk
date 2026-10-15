@@ -1,7 +1,7 @@
 //! Parser/query CPU timings; excludes scheduling, shaping, GPU and presentation.
 use ropey::Rope;
 use std::{hint::black_box, time::Instant};
-use velk_syntax::{Edit, Engine, Language};
+use velk_syntax::{Edit, Engine, HighlightSnapshot, Language};
 fn stats(mut samples: Vec<f64>) -> (f64, f64) {
     samples.sort_by(f64::total_cmp);
     (
@@ -21,6 +21,8 @@ fn run(name: &str, source: &str) {
     );
     let mut parse = Vec::new();
     let mut query = Vec::new();
+    let mut preparation = Vec::new();
+    let mut lookup = Vec::new();
     for revision in 1..=101 {
         let before = text.clone();
         let position = text.line_to_char(text.len_lines() / 2);
@@ -36,8 +38,28 @@ fn run(name: &str, source: &str) {
         let start = Instant::now();
         black_box(snapshot.highlights(position..end));
         query.push(start.elapsed().as_secs_f64() * 1000.);
+        let start = Instant::now();
+        let highlights = HighlightSnapshot::prepare(
+            &snapshot,
+            revision,
+            std::iter::once(position..end).collect::<Vec<_>>(),
+            || false,
+        )
+        .unwrap();
+        preparation.push(start.elapsed().as_secs_f64() * 1000.);
+        let start = Instant::now();
+        for line in first_line..(first_line + 40).min(text.len_lines() - 1) {
+            let first = text.line_to_char(line);
+            black_box(highlights.highlights(first..first + text.line(line).len_chars()));
+        }
+        lookup.push(start.elapsed().as_secs_f64() * 1000.);
     }
-    for (operation, samples) in [("incremental_parse", parse), ("query_40_lines", query)] {
+    for (operation, samples) in [
+        ("incremental_parse", parse),
+        ("query_40_lines", query),
+        ("prepare_viewport_background", preparation),
+        ("indexed_lookup_40_lines_ui", lookup),
+    ] {
         let (median, p95) = stats(samples);
         println!("{name},{operation},{},{median:.6},{p95:.6}", source.len());
     }

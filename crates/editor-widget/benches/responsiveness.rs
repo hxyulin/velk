@@ -4,7 +4,10 @@ use rxui::{
     KeyEvent, KeyboardKey, Modifiers, TestUi, TextInputEvent,
     astrelis::{Framebuffer, FramebufferOptions, GraphicsContext, wgpu},
 };
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use velk_editor_widget::{
     Annotations, Editor, OverlayKind, OverlayPlacement, SpanStyle, StyledRange, TextOverlay,
 };
@@ -20,6 +23,7 @@ fn key(test: &mut TestUi<Editor>, key: KeyboardKey) {
 }
 
 fn frame(test: &mut TestUi<Editor>, target: &mut Framebuffer, clock: Instant) {
+    test.runtime().poll_tasks();
     test.runtime().begin_frame(clock.elapsed());
     test.prepare().unwrap();
     let (_, ui, painter) = test.parts();
@@ -76,6 +80,8 @@ fn main() {
         "plain_navigation",
         "rich_navigation",
         "large_document_typing",
+        "rust_plain_typing",
+        "rust_syntax_typing",
         "long_line_unicode_typing",
         "ime_preedit",
         "large_document_ime",
@@ -91,6 +97,9 @@ fn main() {
         let editor = match case {
             "plain_navigation" => Editor::new(&"x".repeat(100_000)),
             "rich_navigation" => rich(),
+            "rust_plain_typing" | "rust_syntax_typing" => {
+                Editor::new(&"fn example() { let count = 42; } // value\n".repeat(100_000))
+            }
             "large_document_typing" => Editor::new(&"let count = 42; // value\n".repeat(100_000)),
             "long_line_unicode_typing" => Editor::new(&format!(
                 "{}日本語 café é 👩‍💻 🇭🇰",
@@ -111,6 +120,24 @@ fn main() {
             _ => Editor::new("Unicode: café 世界 👩‍💻\n"),
         };
         let mut test = TestUi::new(&graphics, [1200, 800], editor).unwrap();
+        if matches!(case, "rust_plain_typing" | "rust_syntax_typing") {
+            test.runtime()
+                .configure_tasks(
+                    Arc::new(rxui::ThreadPoolExecutor::new(2, 2).unwrap()),
+                    || {},
+                )
+                .unwrap();
+            if case == "rust_syntax_typing" {
+                let entity = test.entity().clone();
+                test.runtime().update(|cx| {
+                    entity.update(cx, |editor, _| {
+                        editor
+                            .set_language(Some(velk_editor_widget::Language::Rust))
+                            .unwrap()
+                    })
+                });
+            }
+        }
         test.painter_mut().fonts_mut().load_system_fonts();
         test.prepare().unwrap();
         let id = test.element("editor-surface").unwrap().unwrap().id;
@@ -144,6 +171,15 @@ fn main() {
                     },
                 })
                 .unwrap();
+            }
+            frame(&mut test, &mut target, clock);
+        }
+        if case == "rust_syntax_typing" {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while test.read(|editor| editor.syntax_revision().is_none()) {
+                test.runtime().poll_tasks();
+                assert!(Instant::now() < deadline, "syntax warmup timed out");
+                std::thread::sleep(Duration::from_millis(1));
             }
             frame(&mut test, &mut target, clock);
         }
@@ -184,10 +220,14 @@ fn main() {
                     test.text_input(TextInputEvent::Insert("é".into())).unwrap();
                 }
                 "long_line_unicode_typing" => key(&mut test, KeyboardKey::Backspace),
-                "large_document_typing" if i % 2 == 0 => {
+                "large_document_typing" | "rust_plain_typing" | "rust_syntax_typing"
+                    if i % 2 == 0 =>
+                {
                     test.text_input(TextInputEvent::Insert("x".into())).unwrap();
                 }
-                "large_document_typing" => key(&mut test, KeyboardKey::Backspace),
+                "large_document_typing" | "rust_plain_typing" | "rust_syntax_typing" => {
+                    key(&mut test, KeyboardKey::Backspace)
+                }
                 "large_document_ime" | "long_line_ime" | "multiline_replacement_ime" => {
                     test.text_input(TextInputEvent::Preedit {
                         text: if i % 2 == 0 { "かんじ" } else { "にほん" }.into(),

@@ -105,6 +105,10 @@ impl ProjectedComposition {
             .text
             .floor_char_boundary(cursor_byte.min(composition.text.len()));
         let head = replaced.start + composition.text[..cursor_byte].chars().count();
+        self.surface.0.syntax_demand = source
+            .syntax_demand
+            .as_ref()
+            .map(|demand| demand.project(replaced.clone(), inserted));
         self.surface.0.syntax = source
             .syntax
             .as_ref()
@@ -223,6 +227,7 @@ mod tests {
         let pixels = actual.render().unwrap();
         let reference = actual.read(|e| Surface {
             syntax: None,
+            syntax_demand: None,
             rope: e.buffer.text().clone(),
             revision: e.buffer.revision(),
             selection: e.buffer.selection(),

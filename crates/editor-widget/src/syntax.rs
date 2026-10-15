@@ -4,19 +4,15 @@ use std::{
     ops::Range,
     sync::{Arc, Weak},
 };
-use velk_syntax::{Snapshot, Worker};
+use velk_syntax::{HighlightSnapshot, Update, Worker};
 
 pub(crate) struct Monitor {
     worker: Arc<Worker>,
-    publish: Listener<Arc<Snapshot>>,
+    publish: Listener<Update>,
     task: Option<Task>,
 }
 impl Monitor {
-    pub fn new(
-        worker: Arc<Worker>,
-        publish: Listener<Arc<Snapshot>>,
-        cx: &mut Context<'_, Self>,
-    ) -> Self {
+    pub fn new(worker: Arc<Worker>, publish: Listener<Update>, cx: &mut Context<'_, Self>) -> Self {
         let mut monitor = Self {
             worker,
             publish,
@@ -41,14 +37,82 @@ impl Monitor {
     }
 }
 
+/// UI-owned request bookkeeping. Preparing a viewport submits ranges without
+/// waiting for parsing or querying; repeated frames/blinks do not submit again.
+type RequestedViewport = std::rc::Rc<std::cell::RefCell<Option<(u64, Vec<Range<usize>>)>>>;
+
+#[derive(Clone)]
+pub(crate) struct Demand {
+    worker: Arc<Worker>,
+    revision: u64,
+    replacement: Option<(Range<usize>, usize)>,
+    requested: RequestedViewport,
+}
+impl Demand {
+    pub fn new(worker: Arc<Worker>) -> Self {
+        Self {
+            worker,
+            revision: 0,
+            replacement: None,
+            requested: Default::default(),
+        }
+    }
+    pub fn at_revision(&self, revision: u64) -> Self {
+        let mut demand = self.clone();
+        demand.revision = revision;
+        demand
+    }
+    pub fn project(&self, range: Range<usize>, inserted: usize) -> Self {
+        let mut demand = self.clone();
+        demand.replacement = Some((range, inserted));
+        demand
+    }
+    pub fn request(&self, ranges: Vec<Range<usize>>) {
+        let ranges = ranges
+            .into_iter()
+            .flat_map(|range| match &self.replacement {
+                // Exclude preedit itself: querying its inverse bounding range
+                // could otherwise scan a huge selection replaced by a short IME.
+                Some((old, inserted)) => {
+                    display_ranges(range, Some(&(old.start..old.start + inserted, old.len())))
+                }
+                None => display_ranges(range, None),
+            })
+            .collect();
+        let request = (self.revision, ranges);
+        if self.requested.borrow().as_ref() == Some(&request) {
+            return;
+        }
+        self.worker.request_viewport(request.0, request.1.clone());
+        *self.requested.borrow_mut() = Some(request);
+    }
+}
+fn unmap_range(range: Range<usize>, replacement: Option<&(Range<usize>, usize)>) -> Range<usize> {
+    let Some((old, inserted)) = replacement else {
+        return range;
+    };
+    let unmap = |p: usize, end: bool| {
+        if p < old.start {
+            p
+        } else if p >= old.start + inserted {
+            p - inserted + old.len()
+        } else if end {
+            old.end
+        } else {
+            old.start
+        }
+    };
+    unmap(range.start, false)..unmap(range.end, true)
+}
+
 #[derive(Clone)]
 pub(crate) struct SyntaxView {
-    snapshot: Arc<Snapshot>,
+    snapshot: Arc<HighlightSnapshot>,
     replacements: Vec<(Range<usize>, usize)>,
 }
 /// A cached line must not keep an obsolete document tree alive offscreen.
 pub(crate) struct SyntaxKey {
-    snapshot: Weak<Snapshot>,
+    snapshot: Weak<HighlightSnapshot>,
     replacements: Vec<(Range<usize>, usize)>,
 }
 impl SyntaxKey {
@@ -58,7 +122,7 @@ impl SyntaxKey {
     }
 }
 impl SyntaxView {
-    pub fn new(snapshot: Arc<Snapshot>, buffer: &Buffer) -> Option<Self> {
+    pub fn new(snapshot: Arc<HighlightSnapshot>, buffer: &Buffer) -> Option<Self> {
         if snapshot.revision > buffer.revision() {
             return None;
         }
@@ -91,18 +155,7 @@ impl SyntaxView {
         // freshly inserted text still queries the surrounding original context.
         let mut source = window.clone();
         for (old, inserted) in self.replacements.iter().rev() {
-            let unmap = |p: usize, end: bool| {
-                if p < old.start {
-                    p
-                } else if p >= old.start + inserted {
-                    p - inserted + old.len()
-                } else if end {
-                    old.end
-                } else {
-                    old.start
-                }
-            };
-            source = unmap(source.start, false)..unmap(source.end, true);
+            source = unmap_range(source, Some(&(old.clone(), *inserted)));
         }
         source.start = source.start.min(self.snapshot.text.len_chars());
         source.end = source
@@ -110,6 +163,7 @@ impl SyntaxView {
             .min(self.snapshot.text.len_chars())
             .max(source.start);
         let mut result = Vec::new();
+        // This is an interval-index lookup; no Tree-sitter work runs here.
         for highlight in self.snapshot.highlights(source) {
             let Some(color) = color(&highlight.capture) else {
                 continue;
@@ -199,8 +253,34 @@ mod tests {
             .unwrap()
             .update(buffer.revision(), buffer.text().clone(), &[], || false)
             .unwrap();
-        SyntaxView::new(snapshot, buffer).unwrap()
+        SyntaxView::new(
+            velk_syntax::HighlightSnapshot::prepare(
+                &snapshot,
+                0,
+                std::iter::once(0..buffer.text().len_chars()).collect::<Vec<_>>(),
+                || false,
+            )
+            .unwrap(),
+            buffer,
+        )
+        .unwrap()
     }
+    #[test]
+    fn ime_viewport_requests_exclude_replaced_source_and_uncommitted_text() {
+        let demand = Demand::new(Arc::new(Worker::new(Language::Rust).unwrap()));
+        let projected = demand.at_revision(7).project(3..100_000, 10);
+        projected.request(std::iter::once(5..9).collect());
+        assert_eq!(
+            demand.requested.borrow().as_ref().unwrap(),
+            &(7, Vec::new())
+        );
+        projected.request(std::iter::once(0..20).collect());
+        assert_eq!(
+            demand.requested.borrow().as_ref().unwrap(),
+            &(7, vec![0..3, 100_000..100_007])
+        );
+    }
+
     #[test]
     fn stale_highlights_map_through_edits_undo_redo_and_ime() {
         let mut buffer = Buffer::new("fn café() { let value = \"世界\"; }\n");

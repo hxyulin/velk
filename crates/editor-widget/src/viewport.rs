@@ -417,6 +417,7 @@ impl ViewportState {
                 caret_visible: false,
                 minimum_line_metrics: None,
                 syntax: None,
+                syntax_demand: None,
                 annotations: None,
                 annotation_groups: None,
                 selection_color: surface.selection_color,
@@ -789,6 +790,14 @@ impl ViewportState {
                 self.prepare_line(surface, caret_line, width, geometry.offset[0], fonts)?;
             }
         }
+        if let Some(demand) = &surface.syntax_demand {
+            demand.request(
+                self.visible
+                    .clone()
+                    .map(|line| self.cache[&line].annotation_range.clone())
+                    .collect(),
+            );
+        }
         #[cfg(any(test, feature = "performance"))]
         {
             self.metrics.visible_lines = self.visible.len();
@@ -1120,6 +1129,7 @@ impl CpuViewportProbe {
                 caret_visible: true,
                 minimum_line_metrics: None,
                 syntax: None,
+                syntax_demand: None,
                 annotations: None,
                 annotation_groups: None,
                 selection_color: [0.; 4],
@@ -1176,6 +1186,7 @@ mod tests {
             caret_visible: true,
             minimum_line_metrics: None,
             syntax: None,
+            syntax_demand: None,
             annotations: None,
             annotation_groups: None,
             selection_color: [0.; 4],
@@ -1191,13 +1202,6 @@ mod tests {
     }
     #[test]
     fn background_syntax_publication_updates_editor_without_caret_activity() {
-        struct Executor;
-        impl rxui::TaskExecutor for Executor {
-            fn spawn(&self, future: rxui::BackgroundFuture) -> Result<(), rxui::SpawnError> {
-                std::thread::spawn(move || pollster::block_on(future));
-                Ok(())
-            }
-        }
         let Ok(graphics) = pollster::block_on(rxui::astrelis::GraphicsContext::headless()) else {
             return;
         };
@@ -1207,7 +1211,10 @@ mod tests {
         ui.painter_mut().fonts_mut().load_system_fonts();
         ui.render().unwrap();
         ui.runtime()
-            .configure_tasks(Arc::new(Executor), || {})
+            .configure_tasks(
+                Arc::new(rxui::ThreadPoolExecutor::new(2, 2).unwrap()),
+                || {},
+            )
             .unwrap();
         let entity = ui.entity().clone();
         ui.runtime().update(|cx| {
@@ -1268,7 +1275,16 @@ mod tests {
             .unwrap()
             .update(0, buffer.text().clone(), &[], || false)
             .unwrap();
-        let syntax = crate::syntax::SyntaxView::new(snapshot, &buffer);
+        let syntax = crate::syntax::SyntaxView::new(
+            velk_syntax::HighlightSnapshot::prepare(
+                &snapshot,
+                0,
+                std::iter::once(0..buffer.text().len_chars()).collect::<Vec<_>>(),
+                || false,
+            )
+            .unwrap(),
+            &buffer,
+        );
         let mut full = surface(&buffer.text().to_string());
         let mut actual = rxui::TestUi::new(&graphics, [640, 240], Host(full.clone())).unwrap();
         actual.painter_mut().fonts_mut().load_system_fonts();
@@ -1309,7 +1325,16 @@ mod tests {
             .update(0, buffer.text().clone(), &[], || false)
             .unwrap();
         let mut full = surface(&text);
-        full.syntax = crate::syntax::SyntaxView::new(snapshot, &buffer);
+        full.syntax = crate::syntax::SyntaxView::new(
+            velk_syntax::HighlightSnapshot::prepare(
+                &snapshot,
+                0,
+                std::iter::once(0..buffer.text().len_chars()).collect::<Vec<_>>(),
+                || false,
+            )
+            .unwrap(),
+            &buffer,
+        );
         full.geometry.borrow_mut().offset[0] = 50_000.;
         let mut state = ViewportState::default();
         state.prepare_cpu(&full, [640., 240.], &mut fonts).unwrap();
@@ -1337,7 +1362,16 @@ mod tests {
             .unwrap()
             .update(0, buffer.text().clone(), &[], || false)
             .unwrap();
-        full.syntax = crate::syntax::SyntaxView::new(snapshot, &buffer);
+        full.syntax = crate::syntax::SyntaxView::new(
+            velk_syntax::HighlightSnapshot::prepare(
+                &snapshot,
+                0,
+                std::iter::once(0..buffer.text().len_chars()).collect::<Vec<_>>(),
+                || false,
+            )
+            .unwrap(),
+            &buffer,
+        );
         full.annotations = Some(Arc::new(Annotations {
             spans: vec![
                 StyledRange::new(

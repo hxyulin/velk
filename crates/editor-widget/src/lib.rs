@@ -36,7 +36,8 @@ pub struct Editor {
     buffer: Buffer,
     syntax_worker: Option<Arc<velk_syntax::Worker>>,
     syntax_revision: u64,
-    syntax_snapshot: Option<Arc<velk_syntax::Snapshot>>,
+    syntax_demand: Option<syntax::Demand>,
+    syntax_snapshot: Option<Arc<velk_syntax::HighlightSnapshot>>,
     composition: Option<Composition>,
     geometry: Rc<RefCell<Geometry>>,
     epoch: u64,
@@ -78,6 +79,10 @@ impl Editor {
             .map(Arc::new);
         self.syntax_revision = self.buffer.revision();
         self.syntax_snapshot = None;
+        self.syntax_demand = self
+            .syntax_worker
+            .as_ref()
+            .map(|worker| syntax::Demand::new(worker.clone()));
         if let Some(worker) = &self.syntax_worker {
             worker.request(
                 self.buffer.revision(),
@@ -87,6 +92,14 @@ impl Editor {
         }
         self.epoch += 1;
         Ok(())
+    }
+
+    /// Most recently presented syntax revision, for opt-in performance probes.
+    #[cfg(feature = "performance")]
+    pub fn syntax_revision(&self) -> Option<u64> {
+        self.syntax_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.revision)
     }
 
     /// Preparation diagnostics from the most recent native frame.
@@ -341,16 +354,25 @@ impl View for Editor {
         if let Some(worker) = &self.syntax_worker {
             let worker = worker.clone();
             let id = worker.id;
-            let publish = cx.listener(move |this, snapshot: &Arc<velk_syntax::Snapshot>, cx| {
+            let publish = cx.listener(move |this, update: &velk_syntax::Update, cx| {
+                let snapshot = match update {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        eprintln!("Velk syntax: {error}");
+                        cx.unchanged();
+                        return;
+                    }
+                };
                 if this
                     .syntax_worker
                     .as_ref()
                     .is_none_or(|worker| worker.id != id)
                     || snapshot.revision > this.buffer.revision()
-                    || this
-                        .syntax_snapshot
-                        .as_ref()
-                        .is_some_and(|old| old.revision >= snapshot.revision)
+                    || this.syntax_snapshot.as_ref().is_some_and(|old| {
+                        old.revision > snapshot.revision
+                            || old.revision == snapshot.revision
+                                && old.viewport >= snapshot.viewport
+                    })
                 {
                     cx.unchanged();
                     return;
@@ -439,6 +461,10 @@ impl View for Editor {
             caret_visible,
             minimum_line_metrics: None,
             syntax,
+            syntax_demand: self
+                .syntax_demand
+                .as_ref()
+                .map(|demand| demand.at_revision(self.buffer.revision())),
             annotations: self.annotations.clone(),
             annotation_groups: None,
             selection_color: self.appearance.selection,
