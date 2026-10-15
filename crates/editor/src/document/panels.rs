@@ -453,7 +453,10 @@ impl Document {
                     );
                     let key = entry.key.clone();
                     let id = node.id.clone();
-                    let mut control = button(text).accessibility_selected(selected);
+                    // Fixed-height rows need a flex child: a plain caption uses
+                    // the button's text origin rather than child alignment.
+                    let mut control =
+                        button(label(text).key("panel-caption")).accessibility_selected(selected);
                     if node.branch {
                         control = control.accessibility_expanded(expanded);
                     }
@@ -475,7 +478,9 @@ impl Document {
                         .font_size(13.)
                         .height(26.)
                         .fill_width()
-                        .justify_content(rxui::taffy::prelude::JustifyContent::START)
+                        .justify_content(rxui::taffy::prelude::JustifyContent::CENTER)
+                        .align_items(rxui::taffy::prelude::AlignItems::START)
+                        .padding_y(0.)
                         .padding_x(8. + f32::from(node.depth) * 14.)
                         .variant(if selected {
                             rxui::ButtonVariant::Default
@@ -678,6 +683,39 @@ mod tests {
             })
             .count();
         assert!(mounted > 0 && mounted < 40, "mounted {mounted} rows");
+        assert_eq!(
+            ui.elements()
+                .filter(|e| e.key == Some(&rxui::Key::from("panel-caption")))
+                .count(),
+            mounted
+        );
+        for caption in ui
+            .elements()
+            .filter(|e| e.key == Some(&rxui::Key::from("panel-caption")))
+        {
+            let row = ui
+                .elements()
+                .find(|e| Some(e.id) == caption.parent)
+                .unwrap();
+            let row_center = row.bounds.y + row.bounds.height / 2.;
+            let text_center = caption.bounds.y + caption.bounds.height / 2.;
+            assert!(
+                (row_center - text_center).abs() < 0.01,
+                "caption must be vertically centered: row {:?}, caption {:?}",
+                row.bounds,
+                caption.bounds
+            );
+            assert!(
+                (caption.bounds.x - row.content_bounds.x).abs() < 0.01,
+                "caption must keep its leading indentation"
+            );
+            assert!(caption.bounds.y >= row.content_bounds.y);
+            assert!(
+                caption.bounds.y + caption.bounds.height
+                    <= row.content_bounds.y + row.content_bounds.height + 0.01
+            );
+        }
+
         click(&mut ui, &mut runtime, "panel-close-Left");
         prepare(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui).width, full.width - 280.);
