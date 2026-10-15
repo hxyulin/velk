@@ -13,6 +13,10 @@ use velk_plugin_host::{Client, HookHandle, PluginInfo};
 
 pub(super) struct Toggle;
 impl Command for Toggle {}
+pub(super) struct Refresh;
+impl Command for Refresh {}
+pub(super) struct OpenFolder;
+impl Command for OpenFolder {}
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct ViewState {
     expanded: BTreeSet<String>,
@@ -22,6 +26,8 @@ pub(super) struct ViewState {
 pub(crate) struct UiState {
     #[serde(default)]
     pub(super) source: Option<NativePath>,
+    #[serde(default)]
+    pub(super) root: Option<NativePath>,
     visible: bool,
     tabs: BTreeMap<Slot, String>,
     closed: BTreeSet<Slot>,
@@ -41,6 +47,9 @@ pub(super) struct State {
     handles: BTreeMap<String, HookHandle>,
     epoch: u64,
     task: Option<Task>,
+    watching: Option<Task>,
+    watch_providers: BTreeSet<String>,
+    refresh_pending: bool,
     error: Option<String>,
     pending: VecDeque<PendingAction>,
 }
@@ -127,6 +136,9 @@ async fn exchange(
                 rxui::sleep(Duration::from_millis(8)).await;
                 request = Request::Poll { id };
             }
+            Reply::Unchanged | Reply::Invalidated => {
+                return Err("unexpected panel change reply".into());
+            }
             Reply::Cancelled => return Err("panel request cancelled".into()),
         }
     }
@@ -189,11 +201,16 @@ impl Document {
         self.panels.epoch = self.panels.epoch.wrapping_add(1);
         self.panels.task = None;
         self.panels.pending.clear();
+        self.panels.watching = None;
+        self.panels.watch_providers.clear();
+        self.panels.refresh_pending = false;
         self.panels.entries.clear();
         self.panels.handles.clear();
         self.panels.error = None;
     }
     pub(super) fn refresh_panels(&mut self, cx: &mut Context<'_, Self>) {
+        self.panels.watching = None;
+        self.panels.refresh_pending = false;
         self.panels.epoch = self.panels.epoch.wrapping_add(1);
         let epoch = self.panels.epoch;
         self.panels.task = None;
@@ -233,6 +250,7 @@ impl Document {
                         Some(format!("Panels: {} available", this.panels.entries.len()));
                 }
                 this.start_panel_action(cx);
+                this.watch_panels(cx);
             },
         ) {
             Ok(t) => self.panels.task = Some(t),
@@ -242,7 +260,11 @@ impl Document {
     fn install_panels(&mut self, contributions: Vec<Contribution>) {
         let mut old = std::mem::take(&mut self.panels.entries);
         self.panels.handles.clear();
+        self.panels.watch_providers.clear();
         for c in contributions {
+            if c.snapshot.watch {
+                self.panels.watch_providers.insert(c.provider.clone());
+            }
             self.panels.handles.insert(c.provider.clone(), c.handle);
             for panel in c.snapshot.panels {
                 let key = format!("{}:{}", c.provider, panel.id);
@@ -337,6 +359,7 @@ impl Document {
                 provider: e.provider.clone(),
                 handle: self.panels.handles[&e.provider].clone(),
                 snapshot: Snapshot {
+                    watch: self.panels.watch_providers.contains(&e.provider),
                     effects: Vec::new(),
                     panels: vec![e.panel.clone()],
                 },
@@ -374,6 +397,7 @@ impl Document {
             .filter(|(key, _)| key.starts_with(&prefix))
             .collect();
         PanelContext {
+            root: self.panels.ui.root.clone(),
             document: self
                 .panels
                 .ui
@@ -433,6 +457,9 @@ impl Document {
             return;
         }
         let Some(pending) = self.panels.pending.pop_front() else {
+            if self.panels.refresh_pending {
+                self.refresh_panels(cx);
+            }
             return;
         };
         let Some(entry) = self.panels.entries.iter().find(|e| e.key == pending.key) else {
@@ -528,6 +555,107 @@ impl Document {
             Err(error) => self.panels.error = Some(error.to_string()),
         }
     }
+    fn watch_panels(&mut self, cx: &mut Context<'_, Self>) {
+        if self.panels.watching.is_some() {
+            return;
+        }
+        let Some(plugins) = &self.plugins else {
+            return;
+        };
+        let handles: Vec<_> = self
+            .panels
+            .watch_providers
+            .iter()
+            .filter_map(|p| self.panels.handles.get(p).cloned())
+            .collect();
+        if handles.is_empty() {
+            return;
+        }
+        let client = plugins.client.clone();
+        let epoch = self.panels.epoch;
+        match cx.try_spawn(
+            async move {
+                loop {
+                    rxui::sleep(Duration::from_millis(200)).await;
+                    for handle in &handles {
+                        let bytes = client
+                            .call_hook(handle.clone(), velk_panels::encode(&Request::Changes)?)
+                            .await?;
+                        match velk_panels::decode::<Reply>(&bytes)? {
+                            Reply::Invalidated => return Ok::<_, String>(()),
+                            Reply::Unchanged => {}
+                            _ => return Err("unexpected panel invalidation reply".into()),
+                        }
+                    }
+                }
+            },
+            move |this, result, cx| {
+                if this.panels.epoch != epoch {
+                    return;
+                }
+                this.panels.watching = None;
+                match result {
+                    Ok(Ok(())) => {
+                        this.panels.refresh_pending = true;
+                        this.start_panel_action(cx);
+                    }
+                    Ok(Err(error)) => this.panels.error = Some(format!("Panel watching: {error}")),
+                    Err(error) => this.panels.error = Some(format!("Panel watching: {error}")),
+                }
+            },
+        ) {
+            Ok(task) => self.panels.watching = Some(task),
+            Err(error) => self.panels.error = Some(error.to_string()),
+        }
+    }
+    pub(super) fn panels_refresh_busy(&self) -> bool {
+        self.panels.task.is_some()
+    }
+    pub(super) fn choose_folder(&mut self, cx: &mut Context<'_, Self>) {
+        if self.busy() || self.reloading() {
+            return;
+        }
+        let Some(window) = &self.window else {
+            return;
+        };
+        let directory = self
+            .panels
+            .ui
+            .root
+            .as_ref()
+            .and_then(|p| p.to_path().ok())
+            .or_else(|| {
+                self.panels
+                    .ui
+                    .source
+                    .as_ref()
+                    .and_then(|p| p.to_path().ok())
+                    .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+            });
+        let mut options = FileDialog::new().parent(window).title("Open folder");
+        if let Some(directory) = directory {
+            options = options.directory(directory);
+        }
+        match cx.pick_folder(options, |this, result, cx| {
+            this.dialog = None;
+            match result {
+                Ok(Some(path)) => this.set_panel_root(path, cx),
+                Ok(None) => {}
+                Err(error) => this.buffer.status = Some(format!("Open folder failed: {error}")),
+            }
+        }) {
+            Ok(task) => self.dialog = Some(task),
+            Err(error) => self.buffer.status = Some(format!("Open folder failed: {error}")),
+        }
+    }
+    fn set_panel_root(&mut self, path: std::path::PathBuf, cx: &mut Context<'_, Self>) {
+        self.panels.ui.root = Some(NativePath::new(&path));
+        self.panels.ui.views.clear();
+        self.panels.ui.visible = true;
+        self.panels.ui.closed.clear();
+        self.suspend_panels();
+        self.refresh_panels(cx);
+    }
     pub(super) fn panels_action(&self, cx: &ViewContext<'_, Self>) -> rxui::CommandAction<Toggle> {
         cx.command(Toggle, |this, _, cx| {
             let showing = this.panels.ui.visible
@@ -583,23 +711,15 @@ impl Document {
                     })),
             );
         }
-        tabs = tabs
-            .child(row().flex_grow(1.))
-            .child(
-                button("↻")
-                    .accessibility_label("Refresh panels")
-                    .disabled(self.panels.task.is_some() || self.plugins_busy())
-                    .on_click(cx.listener(|this, _, cx| this.refresh_panels(cx))),
-            )
-            .child(
-                button("×")
-                    .accessibility_label("Close panel")
-                    .key(format!("panel-close-{slot:?}"))
-                    .on_click(cx.listener(move |this, _, cx| {
-                        this.panels.ui.closed.insert(slot);
-                        let _ = this.editor_focus.focus(cx);
-                    })),
-            );
+        tabs = tabs.child(row().flex_grow(1.)).child(
+            button("×")
+                .accessibility_label("Close panel")
+                .key(format!("panel-close-{slot:?}"))
+                .on_click(cx.listener(move |this, _, cx| {
+                    this.panels.ui.closed.insert(slot);
+                    let _ = this.editor_focus.focus(cx);
+                })),
+        );
         let view = self.panels.ui.views.get(&entry.key);
         let content = match &entry.panel.content {
             Content::Text(text) => column()
@@ -908,5 +1028,37 @@ mod tests {
         prepare(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui), full);
         runtime.update(|cx| assert_eq!(editor.read(cx).buffer().text().to_string(), "original"));
+    }
+    #[test]
+    fn choosing_folder_preserves_buffers_and_persists_exact_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let (file, editor) = crate::file::FileState::open(&path).unwrap();
+        let mut runtime = Runtime::new();
+        let editor = runtime.update(|cx| cx.new(|_| editor));
+        let document =
+            runtime.update(|cx| cx.new(|cx| Document::new(editor.clone(), file, path.clone(), cx)));
+        runtime.update(|cx| {
+            editor.update(cx, |e, _| e.insert("unsaved"));
+            document.update(cx, |d, cx| {
+                d.panels
+                    .ui
+                    .views
+                    .insert("test:files".into(), ViewState::default());
+                d.set_panel_root(dir.path().to_path_buf(), cx);
+                assert_eq!(d.buffer.path, path);
+                assert!(d.buffer.editor.read(cx).buffer().is_dirty());
+                assert!(d.panels.ui.views.is_empty());
+                assert!(d.panels.ui.visible);
+                let restored: UiState =
+                    serde_json::from_slice(&serde_json::to_vec(&d.panels.ui).unwrap()).unwrap();
+                assert_eq!(restored.root.unwrap().to_path().unwrap(), dir.path());
+                assert_eq!(
+                    d.panel_context("test").root.unwrap().to_path().unwrap(),
+                    dir.path()
+                );
+            });
+        });
     }
 }

@@ -452,6 +452,15 @@ impl View for Document {
             None => status.to_owned(),
         };
         let toggle_panels = self.panels_action(cx);
+        let refresh_panels = cx
+            .command(panels::Refresh, |this, _, cx| this.refresh_panels(cx))
+            .label("Panels: Refresh")
+            .enabled(!self.plugins_busy() && !self.reloading() && !self.panels_refresh_busy());
+        let open_folder = cx
+            .command(panels::OpenFolder, |this, _, cx| this.choose_folder(cx))
+            .label("Open folder…")
+            .enabled(!self.busy() && !self.reloading())
+            .shortcut(Shortcut::primary("o").shift());
         let activity = self.activity_bar(
             toggle_settings.clone(),
             toggle_plugins.clone(),
@@ -553,6 +562,12 @@ impl View for Document {
                         toggle_panels.clone(),
                         palette::primary("B"),
                     ),
+                    palette::Entry::new(
+                        "velk.folder.open",
+                        open_folder.clone(),
+                        palette::primary("Shift+O"),
+                    ),
+                    palette::Entry::new("velk.panels.refresh", refresh_panels.clone(), ""),
                     palette::Entry::new("velk.diagnostics.start", trace_start.clone(), ""),
                     palette::Entry::new("velk.diagnostics.stop", trace_stop.clone(), ""),
                     palette::Entry::new("velk.diagnostics.marker", trace_marker.clone(), ""),
@@ -576,6 +591,8 @@ impl View for Document {
             .on_command(quit)
             .on_command(close_window)
             .on_command(open.clone())
+            .on_command(open_folder)
+            .on_command(refresh_panels)
             .on_command(close_buffer.clone())
             .on_command(next_buffer)
             .on_command(previous_buffer)

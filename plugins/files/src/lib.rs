@@ -1,6 +1,7 @@
 //! Lazy filesystem panel. Native hook dispatch only queues/polls bounded work;
 //! one owned worker handles directory I/O and joins before plugin unload.
 mod model;
+mod watching;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -23,15 +24,19 @@ pub struct Files {
     worker: Option<std::thread::JoinHandle<()>>,
     current: Option<(u64, Arc<AtomicBool>)>,
     next: u64,
+    signal: Arc<Mutex<watching::Signal>>,
 }
 impl Default for Files {
     fn default() -> Self {
         let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let state = shared.clone();
+        let signal = Arc::new(Mutex::new(watching::Signal::default()));
+        let events = signal.clone();
         let worker = std::thread::Builder::new()
             .name("velk-files".into())
             .spawn(move || {
                 let mut model = model::Model::default();
+                let mut watches = watching::Watches::new(events);
                 loop {
                     let job = {
                         let mut queue = state.0.lock().unwrap();
@@ -44,12 +49,25 @@ impl Default for Files {
                         queue.job.take().unwrap()
                     };
                     let mut candidate = model.clone();
-                    let result = candidate.apply(job.request, &job.cancel);
+                    let mut result =
+                        candidate.apply_watched(job.request, &job.cancel, &mut |path| {
+                            watches.directory(path)
+                        });
+                    let accept = {
+                        let queue = state.0.lock().unwrap();
+                        !queue.stop && !job.cancel.load(Ordering::Acquire)
+                    };
+                    if accept && result.is_ok() {
+                        model = candidate;
+                    }
+                    // Reconcile even cancelled jobs, which may have installed
+                    // watches before reading. Never hold the dispatch mutex here.
+                    watches.reconcile(model.watched_paths(), model.root_path());
+                    if let Ok(snapshot) = &mut result {
+                        watches.decorate(snapshot);
+                    }
                     let mut queue = state.0.lock().unwrap();
-                    if !queue.stop && !job.cancel.load(Ordering::Acquire) {
-                        if result.is_ok() {
-                            model = candidate;
-                        }
+                    if accept && !queue.stop && !job.cancel.load(Ordering::Acquire) {
                         queue.result = Some((job.id, result));
                     }
                 }
@@ -60,6 +78,7 @@ impl Default for Files {
             worker,
             current: None,
             next: 0,
+            signal,
         }
     }
 }
@@ -94,6 +113,11 @@ impl Plugin for Files {
 impl Files {
     fn request(&mut self, request: Request) -> Result<Reply, String> {
         match request {
+            Request::Changes => Ok(if self.signal.lock().unwrap().changed() {
+                Reply::Invalidated
+            } else {
+                Reply::Unchanged
+            }),
             Request::Poll { id } => {
                 if self
                     .current
@@ -167,6 +191,7 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                     reply = files.request(Request::Poll { id }).unwrap();
                 }
+                Reply::Invalidated | Reply::Unchanged => panic!("unexpected change reply"),
                 Reply::Cancelled => panic!("unexpected cancellation"),
             }
         }
@@ -204,5 +229,89 @@ mod tests {
             })
             .unwrap();
         assert_eq!(ready(&mut restarted, pending).panels[0].title, "Files");
+    }
+    fn describe(files: &mut Files, path: &std::path::Path) -> Snapshot {
+        let pending = files
+            .request(Request::Describe {
+                context: velk_panels::Context {
+                    root: Some(velk_panels::NativePath::new(path)),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        ready(files, pending)
+    }
+    fn changed(files: &mut Files) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if matches!(files.request(Request::Changes).unwrap(), Reply::Invalidated) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native watcher missed filesystem change"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    fn names(snapshot: &Snapshot) -> Vec<&str> {
+        let velk_panels::Content::Tree(rows) = &snapshot.panels[0].content else {
+            panic!("expected tree")
+        };
+        rows.iter().map(|n| n.label.as_str()).collect()
+    }
+    #[test]
+    fn native_watcher_detects_create_rename_delete_and_folder_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        let nested = root.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let mut files = Files::default();
+        let initial = describe(&mut files, &nested);
+        assert_eq!(
+            names(&initial),
+            vec!["nested"],
+            "explicit folder overrides parent Git root"
+        );
+        assert!(initial.watch);
+        std::fs::write(nested.join("created.txt"), "first").unwrap();
+        changed(&mut files);
+        let created = describe(&mut files, &nested);
+        assert!(names(&created).contains(&"created.txt"));
+        assert!(created.effects.is_empty());
+        std::fs::rename(nested.join("created.txt"), nested.join("renamed.txt")).unwrap();
+        changed(&mut files);
+        let renamed = describe(&mut files, &nested);
+        assert!(!names(&renamed).contains(&"created.txt"));
+        assert!(names(&renamed).contains(&"renamed.txt"));
+        std::fs::remove_file(nested.join("renamed.txt")).unwrap();
+        changed(&mut files);
+        assert!(!names(&describe(&mut files, &nested)).contains(&"renamed.txt"));
+        let other = root.join("other");
+        std::fs::create_dir(&other).unwrap();
+        assert_eq!(names(&describe(&mut files, &other)), vec!["other"]);
+        std::fs::write(other.join("new-root.txt"), "").unwrap();
+        changed(&mut files);
+        assert!(names(&describe(&mut files, &other)).contains(&"new-root.txt"));
+        std::fs::remove_file(other.join("new-root.txt")).unwrap();
+        std::fs::remove_dir(&other).unwrap();
+        changed(&mut files);
+        let absent = describe(&mut files, &other);
+        assert!(
+            names(&absent)
+                .iter()
+                .any(|name| name.contains("Cannot read directory"))
+        );
+        std::fs::create_dir(&other).unwrap();
+        changed(&mut files);
+        describe(&mut files, &other);
+        std::fs::write(other.join("reattached.txt"), "").unwrap();
+        changed(&mut files);
+        assert!(names(&describe(&mut files, &other)).contains(&"reattached.txt"));
+        drop(files); // Watcher threads are stopped along with the owned worker.
+        std::fs::write(other.join("after-unload.txt"), "").unwrap();
+        let mut restarted = Files::default();
+        assert!(names(&describe(&mut restarted, &other)).contains(&"after-unload.txt"));
     }
 }

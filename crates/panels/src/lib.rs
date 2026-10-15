@@ -51,6 +51,9 @@ pub struct Node {
 pub struct Context {
     /// The initial window document, independent of the selected buffer.
     pub document: Option<NativePath>,
+    /// Explicit workspace folder, overriding document-root inference.
+    #[serde(default)]
+    pub root: Option<NativePath>,
     /// Whether this provider has existing panel view state, even if all closed.
     #[serde(default)]
     pub initialized: bool,
@@ -59,6 +62,9 @@ pub struct Context {
 }
 impl Context {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(path) = &self.root {
+            path.to_path()?;
+        }
         if let Some(path) = &self.document {
             path.to_path()?;
         }
@@ -71,6 +77,8 @@ impl Context {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// Cheap invalidation check; never performs I/O or starts a model job.
+    Changes,
     Describe {
         context: Context,
     },
@@ -96,6 +104,8 @@ pub enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Reply {
+    Unchanged,
+    Invalidated,
     Ready { snapshot: Snapshot },
     Pending { id: u64 },
     Cancelled,
@@ -107,6 +117,9 @@ pub enum Effect {
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Provider supports cheap Changes checks for external invalidation.
+    #[serde(default)]
+    pub watch: bool,
     pub panels: Vec<Panel>,
     /// One-shot host requests. Never retained or replayed during discovery/reload.
     #[serde(default)]
@@ -200,6 +213,7 @@ mod tests {
     #[test]
     fn validates_tree_structure_unique_ids_and_bounds() {
         let mut s = Snapshot {
+            watch: false,
             effects: Vec::new(),
             panels: vec![Panel {
                 id: "files".into(),
@@ -236,6 +250,7 @@ mod tests {
         let path = NativePath::new(&std::env::current_dir().unwrap());
         let effect = Effect::OpenFile { path };
         let mut snapshot = Snapshot {
+            watch: false,
             panels: vec![],
             effects: vec![effect.clone()],
         };

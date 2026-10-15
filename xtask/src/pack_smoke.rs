@@ -87,6 +87,38 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 ),
             }]
         );
+        assert!(snapshot.watch);
+        std::fs::write(project.path().join("new.txt"), "watched").map_err(|e| e.to_string())?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let bytes = manager.call_hook(
+                &panel,
+                &velk_panels::encode(&velk_panels::Request::Changes)?,
+            )?;
+            if matches!(
+                velk_panels::decode::<velk_panels::Reply>(&bytes)?,
+                velk_panels::Reply::Invalidated
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native pack watcher missed a change"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let updated = panel_request(
+            &mut manager,
+            &panel,
+            velk_panels::Request::Describe {
+                context: context.clone(),
+            },
+        )?;
+        let velk_panels::Content::Tree(rows) = &updated.panels[0].content else {
+            panic!("expected tree")
+        };
+        assert!(rows.iter().any(|n| n.label == "new.txt"));
+        assert!(updated.effects.is_empty());
         // Unload with a queued or completed-but-uncollected job. The plugin joins
         // its owned worker before its instance can be destroyed.
         let pending = manager.call_hook(

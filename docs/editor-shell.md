@@ -38,7 +38,8 @@ files, keyboard shortcuts and reload behavior.
 Plugins can now contribute host-rendered panels through the named
 `velk.ui.panels.v1` request hook. Left, right and bottom slots support tabbed tree
 or text snapshots. The built-in `velk.files` plugin supplies a lazy filesystem
-tree; see [files.md](files.md) for root selection, refresh and limits. Panels start hidden. Open them with the
+tree with native filesystem watching; see [files.md](files.md) for folder selection,
+refresh and limits. Panels start hidden. Open them with the
 Panels button, Command+B / Control+B, or **Panels: Toggle visibility** in the
 palette. Closing a slot restores editing focus. The launcher moves into the
 activity bar when enabled and remains reachable by shortcut with both bars hidden.
@@ -60,7 +61,8 @@ focus. Buttons can also be clicked or activated after Tab navigation. Disabled
 commands remain visible, and Enter on a disabled result or an empty list does
 nothing. Reopening starts with an empty query.
 
-The catalogue includes Open file, Save, Close buffer, Next/Previous buffer,
+The catalogue includes Open file, Open folder (Command+Shift+O / Control+Shift+O),
+Panels: Refresh, Save, Close buffer, Next/Previous buffer,
 Find in file, Settings, Plugins, Show hover,
 Plugins: Load from disk, Plugins: Unload all, Close window, and Quit Velk. Command
 entries wrap the same RXUI actions as existing buttons and shortcuts, sharing

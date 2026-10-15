@@ -17,13 +17,20 @@ Register an ordinary SDK request handler for `hooks::Request(velk_panels::HOOK)`
 Decode `velk_panels::Request` and encode a `velk_panels::Reply`:
 
 - `Describe { context }` requests the complete contribution. Context contains an
-  optional absolute native document path, whether the host has initialized view
+  optional absolute native document path, an explicit workspace root overriding
+  root inference, whether the host has initialized view
   state, and expanded node IDs retained across refresh/restart.
 - `Expand { panel, revision, node, expanded }` asks for an unloaded branch's
   contents. Already loaded branches expand and collapse locally. Expanded IDs
   allow providers to restore previously opened descendants lazily.
 - `Invoke { panel, revision, node, action }` activates a leaf's opaque action.
 - `Poll { id }` collects asynchronous work; `Cancel { id }` retires it.
+- `Changes` checks a provider's bounded invalidation signal. Opt in with
+  `Snapshot.watch = true`; return `Reply::Unchanged` or `Reply::Invalidated`. This
+  check must not perform I/O, mutate the model, or supersede an active job. The
+  host checks on its async executor every 200 ms and only updates the UI after
+  invalidation. Automatic rediscovery waits for queued user actions to finish.
+  Lifecycle changes cancel the check loop and reject stale replies.
 
 A handler can return `Reply::Ready { snapshot }` immediately, or
 `Reply::Pending { id }` after queueing owned work. Subsequent polls return the same
@@ -95,10 +102,11 @@ Across providers a window accepts at most 64 panels and 20,000 tree nodes.
 The host bounds pending panel actions and file opens to 32 each. Malformed or
 oversized contributions are rejected independently, with errors in the shell.
 Full snapshots are suitable for this prototype; larger datasets will need a
-paged/delta contract. Push updates and custom panel content are not implemented.
+paged/delta contract. Push delivery and custom panel content are not implemented.
 
 Reload Window preserves visibility, closed slots, selected tabs, expanded
-branches, row selection and the initial document path used as project context.
+branches, row selection, explicit workspace root and the initial document path
+used as project context.
 Data and handles are rediscovered from new plugin instances. Scroll offsets are
 transient. The host retains view state for up to 64 contributed panels, allowing
 unload/reload/restart to restore expansion without retaining native code.
@@ -107,4 +115,4 @@ Validation covers malformed paths/trees, lazy reads, refresh restoration,
 cancellation, unusual filenames, bounds and host buffer queuing. The native
 pack smoke in `cargo xtask test-plugins` expands a real directory, collects an
 open-file effect, unloads with outstanding work, verifies stale-handle rejection
-and reads host-owned snapshots after unload.
+observes a filesystem invalidation, and reads host-owned snapshots after unload.

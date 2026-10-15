@@ -10,6 +10,7 @@ crate-type = ["rlib"]
 velk-plugin-sdk.workspace = true
 velk-panels.workspace = true
 blake3 = "1.8"
+notify = "8.2.0"
 [dev-dependencies]
 tempfile = "3.27.0"
 [lints.rust]

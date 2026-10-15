@@ -52,7 +52,7 @@ fn id(path: &Path) -> String {
     }
     hash.finalize().to_hex().to_string()
 }
-fn caption(value: impl AsRef<str>) -> String {
+pub(super) fn caption(value: impl AsRef<str>) -> String {
     let mut result = String::new();
     for c in value.as_ref().chars() {
         let c = if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
@@ -72,7 +72,12 @@ fn caption(value: impl AsRef<str>) -> String {
     result
 }
 fn root(document: NativePath, cancel: &AtomicBool) -> Result<PathBuf, String> {
-    let path = std::fs::canonicalize(document.to_path()?).map_err(|e| e.to_string())?;
+    let source = document.to_path()?;
+    let path = match std::fs::canonicalize(&source) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => source,
+        Err(error) => return Err(error.to_string()),
+    };
     let directory = if path.is_dir() {
         path.as_path()
     } else {
@@ -91,10 +96,25 @@ fn root(document: NativePath, cancel: &AtomicBool) -> Result<PathBuf, String> {
     Ok(cargo.unwrap_or_else(|| directory.into()))
 }
 impl Model {
+    #[cfg(test)]
     pub fn apply(
         &mut self,
         request: Request,
         cancel: &Arc<AtomicBool>,
+    ) -> Result<Snapshot, String> {
+        self.apply_watched(request, cancel, &mut |_| {})
+    }
+    pub fn watched_paths(&self) -> Vec<PathBuf> {
+        self.directories.keys().cloned().collect()
+    }
+    pub fn root_path(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+    pub fn apply_watched(
+        &mut self,
+        request: Request,
+        cancel: &Arc<AtomicBool>,
+        watch: &mut impl FnMut(&Path),
     ) -> Result<Snapshot, String> {
         let _trace = velk_plugin_sdk::diagnostics::scope!("files.request");
         cancelled(cancel)?;
@@ -103,10 +123,21 @@ impl Model {
                 context.validate()?;
                 self.directories.clear();
                 self.nodes.clear();
-                self.root = context
-                    .document
-                    .map(|path| root(path, cancel))
-                    .transpose()?;
+                self.root = if let Some(path) = context.root {
+                    let path = path.to_path()?;
+                    let path = std::fs::canonicalize(&path).unwrap_or(path);
+                    if path.exists() && !path.is_dir() {
+                        return Err("workspace root is not a directory".into());
+                    }
+                    Some(path)
+                } else if self.root.is_some() {
+                    self.root.clone()
+                } else {
+                    context
+                        .document
+                        .map(|path| root(path, cancel))
+                        .transpose()?
+                };
                 if let Some(path) = self.root.clone() {
                     let expanded: BTreeSet<_> = context.expanded.into_iter().collect();
                     if !context.initialized || expanded.contains(&id(&path)) {
@@ -119,6 +150,7 @@ impl Model {
                             },
                             &expanded,
                             cancel,
+                            watch,
                         )?;
                     }
                 }
@@ -141,7 +173,7 @@ impl Model {
                     .filter(|i| i.directory)
                     .ok_or("unknown directory row")?
                     .clone();
-                self.expand(&item, &expanded.into_iter().collect(), cancel)?;
+                self.expand(&item, &expanded.into_iter().collect(), cancel, watch)?;
             }
             Request::Invoke {
                 panel,
@@ -164,7 +196,7 @@ impl Model {
                 snapshot.validate()?;
                 return Ok(snapshot);
             }
-            Request::Poll { .. } | Request::Cancel { .. } => {
+            Request::Changes | Request::Poll { .. } | Request::Cancel { .. } => {
                 return Err("worker received a control request".into());
             }
         }
@@ -187,11 +219,13 @@ impl Model {
         item: &Item,
         expanded: &BTreeSet<String>,
         cancel: &Arc<AtomicBool>,
+        watch: &mut impl FnMut(&Path),
     ) -> Result<(), String> {
         cancelled(cancel)?;
         if item.depth >= 32 {
             return Ok(());
         }
+        watch(&item.path);
         if !self.directories.contains_key(&item.path) {
             let used: usize = self.directories.values().map(|d| d.entries.len()).sum();
             let limit = MAX_DIRECTORY.min(MAX_ENTRIES.saturating_sub(used));
@@ -243,7 +277,7 @@ impl Model {
             .cloned()
             .collect();
         for child in children {
-            self.expand(&child, expanded, cancel)?;
+            self.expand(&child, expanded, cancel, watch)?;
         }
         Ok(())
     }
@@ -326,6 +360,7 @@ impl Model {
             Content::Text("Open a file to show its project directory.".into())
         };
         let snapshot = Snapshot {
+            watch: true,
             panels: vec![Panel {
                 id: "files".into(),
                 title: "Files".into(),
