@@ -23,7 +23,7 @@ pub(super) struct State {
 }
 impl Document {
     pub fn enable_semantics(&mut self, service: Arc<Service>, cx: &mut Context<'_, Self>) {
-        self.enable_semantics_with_renderer(service, Arc::new(velk_markup::CommonMark), cx);
+        self.enable_semantics_with_renderer(service, self.markup_renderer(), cx);
     }
     /// Host extension point: a future plugin can supply Markdown interpretation
     /// without knowing about LSP transport or owning the popup's input lifetime.
@@ -170,8 +170,9 @@ impl Document {
                     if hover.markdown {
                         let renderer = state.renderer.clone();
                         let range = hover.range;
-                        match cx.try_spawn_blocking(
-                            move || Arc::new(renderer.render(&hover.contents)),
+                        let fallback = hover.contents.clone();
+                        match cx.try_spawn(
+                            renderer.render(hover.contents),
                             move |this, result, cx| {
                                 let Some(state) = &mut this.semantic else {
                                     return;
@@ -181,23 +182,18 @@ impl Document {
                                     return;
                                 }
                                 state.render_task = None;
-                                match result {
-                                    Ok(document) => {
-                                        this.editor.update(cx, |editor, _| {
-                                            editor.resolve_formatted_hover(
-                                                target,
-                                                range,
-                                                "Rust".into(),
-                                                document,
-                                            );
-                                        });
-                                    }
-                                    Err(_) => {
-                                        this.editor.update(cx, |editor, _| {
-                                            editor.resolve_hover(target, None, None);
-                                        });
-                                    }
-                                }
+                                let document = match result {
+                                    Ok(Ok(document)) => document,
+                                    _ => velk_markup::Document::plain(fallback),
+                                };
+                                this.editor.update(cx, |editor, _| {
+                                    editor.resolve_formatted_hover(
+                                        target,
+                                        range,
+                                        "Rust".into(),
+                                        Arc::new(document),
+                                    );
+                                });
                             },
                         ) {
                             Ok(task) => state.render_task = Some(task),
@@ -417,7 +413,7 @@ mod tests {
                     next_hover: 1,
                     task: None,
                     render_task: None,
-                    renderer: Arc::new(velk_markup::CommonMark),
+                    renderer: Arc::new(velk_markup::PlainText),
                     notice: None,
                 });
                 d
@@ -471,8 +467,12 @@ mod tests {
         #[derive(Default)]
         struct Queue(Mutex<Vec<BlockingJob>>);
         impl TaskExecutor for Queue {
-            fn spawn(&self, _: BackgroundFuture) -> Result<(), SpawnError> {
-                Err(SpawnError::Unavailable)
+            fn spawn(&self, future: BackgroundFuture) -> Result<(), SpawnError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(Box::new(move || pollster::block_on(future)));
+                Ok(())
             }
             fn spawn_blocking(&self, job: BlockingJob) -> Result<(), SpawnError> {
                 self.0.lock().unwrap().push(job);
@@ -484,10 +484,16 @@ mod tests {
             calls: Arc<AtomicUsize>,
         }
         impl velk_markup::Renderer for PluginRenderer {
-            fn render(&self, _: &str) -> velk_markup::Document {
-                assert_ne!(std::thread::current().id(), self.ui_thread);
-                self.calls.fetch_add(1, Ordering::SeqCst);
-                velk_markup::Document::plain("Plugin-rendered documentation")
+            fn render(&self, _: String) -> velk_markup::RenderFuture {
+                let ui_thread = self.ui_thread;
+                let calls = self.calls.clone();
+                Box::pin(async move {
+                    assert_ne!(std::thread::current().id(), ui_thread);
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(velk_markup::Document::plain(
+                        "Plugin-rendered documentation",
+                    ))
+                })
             }
         }
         struct Measure;
@@ -562,7 +568,7 @@ mod tests {
             });
             // The UI callback only queues interpretation; it has not run here.
             let before = calls.load(Ordering::SeqCst);
-            assert_eq!(queue.0.lock().unwrap().len(), 1);
+            assert!(!queue.0.lock().unwrap().is_empty());
             let jobs = std::mem::take(&mut *queue.0.lock().unwrap());
             std::thread::spawn(move || {
                 for job in jobs {
@@ -581,6 +587,8 @@ mod tests {
             assert_eq!(shown, !cancel);
             if !cancel {
                 assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+            } else {
+                assert_eq!(calls.load(Ordering::SeqCst), before);
             }
         }
     }
@@ -611,7 +619,7 @@ mod tests {
                     next_hover: 3,
                     task: None,
                     render_task: None,
-                    renderer: Arc::new(velk_markup::CommonMark),
+                    renderer: Arc::new(velk_markup::PlainText),
                     notice: None,
                 })
             });

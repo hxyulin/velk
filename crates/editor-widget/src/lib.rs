@@ -616,18 +616,33 @@ mod responsiveness_tests {
                 e.set_semantic_hover(true);
                 e.request_hover_at_caret();
                 let target = e.hover_request().unwrap();
-                use velk_markup::Renderer;
-                assert!(
-                    e.resolve_formatted_hover(
-                        target,
-                        None,
-                        "Rust".into(),
-                        Arc::new(
-                            velk_markup::CommonMark
-                                .render("`let value: usize`\n\n**Variable** documentation")
-                        ),
-                    )
-                );
+                assert!(e.resolve_formatted_hover(
+                    target,
+                    None,
+                    "Rust".into(),
+                    Arc::new(velk_markup::Document {
+                        runs: vec![
+                            velk_markup::Run {
+                                text: "let value: usize\n\n".into(),
+                                style: velk_markup::Style {
+                                    code: true,
+                                    ..Default::default()
+                                }
+                            },
+                            velk_markup::Run {
+                                text: "Variable".into(),
+                                style: velk_markup::Style {
+                                    bold: true,
+                                    ..Default::default()
+                                }
+                            },
+                            velk_markup::Run {
+                                text: " documentation".into(),
+                                style: Default::default()
+                            },
+                        ],
+                    }),
+                ));
             })
         });
         let before = test.render().unwrap();

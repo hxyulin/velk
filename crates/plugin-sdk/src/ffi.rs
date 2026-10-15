@@ -35,6 +35,11 @@ pub unsafe fn entry<P: Plugin>(abi: u32, output: *mut PluginApi, size: usize) ->
             create: Some(create::<P>),
             destroy: Some(destroy::<P>),
             describe: Some(describe::<P>),
+            render_markdown: if P::MARKDOWN {
+                Some(render_markdown::<P>)
+            } else {
+                None
+            },
         };
         // SAFETY: required writable storage was supplied by the caller.
         unsafe {
@@ -91,6 +96,63 @@ unsafe extern "C" fn describe<P: Plugin>(
             }
         }
         OK
+    })
+}
+unsafe extern "C" fn render_markdown<P: Plugin>(
+    instance: *mut c_void,
+    source: *const u8,
+    length: usize,
+    sink: RunSink,
+    context: *mut c_void,
+) -> i32 {
+    if instance.is_null() || source.is_null() || length > MAX_INPUT_BYTES {
+        return INVALID;
+    }
+    guard(|| {
+        // SAFETY: the host supplies readable input for this synchronous call.
+        let source = unsafe { std::slice::from_raw_parts(source, length) };
+        let Ok(source) = std::str::from_utf8(source) else {
+            return INVALID;
+        };
+        // SAFETY: the host exclusively owns this live instance for the call.
+        let document = unsafe { (&mut *instance.cast::<P>()).render_markdown(source) };
+        if document.runs.len() > MAX_RUNS {
+            return INVALID;
+        }
+        let size = document.runs.iter().try_fold(0usize, |n, r| {
+            n.checked_add(r.text.len())?
+                .checked_add(r.style.link.as_ref().map_or(0, String::len))
+        });
+        if size.is_none_or(|n| n > MAX_OUTPUT_BYTES) {
+            return INVALID;
+        }
+        let runs: Vec<_> = document
+            .runs
+            .iter()
+            .map(|run| {
+                let style = &run.style;
+                let link = style.link.as_deref().unwrap_or("");
+                StyledRun {
+                    text: Bytes {
+                        data: run.text.as_ptr(),
+                        length: run.text.len(),
+                    },
+                    link: Bytes {
+                        data: link.as_ptr(),
+                        length: link.len(),
+                    },
+                    flags: (u32::from(style.bold) * BOLD)
+                        | (u32::from(style.italic) * ITALIC)
+                        | (u32::from(style.code) * CODE)
+                        | (u32::from(style.strikethrough) * STRIKETHROUGH)
+                        | (u32::from(style.link.is_some()) * LINK),
+                    heading: style.heading,
+                }
+            })
+            .collect();
+        // SAFETY: the host callback/context is live, and all views into document
+        // and runs stay valid until the callback returns. Nothing escapes.
+        unsafe { sink(context, runs.as_ptr(), runs.len()) }
     })
 }
 #[cfg(test)]

@@ -51,9 +51,14 @@ fn paths(release: bool) -> Result<(PathBuf, PathBuf), String> {
 }
 fn build(root: &Path, release: bool, editor: bool, message: Option<&str>) -> Result<(), String> {
     let mut command = cargo();
-    command
-        .current_dir(root)
-        .args(["build", "--locked", "-p", PLUGIN]);
+    command.current_dir(root).args([
+        "build",
+        "--locked",
+        "-p",
+        PLUGIN,
+        "-p",
+        "velk-plugin-markdown",
+    ]);
     if editor {
         command.args(["-p", "velk-editor"]);
     }
@@ -65,15 +70,23 @@ fn build(root: &Path, release: bool, editor: bool, message: Option<&str>) -> Res
     }
     checked(&mut command)
 }
-fn library_name() -> String {
+fn library_name(stem: &str) -> String {
     format!(
-        "{}velk_plugin_lifecycle_demo{}",
+        "{}{stem}{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     )
 }
 fn stage(output: &Path, directory: &Path) -> Result<PluginSpec, String> {
-    let source = output.join(library_name());
+    stage_plugin(output, directory, ID, "velk_plugin_lifecycle_demo")
+}
+fn stage_plugin(
+    output: &Path,
+    directory: &Path,
+    id: &str,
+    stem: &str,
+) -> Result<PluginSpec, String> {
+    let source = output.join(library_name(stem));
     let mut hash = blake3::Hasher::new();
     hash.update_reader(
         std::fs::File::open(&source).map_err(|e| format!("{}: {e}", source.display()))?,
@@ -82,7 +95,7 @@ fn stage(output: &Path, directory: &Path) -> Result<PluginSpec, String> {
     let digest = hash.finalize().to_hex().to_string();
     let relative = PathBuf::from("artifacts")
         .join(&digest)
-        .join(library_name());
+        .join(library_name(stem));
     let target = directory.join(&relative);
     std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
     if !target.exists() {
@@ -92,7 +105,7 @@ fn stage(output: &Path, directory: &Path) -> Result<PluginSpec, String> {
         temporary.persist(&target).map_err(|e| e.to_string())?;
     }
     Ok(PluginSpec {
-        id: ID.into(),
+        id: id.into(),
         library: relative,
         digest,
     })
@@ -150,7 +163,8 @@ fn run() -> Result<(), String> {
     build(&root, release, action != "plugins", None)?;
     let directory = output.join("plugins");
     let spec = stage(&output, &directory)?;
-    publish(&directory, vec![spec])?;
+    let markdown = stage_plugin(&output, &directory, "velk.markdown", "velk_plugin_markdown")?;
+    publish(&directory, vec![spec, markdown])?;
     println!("Built plugins: {}", directory.display());
     if action == "run" {
         checked(
@@ -252,8 +266,106 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     // Restore ordinary build output so running the app after this test doesn't
     // accidentally use a test message. Smoke artifacts lived in a temp directory.
     build(root, release, false, None)?;
+    markdown_smoke(output)?;
     println!(
         "Native plugin smoke passed: load, no automatic replacement, explicit unload/load of rebuilt code, repeated cleanup, retained host data, rejected artifacts, malformed manifest."
+    );
+    Ok(())
+}
+
+#[allow(unsafe_code)]
+fn markdown_smoke(output: &Path) -> Result<(), String> {
+    use velk_plugin_host::{Event, Manager, Runtime};
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let spec = stage_plugin(
+        output,
+        directory.path(),
+        "velk.markdown",
+        "velk_plugin_markdown",
+    )?;
+    publish(directory.path(), vec![spec])?;
+    let mut manager = Manager::new(directory.path().into());
+    // SAFETY: only the locally built SDK-based Markdown plugin is staged here.
+    assert!(matches!(
+        unsafe { manager.load()? }.as_slice(),
+        [Event::Loaded(_)]
+    ));
+    let source = "# Heading\n\n**bold** *italic* ~~old~~ `code` [docs](https://example.com)\n\n```rust\nlet value = 42;\n```";
+    let document = manager.render_markdown(source)?;
+    assert!(document.runs.iter().any(|r| r.style.heading == 1));
+    assert!(
+        document
+            .runs
+            .iter()
+            .any(|r| r.style.bold && r.text == "bold")
+    );
+    assert!(
+        document
+            .runs
+            .iter()
+            .any(|r| r.style.italic && r.text == "italic")
+    );
+    assert!(document.runs.iter().any(|r| r.style.strikethrough));
+    assert!(
+        document
+            .runs
+            .iter()
+            .any(|r| r.style.link.as_deref() == Some("https://example.com"))
+    );
+    assert!(
+        document
+            .runs
+            .iter()
+            .any(|r| r.style.code && r.text.contains("let value = 42;"))
+    );
+    manager.unload_all();
+    assert!(
+        document.text().contains("Heading"),
+        "result survives provider unload"
+    );
+    assert_eq!(
+        manager.render_markdown(source)?.text(),
+        source,
+        "missing provider falls back to literal text"
+    );
+    // SAFETY: same trusted local artifacts, this time through the async endpoint.
+    let runtime = unsafe { Runtime::start(directory.path().into())? };
+    let client = runtime.client();
+    pollster::block_on(async {
+        assert_eq!(
+            client
+                .load()?
+                .recv()
+                .await
+                .map_err(|e| e.to_string())??
+                .loaded,
+            1
+        );
+        assert_eq!(client.render_markdown(source.into()).await?, document);
+        assert_eq!(
+            client
+                .unload_all()?
+                .recv()
+                .await
+                .map_err(|e| e.to_string())??
+                .loaded,
+            0
+        );
+        assert_eq!(client.render_markdown(source.into()).await?.text(), source);
+        assert_eq!(
+            client
+                .load()?
+                .recv()
+                .await
+                .map_err(|e| e.to_string())??
+                .loaded,
+            1
+        );
+        assert_eq!(client.render_markdown(source.into()).await?, document);
+        Ok::<_, String>(())
+    })?;
+    println!(
+        "Markdown plugin smoke passed: typed styled runs, host-owned output after unload, async rendering, literal fallback, reactivation."
     );
     Ok(())
 }

@@ -3061,6 +3061,7 @@ name = "velk-editor"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "pollster",
  "ropey",
  "rxui",
  "tempfile",
@@ -3087,9 +3088,6 @@ dependencies = [
 [[package]]
 name = "velk-markup"
 version = "0.1.0"
-dependencies = [
- "pulldown-cmark",
-]
 
 [[package]]
 name = "velk-plugin-api"
@@ -3105,6 +3103,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "velk-markup",
  "velk-plugin-api",
 ]
 
@@ -3116,9 +3115,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "velk-plugin-markdown"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
+ "velk-plugin-sdk",
+]
+
+[[package]]
 name = "velk-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "velk-markup",
  "velk-plugin-api",
 ]
 
@@ -3945,6 +3953,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "pollster",
  "serde_json",
  "tempfile",
  "velk-plugin-host",

@@ -1,4 +1,4 @@
-//! Disk-only native plugin experiment. No dependency resolver or async plugin ABI.
+//! Native plugins with host-scheduled async requests. No plugin-owned futures or dependency resolver.
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Component, Path, PathBuf},
@@ -66,16 +66,22 @@ pub struct Report {
 enum Operation {
     Load,
     UnloadAll,
-    Stop,
 }
-struct Request {
-    operation: Operation,
-    reply: async_channel::Sender<Result<Report, String>>,
+enum Request {
+    Lifecycle {
+        operation: Operation,
+        reply: async_channel::Sender<Result<Report, String>>,
+    },
+    Render {
+        source: String,
+        reply: async_channel::Sender<Result<velk_markup::Document, String>>,
+    },
+    Stop,
 }
 /// Safe command endpoint. Lifecycle work is serialized on a sleeping worker.
 #[derive(Clone)]
 pub struct Client {
-    sender: mpsc::Sender<Request>,
+    sender: mpsc::SyncSender<Request>,
 }
 impl Client {
     pub fn load(&self) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
@@ -84,14 +90,29 @@ impl Client {
     pub fn unload_all(&self) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
         self.request(Operation::UnloadAll)
     }
+    /// The returned future is local Rust scheduling, not a future across the ABI.
+    /// Dropping it closes the result channel, allowing queued work to be skipped.
+    pub async fn render_markdown(&self, source: String) -> Result<velk_markup::Document, String> {
+        if source.len() > velk_plugin_api::MAX_INPUT_BYTES {
+            return Err("Markdown input exceeds 1 MiB".into());
+        }
+        let (reply, receive) = async_channel::bounded(1);
+        self.sender
+            .try_send(Request::Render { source, reply })
+            .map_err(|e| format!("plugin queue unavailable: {e}"))?;
+        receive
+            .recv()
+            .await
+            .map_err(|_| "plugin worker stopped".to_string())?
+    }
     fn request(
         &self,
         operation: Operation,
     ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
         let (reply, receiver) = async_channel::bounded(1);
         self.sender
-            .send(Request { operation, reply })
-            .map_err(|_| "plugin worker stopped".to_string())?;
+            .try_send(Request::Lifecycle { operation, reply })
+            .map_err(|e| format!("plugin queue unavailable: {e}"))?;
         Ok(receiver)
     }
 }
@@ -103,20 +124,36 @@ pub struct Runtime {
 impl Runtime {
     /// # Safety
     /// The directory must contain only trusted native libraries implementing the
-    /// v1 ABI and its unload contract. Native code is not sandboxed.
+    /// v2 ABI and its unload contract. Native code is not sandboxed.
     #[allow(unsafe_code)]
     pub unsafe fn start(directory: PathBuf) -> Result<Self, String> {
-        let (sender, receive) = mpsc::channel::<Request>();
+        Self::spawn(move || Manager::new(directory))
+    }
+    // Construction stays private; the public entry point establishes native-code
+    // trust, and tests can supply a controlled in-process provider.
+    #[allow(unsafe_code)]
+    fn spawn(make_manager: impl FnOnce() -> Manager + Send + 'static) -> Result<Self, String> {
+        let (sender, receive) = mpsc::sync_channel::<Request>(16);
         let worker = thread::Builder::new()
             .name("velk-plugins".into())
             .spawn(move || {
-                let mut manager = Manager::new(directory);
+                let mut manager = make_manager();
                 while let Ok(request) = receive.recv() {
-                    let events = match request.operation {
-                        // SAFETY: start's caller guarantees all artifacts obey v1.
+                    let (operation, reply) = match request {
+                        Request::Stop => break,
+                        Request::Render { source, reply } => {
+                            if !reply.is_closed() {
+                                let result = manager.render_markdown(&source);
+                                let _ = reply.try_send(result);
+                            }
+                            continue;
+                        }
+                        Request::Lifecycle { operation, reply } => (operation, reply),
+                    };
+                    let events = match operation {
+                        // SAFETY: start's caller guarantees all artifacts obey v2.
                         Operation::Load => unsafe { manager.load() },
                         Operation::UnloadAll => Ok(manager.unload_all()),
-                        Operation::Stop => break,
                     };
                     if let Ok(events) = &events {
                         for event in events {
@@ -136,7 +173,7 @@ impl Runtime {
                         loaded: manager.plugins().count(),
                         events,
                     });
-                    let _ = request.reply.try_send(result);
+                    let _ = reply.try_send(result);
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -151,11 +188,7 @@ impl Runtime {
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
-        let (reply, _) = async_channel::bounded(1);
-        let _ = self.client.sender.send(Request {
-            operation: Operation::Stop,
-            reply,
-        });
+        let _ = self.client.sender.send(Request::Stop);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -183,6 +216,13 @@ pub fn read_manifest(directory: &Path) -> Result<Manifest, String> {
     manifest.validate()?;
     Ok(manifest)
 }
+impl velk_markup::Renderer for Client {
+    fn render(&self, source: String) -> velk_markup::RenderFuture {
+        let client = self.clone();
+        Box::pin(async move { client.render_markdown(source).await })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +252,82 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn async_render_cancellation_and_unload_obey_call_lifetimes() {
+        use std::{
+            future::Future,
+            sync::Arc,
+            sync::atomic::{AtomicUsize, Ordering},
+            task::{Context, Poll, Waker},
+            time::{Duration, Instant},
+        };
+        for cancel_active in [false, true] {
+            let (entered, entry) = mpsc::sync_channel(1);
+            let (release, resume) = mpsc::sync_channel(1);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let drops = Arc::new(AtomicUsize::new(0));
+            let control = native::test_provider::Control {
+                entered,
+                release: resume,
+                calls: calls.clone(),
+                drops: drops.clone(),
+            };
+            let runtime = Runtime::spawn(move || native::test_provider::manager(control)).unwrap();
+            let client = runtime.client();
+            let mut cx = Context::from_waker(Waker::noop());
+            let mut active = Box::pin(client.render_markdown("active".into()));
+            assert!(active.as_mut().poll(&mut cx).is_pending());
+            entry.recv_timeout(Duration::from_secs(2)).unwrap();
+            let mut cancelled = Box::pin(client.render_markdown("cancelled".into()));
+            assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+            drop(cancelled);
+            let unloaded = client.unload_all().unwrap();
+            let mut after = Box::pin(client.render_markdown("after".into()));
+            assert!(after.as_mut().poll(&mut cx).is_pending());
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            assert!(
+                unloaded.try_recv().is_err(),
+                "unload must wait for the active native call"
+            );
+            let mut active = (!cancel_active).then_some(active);
+            // then_some drops the active future in the cancelled case.
+            release.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Ok(report) = unloaded.try_recv() {
+                    assert_eq!(report.unwrap().loaded, 0);
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "cancelled queued work never called the provider"
+            );
+            if let Some(active) = &mut active {
+                let Poll::Ready(Ok(document)) = active.as_mut().poll(&mut cx) else {
+                    panic!("active result must be available after unload")
+                };
+                assert_eq!(document.text(), "active");
+                assert!(
+                    document.runs[0].style.bold,
+                    "host-owned style survives unload"
+                );
+            }
+            loop {
+                if let Poll::Ready(result) = after.as_mut().poll(&mut cx) {
+                    assert_eq!(result.unwrap(), velk_markup::Document::plain("after"));
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+
     #[test]
     #[allow(unsafe_code)]
     fn lifecycle_worker_sleeps_until_command_and_stops_even_with_client_clones() {

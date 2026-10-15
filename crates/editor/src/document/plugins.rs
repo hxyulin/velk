@@ -15,6 +15,18 @@ impl Document {
         });
         self.change_plugins(true, cx);
     }
+    pub(super) fn markup_renderer(&self) -> std::sync::Arc<dyn velk_markup::Renderer> {
+        self.plugins.as_ref().map_or_else(
+            || {
+                std::sync::Arc::new(velk_markup::PlainText)
+                    as std::sync::Arc<dyn velk_markup::Renderer>
+            },
+            |state| {
+                std::sync::Arc::new(state.client.clone())
+                    as std::sync::Arc<dyn velk_markup::Renderer>
+            },
+        )
+    }
     pub(super) fn plugins_busy(&self) -> bool {
         self.plugins.as_ref().is_none_or(|s| s.task.is_some())
     }

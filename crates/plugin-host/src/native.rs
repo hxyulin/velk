@@ -52,7 +52,7 @@ impl Generation {
         // SAFETY: caller explicitly trusts libraries selected by this manifest.
         let library = unsafe { Library::new(&path) }.map_err(|e| e.to_string())?;
         let mut output = std::mem::MaybeUninit::<PluginApi>::uninit();
-        // SAFETY: entry symbol/type and successful initialization are required by v1.
+        // SAFETY: entry symbol/type and successful initialization are required by v2.
         let api = unsafe {
             let entry = library
                 .get::<Entry>(ENTRY_SYMBOL)
@@ -133,6 +133,98 @@ impl Generation {
         Err("plugin description changed size repeatedly".into())
     }
 }
+struct Output {
+    document: velk_markup::Document,
+    emitted: bool,
+    valid: bool,
+}
+unsafe extern "C" fn collect_runs(
+    context: *mut c_void,
+    runs: *const StyledRun,
+    length: usize,
+) -> i32 {
+    // No Rust unwind may cross the callback's C boundary either.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() || runs.is_null() || length > MAX_RUNS {
+            return INVALID;
+        }
+        // SAFETY: the host created this live Output for the duration of the call.
+        let output = unsafe { &mut *context.cast::<Output>() };
+        if output.emitted {
+            output.valid = false;
+            return INVALID;
+        }
+        output.emitted = true;
+        // SAFETY: the trusted provider supplies length initialized ABI records.
+        let runs = unsafe { std::slice::from_raw_parts(runs, length) };
+        let mut total = 0usize;
+        for run in runs {
+            total = match total
+                .checked_add(run.text.length)
+                .and_then(|n| n.checked_add(run.link.length))
+            {
+                Some(n) if n <= MAX_OUTPUT_BYTES => n,
+                _ => return INVALID,
+            };
+            if run.flags & !(BOLD | ITALIC | CODE | STRIKETHROUGH | LINK) != 0
+                || run.heading > 6
+                || run.text.data.is_null()
+                || run.link.data.is_null()
+            {
+                return INVALID;
+            }
+            // SAFETY: provider-owned bytes remain readable throughout this callback.
+            let text = unsafe { std::slice::from_raw_parts(run.text.data, run.text.length) };
+            let link = unsafe { std::slice::from_raw_parts(run.link.data, run.link.length) };
+            let (Ok(text), Ok(link)) = (std::str::from_utf8(text), std::str::from_utf8(link))
+            else {
+                return INVALID;
+            };
+            output.document.runs.push(velk_markup::Run {
+                text: text.into(),
+                style: velk_markup::Style {
+                    bold: run.flags & BOLD != 0,
+                    italic: run.flags & ITALIC != 0,
+                    code: run.flags & CODE != 0,
+                    strikethrough: run.flags & STRIKETHROUGH != 0,
+                    heading: run.heading,
+                    link: (run.flags & LINK != 0).then(|| link.to_owned()),
+                },
+            });
+        }
+        output.valid = true;
+        OK
+    }))
+    .unwrap_or(PANICKED)
+}
+impl Generation {
+    fn render_markdown(&mut self, source: &str) -> Result<velk_markup::Document, String> {
+        let render = self
+            .api
+            .render_markdown
+            .ok_or("provider has no Markdown capability")?;
+        let mut output = Output {
+            document: Default::default(),
+            emitted: false,
+            valid: false,
+        };
+        // SAFETY: exclusive live instance, borrowed UTF-8 input, synchronous callback;
+        // the library remains owned by self until all output has been copied.
+        let status = unsafe {
+            render(
+                self.instance.as_ptr(),
+                source.as_ptr(),
+                source.len(),
+                collect_runs,
+                (&mut output as *mut Output).cast(),
+            )
+        };
+        if status != OK || !output.valid {
+            return Err(format!("Markdown provider failed with status {status}"));
+        }
+        Ok(output.document)
+    }
+}
 impl Generation {
     fn retire(&mut self) -> bool {
         if self.destroyed {
@@ -174,7 +266,7 @@ fn metadata(bytes: &[u8]) -> Result<String, String> {
     String::from_utf8(bytes[..end].to_vec()).map_err(|e| e.to_string())
 }
 /// Serial, worker-owned lifecycle manager. It exposes no raw function pointers or
-/// plugin-owned values, so all v1 calls complete before replacement/destruction.
+/// plugin-owned values, so all v2 calls complete before replacement/destruction.
 pub struct Manager {
     directory: PathBuf,
     plugins: BTreeMap<String, Generation>,
@@ -199,10 +291,34 @@ impl Manager {
             .ok_or_else(|| format!("plugin {id} is not loaded"))?
             .describe()
     }
+    pub fn render_markdown(&mut self, source: &str) -> Result<velk_markup::Document, String> {
+        if source.len() > MAX_INPUT_BYTES {
+            return Err("Markdown input exceeds 1 MiB".into());
+        }
+        let count = self
+            .plugins
+            .values()
+            .filter(|p| p.api.render_markdown.is_some())
+            .count();
+        if count > 1 {
+            return Err(
+                "multiple Markdown providers loaded; provider selection is not implemented yet"
+                    .into(),
+            );
+        }
+        match self
+            .plugins
+            .values_mut()
+            .find(|p| p.api.render_markdown.is_some())
+        {
+            Some(provider) => provider.render_markdown(source),
+            None => Ok(velk_markup::Document::plain(source)),
+        }
+    }
     /// Load inactive plugins listed on disk. Already-active IDs are left alone,
     /// even when a newer build is staged. Unload explicitly before replacing one.
     /// # Safety
-    /// All libraries selected by the directory must implement the trusted v1 ABI,
+    /// All libraries selected by the directory must implement the trusted v2 ABI,
     /// including its no-background-work/no-retained-borrows unload contract.
     pub unsafe fn load(&mut self) -> Result<Vec<Event>, String> {
         if !self.directory.join(crate::MANIFEST).exists() {
@@ -285,6 +401,7 @@ mod tests {
                     create: None,
                     destroy: Some(fails_to_destroy),
                     describe: None,
+                    render_markdown: None,
                 },
                 // This local test destructor never dereferences the opaque instance.
                 instance: NonNull::dangling(),
@@ -317,5 +434,91 @@ mod tests {
             matches!(&events[..], [Event::Rejected { message, .. }] if message.contains("restart required"))
         );
         assert_eq!(DESTROYS.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+pub(super) mod test_provider {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    pub struct Control {
+        pub entered: mpsc::SyncSender<()>,
+        pub release: mpsc::Receiver<()>,
+        pub calls: Arc<AtomicUsize>,
+        pub drops: Arc<AtomicUsize>,
+    }
+    unsafe extern "C" fn render(
+        instance: *mut c_void,
+        source: *const u8,
+        length: usize,
+        sink: RunSink,
+        context: *mut c_void,
+    ) -> i32 {
+        // SAFETY: this fixture's instance and input are owned by the serial worker.
+        let state = unsafe { &mut *instance.cast::<Control>() };
+        state.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = state.entered.try_send(());
+        if state
+            .release
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .is_err()
+        {
+            return INVALID;
+        }
+        let run = StyledRun {
+            text: Bytes {
+                data: source,
+                length,
+            },
+            link: Bytes {
+                data: b"".as_ptr(),
+                length: 0,
+            },
+            flags: BOLD,
+            heading: 0,
+        };
+        // SAFETY: the host callback consumes this initialized run before returning.
+        unsafe { sink(context, &run, 1) }
+    }
+    unsafe extern "C" fn destroy(instance: *mut c_void) -> i32 {
+        // SAFETY: fixture instance is destroyed once by its owner.
+        let state = unsafe { Box::from_raw(instance.cast::<Control>()) };
+        state.drops.fetch_add(1, Ordering::SeqCst);
+        OK
+    }
+    pub fn manager(control: Control) -> Manager {
+        let copy = tempfile::tempdir().unwrap();
+        let mut manager = Manager::new(copy.path().into());
+        manager.plugins.insert(
+            "test.markdown".into(),
+            Generation {
+                info: PluginInfo {
+                    id: "test.markdown".into(),
+                    version: "1".into(),
+                    generation: 1,
+                    loaded_path: copy.path().into(),
+                    description: String::new(),
+                },
+                api: PluginApi {
+                    abi_version: ABI_VERSION,
+                    struct_size: std::mem::size_of::<PluginApi>() as u32,
+                    id: [0; 64],
+                    version: [0; 32],
+                    create: None,
+                    destroy: Some(destroy),
+                    describe: None,
+                    render_markdown: Some(render),
+                },
+                instance: NonNull::new(Box::into_raw(Box::new(control)).cast()).unwrap(),
+                destroyed: false,
+                library: None,
+                _copy: copy,
+            },
+        );
+        manager
     }
 }

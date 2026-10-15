@@ -83,9 +83,10 @@ cargo xtask plugins --release
 ```
 
 This only builds/stages the bundled plugins. Editor recompilation is unnecessary.
-The current bundled `velk.lifecycle-demo` plugin is a small lifecycle proof, not an
-editor feature; Markdown, LSP, and Rust support remain built in for now. To make a
-changed implementation easy to observe during development:
+The bundled `velk.markdown` plugin renders hover documentation; `velk.lifecycle-demo`
+remains a small lifecycle proof. LSP and Rust support are still built in. Without
+the Markdown plugin, hover displays literal provider text. To make a changed demo
+implementation easy to observe during development:
 
 ```sh
 VELK_PLUGIN_DEMO_MESSAGE="Second implementation" cargo xtask plugins --release
@@ -106,9 +107,28 @@ C entry point, catches unwinding panics inside lifecycle wrappers, and copies
 results into host-owned buffers. The experimental ABI contains fixed metadata,
 opaque instances, and function pointers; it does not exchange Rust containers or
 trait objects. Its contracts are not frozen. Distribution, dependency resolution,
-inter-plugin services, and async plugin work are deliberately deferred.
+inter-plugin services, and plugin-owned asynchronous work are deliberately deferred.
 
-These are trusted in-process native plugins. The v1 contract requires serialized,
+Markdown requests are asynchronous to the editor. The host uses a bounded queue
+(16 pending operations) and executes the synchronous C function on its plugin
+worker. A single typed run batch is copied into host-owned text/style/link data;
+there is no JSON round trip, plugin-owned future, retained callback, or extra
+thread per render. Input is limited to 1 MiB, output to 4 MiB and 65,536 runs.
+Dropping an async request closes its result channel: queued work is skipped, while
+an already executing call finishes normally and its unwanted result is discarded.
+Unload is serialized after active calls, so their library cannot disappear beneath
+them. Existing hover documents remain valid after unload. Requests processed after
+unload use literal text; loading the provider restores formatting for new requests.
+A full queue reports backpressure rather than blocking the UI. Provider errors
+also fall back to literal text in the app. An active render can delay unload; it
+cannot block the UI event loop. Multiple Markdown providers are reported as a
+conflict until explicit provider selection is implemented.
+
+The experimental ABI is now v2 (`velk_plugin_entry_v2`); rebuild/stage both bundled
+plugins with `cargo xtask build` after updating the editor. Older ABI artifacts are
+rejected rather than called with a changed function-table layout.
+
+These are trusted in-process native plugins. The v2 contract requires serialized,
 returning calls, no retained host pointers, no background threads/tasks/callbacks,
 and no unload-sensitive thread-local destructors. Safe author-facing methods do
 not enforce those restrictions on arbitrary Rust code. A reported destructor
@@ -127,7 +147,9 @@ cargo xtask test-plugins
 This compiles two implementations, verifies that staging does not replace an
 active instance, explicitly unloads/loads the new implementation, checks repeated
 lifecycle cleanup, host-owned data, missing/corrupt libraries, digest mismatches,
-and malformed manifests. It restores the ordinary demo build afterward. Build
+and malformed manifests. It additionally tests native styled Markdown output,
+async requests, fallback/reactivation, and result ownership after unload. Worker
+tests cover queued and active cancellation and unload ordering. It restores the ordinary demo build afterward. Build
 commands target the local native platform; cross-compilation and distribution are
 not part of this tooling yet.
 
@@ -137,9 +159,10 @@ not part of this tooling yet.
 - `crates/editor-widget`: reusable RXUI editor view and UI-independent rope buffer.
 - `crates/syntax`: in-process Tree-sitter parsing, Rust grammar, and background worker.
 - `crates/semantic`: transport-independent semantic services and the optional LSP backend.
-- `crates/markup`: replaceable Markdown renderer and UI-independent styled documents.
+- `crates/markup`: UI-independent styled documents and host-facing async renderer contract.
 - `crates/plugin-api`, `crates/plugin-sdk`, `crates/plugin-host`: experimental native ABI, author SDK, and lifecycle worker.
 - `plugins/lifecycle-demo`: bundled native plugin used to prove the loading workflow.
+- `plugins/markdown`: native CommonMark provider; owns the `pulldown-cmark` dependency.
 - `xtask`: local editor/plugin build and staging commands.
 - `Cargo.toml`: shared package settings, dependencies, and lints for future crates.
 

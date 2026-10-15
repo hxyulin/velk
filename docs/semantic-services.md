@@ -63,7 +63,7 @@ input. Incoming frames also have a bounded queue. It supports:
   pull-diagnostics support before they can provide diagnostics throughout editing.
 - One pending hover request, supersession/cancellation, a five-second deadline,
   and rejection of late responses to cancelled requests. Results preserve plain
-  text versus Markdown information; the current UI displays their text directly.
+  text versus Markdown information; the UI delegates Markdown to the loaded renderer.
 - Workspace configuration lookup, workspace-folder responses, and progress-token
   acknowledgment. Workspace edits are explicitly refused until the editor has
   the complete multi-file application flow. Unsupported requests receive a
@@ -121,8 +121,11 @@ scrolling, IME activity, Escape, and outside clicks dismiss it. Hover does not m
 the source caret. No per-hover process or UI-thread parsing is introduced.
 
 Markdown hover responses are preferred over plaintext during LSP negotiation.
-`velk-markup` uses [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark)
-to interpret Markdown into owned styled runs. Headings, bold/italic emphasis,
+The native `velk.markdown` plugin uses
+[pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) to interpret
+Markdown into owned styled runs. `velk-markup` contains only the model and
+host-facing asynchronous interface; neither the editor nor the widget links the
+parser. Headings, bold/italic emphasis,
 inline/fenced code, strikethrough, ordered/unordered/task lists, quotes, rules, and
 basic flattened tables are supported. The widget maps these runs to one selectable
 RXUI rich-text element, preserving selection across paragraphs and independent
@@ -132,14 +135,24 @@ with destinations preserved as data; activation is deferred. Images retain alt
 text without loading resources, and raw HTML is displayed literally. Plaintext
 responses and diagnostic text are never parsed as Markdown.
 
-Interpretation runs through `try_spawn_blocking` and is cached for the active
-hover. Retargeting drops the rendering task; late completion still must pass the
-widget's target/revision/geometry checks. The UI only builds styled text from the
-cached document. The host can inject an `Arc<dyn velk_markup::Renderer>` with
-`enable_semantics_with_renderer`. The document model has no RXUI or LSP types,
-providing a boundary for future plugin implementations. A plugin loader, discovery,
-and a stable dynamic-library/Wasm ABI are separate future work; Rust trait objects
-are currently an in-process extension interface.
+Interpretation is submitted asynchronously through `velk_plugin_host::Client`.
+A bounded host queue sends work to the plugin worker, which calls the optional
+Markdown C ABI capability synchronously. Input is borrowed for the call, and a
+single callback batch copies text/style/link data into host-owned runs before
+returning. Dropping the future closes its result channel; the worker skips
+cancelled queued requests. Active parsing completes normally and never outlives
+its loaded library: unload is another operation on the same serial worker.
+The UI awaits completion through `try_spawn`, maps cached runs to native spans,
+and still rejects stale target/revision/geometry results. There is no additional
+blocking-pool job waiting on the plugin worker.
+
+The host can inject an `Arc<dyn velk_markup::Renderer>` with
+`enable_semantics_with_renderer`. Its Rust future is entirely host-side and never
+crosses the C ABI. With no provider loaded, requests return literal Markdown as
+plain text; provider/queue errors also use a literal fallback. Loading a provider
+restores formatting for subsequent requests. The parser is not retained as a
+built-in fallback. See the README's local-plugin workflow for load/unload commands,
+ABI v2, limits, and the cooperative native-code lifecycle contract.
 
 Completion, navigation, formatting, inlay hints,
 code actions, pull diagnostics, file-watch registration, and automatic server
@@ -178,6 +191,5 @@ syntax diagnostic, its removal after undo, and pointer/caret hovers showing the
 variable type. Pointer hover was also checked for entering the popup, selecting
 its text, leaving, and reopening it. A native Markdown fixture verified headings,
 emphasis, strikethrough, code, lists, styled links, and text selection. Markdown
-rendering also has a GPU selection regression test and a host test for worker
-execution, renderer injection, and cancellation. Actionable links remain deferred.
+rendering also has a GPU selection regression test and a host test for asynchronous execution, renderer injection, and cancellation. Actionable links remain deferred.
 No native end-to-end latency measurement is claimed for this integration.
