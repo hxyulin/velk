@@ -2,6 +2,7 @@ use ropey::{Rope, RopeBuilder};
 use std::{
     cell::RefCell,
     collections::VecDeque,
+    fmt,
     io::{self, Read},
     ops::Range,
     sync::Arc,
@@ -29,16 +30,65 @@ impl Selection {
     }
 }
 
+/// A replacement in Unicode scalar offsets in the transaction's original document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    pub range: Range<usize>,
+    pub text: String,
+}
+
+/// Non-overlapping edits against one document revision, committed as one undo step.
+/// Input order is immaterial. Equal starting offsets are rejected as ambiguous.
+/// Optional selection coordinates refer to the final document; otherwise both
+/// selection endpoints follow edits with right affinity.
+#[derive(Clone, Debug)]
+pub struct Transaction {
+    pub revision: u64,
+    pub edits: Vec<TextEdit>,
+    pub selection: Option<Selection>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransactionError {
+    StaleRevision,
+    InvalidRange,
+    OverlappingEdits,
+    InvalidSelection,
+}
+
+impl fmt::Display for TransactionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::StaleRevision => "transaction targets an obsolete document revision",
+            Self::InvalidRange => "transaction range is outside the document or reversed",
+            Self::OverlappingEdits => {
+                "transaction edits overlap or have ambiguous starting offsets"
+            }
+            Self::InvalidSelection => "transaction selection is outside the final document",
+        })
+    }
+}
+impl std::error::Error for TransactionError {}
+
+/// Identity of a document content state. Survives undo/redo and can be retained
+/// alongside an asynchronous save without retaining the document itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Checkpoint {
+    document: u64,
+    state: u64,
+}
+
 #[derive(Clone)]
 struct Snapshot {
     text: Rope,
     selection: Selection,
+    state: u64,
 }
 
 #[derive(Clone)]
 struct History {
     snapshot: Snapshot,
-    edit: velk_syntax::Edit,
+    edits: Vec<velk_syntax::Edit>,
 }
 
 /// Rope document and editing state, independent of RXUI and the graphics host.
@@ -48,6 +98,9 @@ pub struct Buffer {
     undo: VecDeque<History>,
     redo: Vec<History>,
     revision: u64,
+    document: u64,
+    next_state: u64,
+    saved: Checkpoint,
     edits: VecDeque<velk_syntax::Edit>,
     goal_column: Option<usize>,
     boundaries: RefCell<VecDeque<(usize, Arc<Vec<usize>>)>>,
@@ -94,14 +147,21 @@ impl Buffer {
     }
 
     fn from_rope(text: Rope) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_DOCUMENT: AtomicU64 = AtomicU64::new(1);
+        let document = NEXT_DOCUMENT.fetch_add(1, Ordering::Relaxed);
         Self {
             current: Snapshot {
                 text,
                 selection: Selection::default(),
+                state: 0,
             },
             undo: VecDeque::new(),
             redo: Vec::new(),
             revision: 0,
+            document,
+            next_state: 1,
+            saved: Checkpoint { document, state: 0 },
             edits: VecDeque::new(),
             goal_column: None,
             boundaries: RefCell::new(VecDeque::new()),
@@ -122,6 +182,29 @@ impl Buffer {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            document: self.document,
+            state: self.current.state,
+        }
+    }
+
+    /// Constant-time history identity comparison, including returning to a saved
+    /// state through undo/redo. Independently retyping identical content is dirty.
+    pub fn is_dirty(&self) -> bool {
+        self.checkpoint() != self.saved
+    }
+
+    /// Mark the successfully persisted snapshot, even if editing has continued.
+    /// Checkpoints from another document are rejected.
+    pub fn mark_saved(&mut self, checkpoint: Checkpoint) -> bool {
+        if checkpoint.document != self.document {
+            return false;
+        }
+        self.saved = checkpoint;
+        true
     }
 
     pub fn selected_text(&self) -> String {
@@ -240,25 +323,30 @@ impl Buffer {
 
     pub fn undo(&mut self) {
         if let Some(previous) = self.undo.pop_back() {
-            let edit = previous.edit.inverse(self.revision + 1);
+            for edit in previous.edits.iter().rev() {
+                self.revision += 1;
+                self.record(edit.inverse(self.revision));
+            }
             self.redo.push(History {
                 snapshot: std::mem::replace(&mut self.current, previous.snapshot),
-                edit: previous.edit,
+                edits: previous.edits,
             });
-            self.record(edit);
             self.changed();
         }
     }
 
     pub fn redo(&mut self) {
         if let Some(next) = self.redo.pop() {
-            let mut edit = next.edit.clone();
-            edit.revision = self.revision + 1;
+            for edit in &next.edits {
+                self.revision += 1;
+                let mut edit = edit.clone();
+                edit.revision = self.revision;
+                self.record(edit);
+            }
             self.undo.push_back(History {
                 snapshot: std::mem::replace(&mut self.current, next.snapshot),
-                edit: next.edit,
+                edits: next.edits,
             });
-            self.record(edit);
             self.changed();
         }
     }
@@ -270,52 +358,129 @@ impl Buffer {
         }
     }
 
-    fn replace(&mut self, range: Range<usize>, text: &str) {
-        if range.is_empty() && text.is_empty() {
-            return;
+    /// Apply atomically. Ranges are scalar offsets, so protocol edits may split
+    /// an existing grapheme; only the final caret/selection is snapped to edges.
+    /// Each effective replacement advances the monotonic syntax revision; the
+    /// entire transaction occupies one history entry. Errors leave state intact.
+    pub fn apply_transaction(
+        &mut self,
+        mut transaction: Transaction,
+    ) -> Result<bool, TransactionError> {
+        if transaction.revision != self.revision {
+            return Err(TransactionError::StaleRevision);
         }
-        let previous = self.current.clone();
-        self.redo.clear();
-        // Cache entries use absolute character offsets and logical line numbers.
-        // Entries before the first changed line keep both their contents and
-        // offsets; the edited line and all later entries must be discarded.
-        let first_line = self.text().char_to_line(range.start);
+        transaction
+            .edits
+            .sort_by_key(|edit| (edit.range.start, edit.range.end));
+        for edit in &transaction.edits {
+            if edit.range.start > edit.range.end || edit.range.end > self.text().len_chars() {
+                return Err(TransactionError::InvalidRange);
+            }
+        }
+        for pair in transaction.edits.windows(2) {
+            if pair[0].range.end > pair[1].range.start || pair[0].range.start == pair[1].range.start
+            {
+                return Err(TransactionError::OverlappingEdits);
+            }
+        }
+        let mut next = self.current.clone();
+        let mut edits = Vec::with_capacity(transaction.edits.len());
+        for edit in transaction.edits.into_iter().rev() {
+            let text = if edit.text.contains('\r') {
+                normalize(&edit.text)
+            } else {
+                edit.text
+            };
+            if next.text.slice(edit.range.clone()) == text {
+                continue;
+            }
+            let before = next.text.clone();
+            next.text.remove(edit.range.clone());
+            next.text.insert(edit.range.start, &text);
+            let inserted = text.chars().count();
+            let map = |position: usize| {
+                if position < edit.range.start {
+                    position
+                } else if position <= edit.range.end {
+                    edit.range.start + inserted
+                } else {
+                    position - edit.range.len() + inserted
+                }
+            };
+            next.selection = Selection {
+                anchor: map(next.selection.anchor),
+                head: map(next.selection.head),
+            };
+            edits.push(velk_syntax::Edit::between(
+                self.revision + edits.len() as u64 + 1,
+                &before,
+                &next.text,
+                edit.range,
+                inserted,
+            ));
+        }
+        if let Some(selection) = transaction.selection {
+            if selection.anchor > next.text.len_chars() || selection.head > next.text.len_chars() {
+                return Err(TransactionError::InvalidSelection);
+            }
+            next.selection = selection;
+        }
+        let snap = |position| {
+            if graphemes::is_boundary(&next.text, position) {
+                position
+            } else {
+                graphemes::next(&next.text, position)
+            }
+        };
+        next.selection = Selection {
+            anchor: snap(next.selection.anchor),
+            head: snap(next.selection.head),
+        };
+        if edits.is_empty() {
+            self.current.selection = next.selection;
+            self.goal_column = None;
+            return Ok(false);
+        }
+        let first_line = self
+            .text()
+            .char_to_line(edits.last().unwrap().replaced.start);
         self.boundaries
             .get_mut()
             .retain(|(line, _)| *line < first_line);
-        self.current.text.remove(range.clone());
-        self.current.text.insert(range.start, text);
-        let end = range.start + text.chars().count();
-        // Insertions can join neighboring combining marks/ZWJ sequences. Advance
-        // to the end of that grapheme rather than leaving a caret inside it.
-        let head = if graphemes::is_boundary(self.text(), end) {
-            end
-        } else {
-            self.next(end)
-        };
-        self.current.selection = Selection { anchor: head, head };
-        let edit = velk_syntax::Edit::between(
-            self.revision + 1,
-            &previous.text,
-            self.text(),
-            range,
-            text.chars().count(),
-        );
+        next.state = self.next_state;
+        self.next_state += 1;
+        let previous = std::mem::replace(&mut self.current, next);
+        self.redo.clear();
+        for edit in &edits {
+            self.record(edit.clone());
+        }
+        self.revision += edits.len() as u64;
         self.undo.push_back(History {
             snapshot: previous,
-            edit: edit.clone(),
+            edits,
         });
-        self.record(edit);
         if self.undo.len() > HISTORY_LIMIT {
             self.undo.pop_front();
         }
-        self.revision += 1;
         self.goal_column = None;
+        Ok(true)
+    }
+
+    fn replace(&mut self, range: Range<usize>, text: &str) {
+        let head = range.start + text.chars().count();
+        self.apply_transaction(Transaction {
+            revision: self.revision,
+            edits: vec![TextEdit {
+                range,
+                text: text.to_owned(),
+            }],
+            selection: Some(Selection { anchor: head, head }),
+        })
+        .expect("internal editing range is valid");
     }
 
     fn changed(&mut self) {
         self.boundaries.get_mut().clear();
-        self.revision += 1;
         self.goal_column = None;
     }
 

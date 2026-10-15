@@ -20,7 +20,7 @@ pub use annotations::{
     AnnotationError, Annotations, Color, EditorAppearance, HoverCard, LinePattern, OverlayKind,
     OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
 };
-pub use buffer::{Buffer, Selection};
+pub use buffer::{Buffer, Checkpoint, Selection, TextEdit, Transaction, TransactionError};
 use rxui::{prelude::*, standard_commands as commands};
 #[cfg(any(test, feature = "performance"))]
 use std::time::Instant;
@@ -191,6 +191,21 @@ impl Editor {
         self.composition = None;
         self.buffer.insert(text);
         self.edited();
+    }
+
+    /// Commit programmatic edits as one undo step and one UI/syntax update.
+    pub fn apply_transaction(
+        &mut self,
+        transaction: Transaction,
+    ) -> Result<bool, TransactionError> {
+        let changed = self.buffer.apply_transaction(transaction)?;
+        self.composition = None;
+        self.edited();
+        Ok(changed)
+    }
+
+    pub fn mark_saved(&mut self, checkpoint: Checkpoint) -> bool {
+        self.buffer.mark_saved(checkpoint)
     }
 
     fn edited(&mut self) {

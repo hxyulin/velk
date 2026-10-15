@@ -392,6 +392,84 @@ mod tests {
     }
 
     #[test]
+    fn grouped_transaction_undo_and_redo_keep_sequential_syntax_coordinates() {
+        use crate::{TextEdit, Transaction};
+        let mut buffer = Buffer::new("fn café() { let text = \"世界\"; }\n");
+        let mut engine = Engine::new(Language::Rust).unwrap();
+        engine
+            .update(0, buffer.text().clone(), &[], || false)
+            .unwrap();
+        let length = buffer.text().len_chars();
+        buffer
+            .apply_transaction(Transaction {
+                revision: 0,
+                edits: vec![
+                    TextEdit {
+                        range: 0..0,
+                        text: "// 👩‍💻\n".into(),
+                    },
+                    TextEdit {
+                        range: 3..7,
+                        text: "café_new".into(),
+                    },
+                    TextEdit {
+                        range: length..length,
+                        text: "fn next() {}\n".into(),
+                    },
+                ],
+                selection: None,
+            })
+            .unwrap();
+        let mut revision = 0;
+        for operation in 0..3 {
+            if operation == 1 {
+                buffer.undo();
+            }
+            if operation == 2 {
+                buffer.redo();
+            }
+            let changes = buffer.edits_since(revision).unwrap();
+            assert_eq!(changes.len(), 3);
+            for (index, change) in changes.iter().enumerate() {
+                assert_eq!(change.revision, revision + index as u64 + 1);
+            }
+            let incremental = engine
+                .update(buffer.revision(), buffer.text().clone(), &changes, || false)
+                .unwrap();
+            let fresh = Engine::new(Language::Rust)
+                .unwrap()
+                .update(buffer.revision(), buffer.text().clone(), &[], || false)
+                .unwrap();
+            assert_eq!(
+                incremental.highlights(0..buffer.text().len_chars()),
+                fresh.highlights(0..buffer.text().len_chars())
+            );
+            revision = buffer.revision();
+        }
+        // Both the parser and stale-color projection must fall back safely when
+        // a single large transaction exceeds the bounded primitive edit log.
+        let edits = (0..130)
+            .map(|i| TextEdit {
+                range: i..i,
+                text: " ".into(),
+            })
+            .collect();
+        let mut large = Buffer::new(&"x".repeat(130));
+        large
+            .apply_transaction(Transaction {
+                revision: 0,
+                edits,
+                selection: None,
+            })
+            .unwrap();
+        assert!(large.edits_since(0).is_none());
+        large.undo();
+        assert_eq!(large.text().to_string(), "x".repeat(130));
+        large.redo();
+        assert_eq!(large.text().len_chars(), 260);
+    }
+
+    #[test]
     fn offscreen_cache_key_does_not_retain_obsolete_trees() {
         let buffer = Buffer::new("fn main() {}");
         let view = view(&buffer);

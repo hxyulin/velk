@@ -269,3 +269,172 @@ fn edits_at_scalar_offsets_match_contiguous_grapheme_reference() {
         }
     }
 }
+
+#[test]
+fn transaction_is_atomic_grouped_and_restores_directed_selection() {
+    use velk_editor_widget::{TextEdit, Transaction};
+    let mut b = Buffer::new("ab\n世界\ncd");
+    b.set_caret(7, false);
+    b.set_caret(1, true);
+    let selection = b.selection();
+    b.apply_transaction(Transaction {
+        revision: 0,
+        edits: vec![
+            TextEdit {
+                range: 0..0,
+                text: "  ".into(),
+            },
+            TextEdit {
+                range: 6..8,
+                text: "ef\r\ng".into(),
+            },
+            TextEdit {
+                range: 3..3,
+                text: "  ".into(),
+            },
+        ],
+        selection: None,
+    })
+    .unwrap();
+    assert_eq!(b.text().to_string(), "  ab\n  世界\nef\ng");
+    assert_eq!(b.revision(), 3);
+    let after = b.selection();
+    b.undo();
+    assert_eq!(b.text().to_string(), "ab\n世界\ncd");
+    assert_eq!(b.selection(), selection);
+    assert_eq!(b.revision(), 6);
+    assert!(!b.can_undo());
+    b.redo();
+    assert_eq!(b.text().to_string(), "  ab\n  世界\nef\ng");
+    assert_eq!(b.selection(), after);
+    assert_eq!(b.revision(), 9);
+}
+
+#[test]
+fn invalid_and_stale_transactions_leave_text_history_and_selection_untouched() {
+    use velk_editor_widget::{TextEdit, Transaction, TransactionError};
+    let mut b = Buffer::new("abc");
+    b.insert("x");
+    b.undo();
+    let before = b.selection();
+    for (revision, edits, selection, expected) in [
+        (0, vec![], None, TransactionError::StaleRevision),
+        (
+            2,
+            vec![TextEdit {
+                range: 2..4,
+                text: "".into(),
+            }],
+            None,
+            TransactionError::InvalidRange,
+        ),
+        (
+            2,
+            vec![
+                TextEdit {
+                    range: 0..2,
+                    text: "x".into(),
+                },
+                TextEdit {
+                    range: 1..3,
+                    text: "y".into(),
+                },
+            ],
+            None,
+            TransactionError::OverlappingEdits,
+        ),
+        (
+            2,
+            vec![
+                TextEdit {
+                    range: 1..1,
+                    text: "x".into(),
+                },
+                TextEdit {
+                    range: 1..1,
+                    text: "y".into(),
+                },
+            ],
+            None,
+            TransactionError::OverlappingEdits,
+        ),
+        (
+            2,
+            vec![TextEdit {
+                range: 0..1,
+                text: "".into(),
+            }],
+            Some(Selection { anchor: 0, head: 3 }),
+            TransactionError::InvalidSelection,
+        ),
+    ] {
+        assert_eq!(
+            b.apply_transaction(Transaction {
+                revision,
+                edits,
+                selection
+            }),
+            Err(expected)
+        );
+        assert_eq!(b.text().to_string(), "abc");
+        assert_eq!(b.selection(), before);
+        assert_eq!(b.revision(), 2);
+        assert!(b.can_redo());
+        assert!(!b.can_undo());
+        assert!(!b.is_dirty());
+    }
+}
+
+#[test]
+fn no_op_edits_preserve_history_and_checkpoints_and_final_caret_snaps() {
+    use velk_editor_widget::{TextEdit, Transaction};
+    let mut b = Buffer::new("éx");
+    assert!(
+        !b.apply_transaction(Transaction {
+            revision: 0,
+            edits: vec![TextEdit {
+                range: 0..2,
+                text: "é".into()
+            }],
+            selection: Some(Selection { anchor: 1, head: 1 }),
+        })
+        .unwrap()
+    );
+    assert_eq!(b.selection().head, 2);
+    assert_eq!(b.revision(), 0);
+    assert!(!b.can_undo());
+    assert!(!b.is_dirty());
+    b.apply_transaction(Transaction {
+        revision: 0,
+        edits: vec![TextEdit {
+            range: 1..2,
+            text: "".into(),
+        }],
+        selection: None,
+    })
+    .unwrap();
+    assert_eq!(b.text().to_string(), "ex");
+}
+
+#[test]
+fn saved_checkpoints_follow_history_and_async_saves_without_revision_confusion() {
+    let mut b = Buffer::new("abc");
+    let loaded = b.checkpoint();
+    b.insert("x");
+    let saving = b.checkpoint();
+    b.insert("y");
+    assert!(b.mark_saved(saving));
+    assert!(b.is_dirty());
+    b.undo();
+    assert!(!b.is_dirty());
+    b.undo();
+    assert!(b.is_dirty());
+    b.redo();
+    assert!(!b.is_dirty());
+    b.insert("z");
+    assert!(b.is_dirty());
+    assert!(!b.can_redo());
+    assert!(b.mark_saved(loaded));
+    assert!(b.is_dirty());
+    assert!(!b.mark_saved(Buffer::new("").checkpoint()));
+}
