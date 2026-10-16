@@ -29,3 +29,7 @@ revision. Completion is explicitly invoked and plain-text only. See the
 ## Lifecycle
 
 Server sessions are stopped on unload. The native library stays resident because process-wide signal handlers may outlive a session.
+
+Language-server stderr is drained into the host diagnostics service. The host owns
+filtering, colors, and output; external stderr text is recorded at INFO with source
+`velk_plugin_lsp::server`. Long lines are truncated to 4 KiB.

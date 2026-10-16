@@ -136,6 +136,19 @@ fn assert_reaped(_: &Path) {}
 
 #[allow(unsafe_code)]
 pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), String> {
+    let mut diagnostics = if std::env::var("VELK_LSP_SMOKE_MODE").as_deref() == Ok("runtime-stop") {
+        Some(velk_diagnostics::init_with(velk_diagnostics::Config {
+            directory: log.parent().unwrap().join("traces"),
+            duration: Duration::from_secs(10),
+            filter: "off,velk_plugin=info".into(),
+            json_logs: true,
+            startup_capture: false,
+            targets: vec![],
+            log_directory: Some(log.parent().unwrap().join("logs")),
+        })?)
+    } else {
+        None
+    };
     // SAFETY: parent staged only trusted SDK-based local plugins.
     let mut runtime = Some(unsafe { velk_plugin_host::Runtime::start(directory.into())? });
     let client = runtime.as_ref().unwrap().client();
@@ -193,14 +206,23 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
             if mode == "runtime-stop" {
                 // Mirror the application's exit hook with UI clients still alive.
                 drop(runtime.take());
-                let messages = messages(log);
-                let methods: Vec<_> = messages.iter().filter_map(|v| v["method"].as_str()).collect();
+                let protocol = messages(log);
+                let methods: Vec<_> = protocol.iter().filter_map(|v| v["method"].as_str()).collect();
                 let close = methods.iter().position(|&m| m == "textDocument/didClose").unwrap();
                 let shutdown = methods.iter().position(|&m| m == "shutdown").unwrap();
                 let exit = methods.iter().position(|&m| m == "exit").unwrap();
                 assert!(close < shutdown && shutdown < exit);
                 assert_reaped(log);
                 assert!(client.load().is_err());
+                drop(diagnostics.take());
+                let logfile = log.parent().unwrap().join("logs").join(format!("velk-{}.log", std::process::id()));
+                let records = messages(&logfile);
+                for marker in ["fixture server started", "fixture server stopped"] {
+                    assert!(records.iter().any(|record| record["target"] == "velk_plugin"
+                        && record["fields"]["plugin_target"] == "velk_plugin_lsp::server"
+                        && record["fields"]["message"].as_str().is_some_and(|message| message.contains(marker))),
+                        "missing server stderr record: {marker}");
+                }
                 return Ok(());
             }
             let first = until(&service.events, |e| {

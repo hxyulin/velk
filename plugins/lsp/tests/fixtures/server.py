@@ -5,6 +5,8 @@ import sys
 import time
 
 log_path, mode = sys.argv[1:]
+if mode == "runtime-stop":
+    print("fixture server started", file=sys.stderr, flush=True)
 
 def log(message):
     with open(log_path, "a", encoding="utf-8") as file:
@@ -126,4 +128,6 @@ while (message := read()) is not None:
     elif method == "shutdown":
         send({"id": message["id"], "result": None})
     elif method == "exit":
+        if mode == "runtime-stop":
+            print("fixture server stopped", file=sys.stderr, flush=True)
         break

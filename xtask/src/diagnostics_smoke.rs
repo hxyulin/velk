@@ -4,21 +4,41 @@ pub(super) fn run(root: &Path, output: &Path) -> Result<(), String> {
     build(root, false, false)?;
     let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
     let directory = temporary.path().join("plugins");
-    publish(&directory, stage_builtins(output, &directory)?)?;
-    let _guard = velk_diagnostics::init_with(velk_diagnostics::Config {
+    checked(cargo().current_dir(root).args([
+        "build",
+        "--locked",
+        "-p",
+        "velk-plugin-sdk",
+        "--example",
+        "hooks-probe",
+    ]))?;
+    let mut specs = stage_builtins(output, &directory)?;
+    specs.push(stage_plugin(
+        &output.join("examples"),
+        &directory,
+        "test.hooks",
+        "hooks_probe",
+    )?);
+    publish(&directory, specs)?;
+    let guard = velk_diagnostics::init_with(velk_diagnostics::Config {
         directory: temporary.path().join("traces"),
         duration: std::time::Duration::from_secs(10),
-        filter: "off".into(),
+        filter: "off,velk_plugin=info".into(),
         json_logs: true,
         startup_capture: false,
         targets: vec!["velk".into()],
-        log_directory: None,
+        log_directory: Some(temporary.path().join("logs")),
     })?;
     let path = velk_diagnostics::start()?;
     let mut manager = velk_plugin_host::Manager::new(directory);
     unsafe {
         manager.load()?;
     }
+    let echo = manager.bind_hook("test.hooks", "test.echo")?;
+    assert_eq!(
+        manager.call_hook(&echo, b"log before unload")?,
+        b"log before unload"
+    );
     manager.render_markdown("**diagnostics**")?;
     let search = manager.bind_hook(velk_search::DEFAULT_BACKEND, velk_search::HOOK)?;
     for request in [
@@ -56,6 +76,8 @@ pub(super) fn run(root: &Path, output: &Path) -> Result<(), String> {
         manager.restart(None)?;
     }
     manager.render_markdown("after restart")?;
+    let echo = manager.bind_hook("test.hooks", "test.echo")?;
+    manager.call_hook(&echo, b"log after restart")?;
     manager.unload_all();
     let report = velk_diagnostics::stop()?;
     assert_eq!(report.dropped, 0);
@@ -76,8 +98,29 @@ pub(super) fn run(root: &Path, output: &Path) -> Result<(), String> {
             .iter()
             .any(|e| e["cat"] == "velk_plugin_host::native")
     );
+    drop(guard);
+    let logs = std::fs::read_to_string(
+        temporary
+            .path()
+            .join("logs")
+            .join(format!("velk-{}.log", std::process::id())),
+    )
+    .map_err(|e| e.to_string())?;
+    let records: Vec<serde_json::Value> = logs
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    assert!(
+        records
+            .iter()
+            .all(|record| record["target"] == "velk_plugin"
+                && record["level"] == "INFO"
+                && record["fields"]["plugin_target"] == "hooks_probe"
+                && record["fields"]["message"] == "native logging probe 世界")
+    );
     println!(
-        "Diagnostics smoke passed: {} events, separate DLL/worker timings, restart/unload and host tracing share one completed capture",
+        "Diagnostics smoke passed: {} events, host-filtered C ABI logs from native workers, separate DLL/worker timings, restart/unload and host tracing share one completed capture",
         report.events
     );
     Ok(())

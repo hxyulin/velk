@@ -209,7 +209,7 @@ where
     })
 }
 fn register_diagnostics<P: Plugin>(reg: &mut registry::Registrar<P>) -> Result<(), String> {
-    unsafe extern "C" fn attach(sink: *const TraceSink) -> i32 {
+    unsafe extern "C" fn attach(sink: *const DiagnosticsSink) -> i32 {
         guard(|| {
             if sink.is_null() {
                 return INVALID;

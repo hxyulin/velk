@@ -70,6 +70,18 @@ impl Plugin for Probe {
             },
         )?;
         reg.provide(Request("test.echo"), |_: &mut Self, input: &[u8]| {
+            std::thread::spawn(|| {
+                velk_plugin_sdk::diagnostics::log!(
+                    velk_plugin_sdk::diagnostics::Level::Info,
+                    "native logging probe 世界"
+                );
+                velk_plugin_sdk::diagnostics::log!(
+                    velk_plugin_sdk::diagnostics::Level::Debug,
+                    "filtered logging probe"
+                );
+            })
+            .join()
+            .unwrap();
             Ok(input.to_vec())
         })?;
         reg.provide(Request("test.state"), |p: &mut Self, _: &[u8]| {

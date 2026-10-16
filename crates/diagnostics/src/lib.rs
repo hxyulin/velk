@@ -1,24 +1,28 @@
 //! Lightweight instrumentation facade plus an executable-owned optional collector.
 use std::sync::OnceLock;
+#[cfg(feature = "collector")]
 pub use tracing;
-use velk_plugin_api::TraceSink;
+use velk_plugin_api::DiagnosticsSink;
 #[cfg(feature = "collector")]
 mod collector;
 #[cfg(feature = "collector")]
 pub use collector::*;
 
-static SINK: OnceLock<TraceSink> = OnceLock::new();
+mod logging;
+pub use logging::{Level, log, log_enabled};
+
+static SINK: OnceLock<DiagnosticsSink> = OnceLock::new();
 /// Install the executable-owned, process-lifetime callback table for this image.
 /// # Safety
 /// Every callback must remain callable on any producer thread until process exit.
 #[allow(unsafe_code)]
-pub unsafe fn attach(sink: TraceSink) {
+pub unsafe fn attach(sink: DiagnosticsSink) {
     let _ = SINK.set(sink);
 }
 
 /// SDK timings use the host clock and do not depend on shared Rust globals.
 pub struct Scope {
-    sink: Option<TraceSink>,
+    sink: Option<DiagnosticsSink>,
     name: &'static str,
     target: &'static str,
     start: u64,
@@ -98,7 +102,7 @@ macro_rules! async_scope {
 }
 
 /// Absent for standalone hosts that have not installed a collector.
-pub fn host_sink() -> Option<TraceSink> {
+pub fn host_sink() -> Option<DiagnosticsSink> {
     #[cfg(feature = "collector")]
     {
         available().then(sink)

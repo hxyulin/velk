@@ -24,9 +24,22 @@ Feature models remain in their domain crates, including `velk-markup`,
 their service semantics and common definitions instead of depending on native
 function tables. No Wasm runtime or new feature API is introduced by this split.
 
-The native ABI, entry symbols, contract versions, JSON field names, validation
-limits, and settings/restart behavior remain unchanged. Standard hook names and
-plugin-ID helpers remain available from `velk-plugin-api` through re-exports.
+The root ABI and named contract versions stay at 1 during internal development;
+callback layouts may change. Rebuild the host, SDK, and bundled plugins together.
+Standard hook names and plugin-ID helpers are available from `velk-plugin-api`
+through re-exports.
+
+## Host diagnostics service
+
+The host attaches a process-lifetime `DiagnosticsSink` through the optional
+`velk.diagnostics.attach.v1` service. Its C callbacks provide level checks, log
+emission, a shared clock, and timing events. The SDK exposes safe wrappers through
+`velk_plugin_sdk::diagnostics`. Only integers and borrowed UTF-8 byte views cross
+this boundary; the host owns log filtering, formatting, buffering, and output.
+See [plugin instrumentation](profiling.md#instrumenting-plugins) for usage and
+limits. Plugins must join their workers before unload. Both the root ABI and
+internal diagnostics contract stay at version 1 during development; rebuild the
+host and plugins together after contract changes.
 
 ## Metadata and access declarations
 

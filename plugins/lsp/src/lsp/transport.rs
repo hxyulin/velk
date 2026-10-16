@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::{ffi::OsStr, io, path::Path, process::Stdio, time::Duration};
 use tokio::{
-    io::{AsyncBufRead, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
     sync::mpsc,
     task::JoinHandle,
@@ -12,6 +12,7 @@ pub(super) struct Connection {
     stdin: ChildStdin,
     messages: mpsc::Receiver<Result<Value, String>>,
     reader: JoinHandle<()>,
+    stderr: JoinHandle<()>,
     pub root_uri: String,
     pub document_uri: Option<String>,
     configuration: Value,
@@ -29,7 +30,7 @@ impl Connection {
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("Cannot start {}: {e}", executable.to_string_lossy()))?;
@@ -41,6 +42,27 @@ impl Connection {
             .stdout
             .take()
             .ok_or("language server stdout is unavailable")?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or("language server stderr is unavailable")?;
+        let server = executable.to_string_lossy().into_owned();
+        let stderr = tokio::spawn(async move {
+            let result = read_stderr(stderr, |line| {
+                velk_plugin_sdk::diagnostics::log(
+                    velk_plugin_sdk::diagnostics::Level::Info,
+                    "velk_plugin_lsp::server",
+                    format_args!("{server}: {line}"),
+                );
+            })
+            .await;
+            if let Err(error) = result {
+                velk_plugin_sdk::diagnostics::log!(
+                    velk_plugin_sdk::diagnostics::Level::Warn,
+                    "Cannot read {server} stderr: {error}"
+                );
+            }
+        });
         let (send, messages) = mpsc::channel(32);
         let reader = tokio::spawn(async move {
             let mut stdout = BufReader::new(stdout);
@@ -59,6 +81,7 @@ impl Connection {
             stdin,
             messages,
             reader,
+            stderr,
             root_uri: String::new(),
             document_uri: None,
             configuration,
@@ -140,11 +163,56 @@ impl Connection {
             let _ = self.child.kill().await;
         }
         self.reader.abort();
+        if tokio::time::timeout(Duration::from_secs(1), &mut self.stderr)
+            .await
+            .is_err()
+        {
+            self.stderr.abort();
+            let _ = (&mut self.stderr).await;
+        }
     }
 }
 impl Drop for Connection {
     fn drop(&mut self) {
         self.reader.abort();
+        self.stderr.abort();
+    }
+}
+
+async fn read_stderr(
+    mut reader: impl AsyncRead + Unpin,
+    mut emit: impl FnMut(&str),
+) -> io::Result<()> {
+    let mut bytes = [0; 4096];
+    let mut line = Vec::new();
+    let mut truncated = false;
+    loop {
+        let count = reader.read(&mut bytes).await?;
+        if count == 0 {
+            if !line.is_empty() {
+                emit(&String::from_utf8_lossy(&line));
+            }
+            return Ok(());
+        }
+        for &byte in &bytes[..count] {
+            if byte == b'\n' {
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                if !truncated {
+                    emit(&String::from_utf8_lossy(&line));
+                }
+                line.clear();
+                truncated = false;
+            } else if !truncated {
+                line.push(byte);
+                if line.len() == 4096 {
+                    emit(&String::from_utf8_lossy(&line));
+                    line.clear();
+                    truncated = true;
+                }
+            }
+        }
     }
 }
 
@@ -195,6 +263,21 @@ async fn read_frame(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn stderr_drains_oversized_lines_and_preserves_following_messages() {
+        let input = format!("first\r\n{}\nlast", "x".repeat(20000));
+        let mut lines = Vec::new();
+        read_stderr(input.as_bytes(), |line| lines.push(line.to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(lines, ["first", &"x".repeat(4096), "last"]);
+        let mut lines = Vec::new();
+        read_stderr(&b"bad: \xff\n"[..], |line| lines.push(line.to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(lines, ["bad: \u{fffd}"]);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn framing_accepts_byte_lengths_and_extra_headers_and_rejects_bad_frames() {
         let message = json!({"jsonrpc":"2.0","method":"test","params":"世界👩‍💻"});

@@ -80,12 +80,17 @@ pub struct HookInfo {
     pub table_size: usize,
 }
 
-/// Optional SDK-to-host timing bridge. Callbacks are process-owned and thread
+/// Optional SDK-to-host logging and timing bridge. Callbacks are process-owned and thread
 /// safe. Borrowed UTF-8 is copied before returning; no Rust objects cross the ABI.
 pub const DIAGNOSTICS_HOOK: &str = "velk.diagnostics.attach.v1";
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TraceSink {
+pub struct DiagnosticsSink {
+    /// Levels: 1 error, 2 warn, 3 info, 4 debug, 5 trace.
+    pub log_enabled: unsafe extern "C" fn(level: u32) -> bool,
+    /// Target and message must be valid UTF-8, at most 256 and 8192 bytes.
+    /// Views last only this call. The host owns filtering and output.
+    pub log: unsafe extern "C" fn(level: u32, target: Bytes, message: Bytes),
     pub enabled: unsafe extern "C" fn() -> bool,
     pub now_ns: unsafe extern "C" fn() -> u64,
     pub next_id: unsafe extern "C" fn() -> u64,
@@ -103,7 +108,7 @@ pub struct TraceSink {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DiagnosticsApi {
-    pub attach: unsafe extern "C" fn(*const TraceSink) -> i32,
+    pub attach: unsafe extern "C" fn(*const DiagnosticsSink) -> i32,
 }
 
 pub use velk_plugin_contracts::hooks::*;

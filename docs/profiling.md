@@ -153,7 +153,10 @@ control markers/summary metadata remain in the capture.
 
 Readable logs use colors when stderr is a terminal, unless `NO_COLOR` is nonempty
 or `TERM=dumb`. Redirected output, log files, and JSON logs remain uncolored.
-Child language-server stderr is inherited and uses the server's own log format.
+Language-server stderr is piped through the host as INFO records with source
+`velk_plugin_lsp::server`. The server's text is preserved; stderr itself does not
+provide a reliable severity. Lines are truncated to 4 KiB and drained through EOF
+during shutdown.
 
 Logs use `tracing-appender`'s bounded 4,096-line nonblocking queue. Log overload is
 lossy and its dropped-record count is reported on shutdown. A guard outlives the
@@ -189,8 +192,26 @@ The SDK automatically registers the optional `velk.diagnostics.attach.v1` named
 service when a registration slot is available. A plugin already using the full
 hook capacity remains loadable with host boundary timings. The host copies its process-owned callback table into the plugin image.
 SDK guards call the host clock and forward borrowed names synchronously; the
-host copies them into its bounded queue. No Rust spans, futures, allocators or
+host copies them into its bounded queue. The same `DiagnosticsSink` C table also
+provides log-level queries and log emission. Plugins use the host's filtering,
+formatting, colors, output queue, and file configuration; they do not install a
+subscriber or writer. No Rust spans, futures, allocators or
 subscriber trait objects cross the C ABI. The root ABI stays at version 1.
+
+```rust
+use velk_plugin_sdk::diagnostics::{self, Level};
+
+diagnostics::log!(Level::Info, "Indexed {} files", count);
+```
+
+Plugin records use the host target `velk_plugin`; `plugin_target` preserves the
+SDK caller's module path. Use `VELK_LOG=warn,velk_plugin=debug` to enable debug
+messages. Logging works without an active trace capture. Disabled messages avoid
+formatting; messages are bounded to 8 KiB of UTF-8, and source names to 256 bytes.
+Without a host attachment the facade is silent. Callbacks may run concurrently
+and copy borrowed views before returning, so queued output survives plugin unload.
+The timing and logging callbacks are the existing host-service boundary, rather
+than shared Rust globals or trait objects.
 
 ```rust
 let _cpu = velk_plugin_sdk::diagnostics::scope!("my_plugin.parse");
@@ -217,6 +238,6 @@ Velk and its built-ins.
 Validation helpers:
 
 ```sh
-cargo xtask test-diagnostics  # Real DLL + background search timing bridge.
+cargo xtask test-diagnostics  # Real DLL logging/filtering and worker timing bridge.
 cargo xtask test-plugins     # Existing ABI, pack, restart and service checks.
 ```

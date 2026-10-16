@@ -645,13 +645,60 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for TraceLayer {
 }
 
 /// Process-owned callback table, copied into SDK plugins after factory creation.
-pub fn sink() -> velk_plugin_api::TraceSink {
-    velk_plugin_api::TraceSink {
+pub fn sink() -> velk_plugin_api::DiagnosticsSink {
+    velk_plugin_api::DiagnosticsSink {
+        log_enabled: bridge_log_enabled,
+        log: bridge_log,
         enabled: bridge_enabled,
         now_ns: bridge_now,
         next_id: bridge_id,
         record: bridge_record,
     }
+}
+#[allow(unsafe_code)]
+unsafe extern "C" fn bridge_log_enabled(level: u32) -> bool {
+    std::panic::catch_unwind(|| match level {
+        1 => tracing::enabled!(target: "velk_plugin", tracing::Level::ERROR),
+        2 => tracing::enabled!(target: "velk_plugin", tracing::Level::WARN),
+        3 => tracing::enabled!(target: "velk_plugin", tracing::Level::INFO),
+        4 => tracing::enabled!(target: "velk_plugin", tracing::Level::DEBUG),
+        5 => tracing::enabled!(target: "velk_plugin", tracing::Level::TRACE),
+        _ => false,
+    })
+    .unwrap_or(false)
+}
+#[allow(unsafe_code)]
+unsafe extern "C" fn bridge_log(
+    level: u32,
+    target: velk_plugin_api::Bytes,
+    message: velk_plugin_api::Bytes,
+) {
+    let _ = std::panic::catch_unwind(|| {
+        if target.length > 256
+            || message.length > 8192
+            || target.data.is_null()
+            || message.data.is_null()
+        {
+            return;
+        }
+        // SAFETY: the producer lends readable byte slices for this call only.
+        let (Ok(target), Ok(message)) = (
+            std::str::from_utf8(unsafe { std::slice::from_raw_parts(target.data, target.length) }),
+            std::str::from_utf8(unsafe {
+                std::slice::from_raw_parts(message.data, message.length)
+            }),
+        ) else {
+            return;
+        };
+        match level {
+            1 => tracing::error!(target: "velk_plugin", plugin_target = target, "{message}"),
+            2 => tracing::warn!(target: "velk_plugin", plugin_target = target, "{message}"),
+            3 => tracing::info!(target: "velk_plugin", plugin_target = target, "{message}"),
+            4 => tracing::debug!(target: "velk_plugin", plugin_target = target, "{message}"),
+            5 => tracing::trace!(target: "velk_plugin", plugin_target = target, "{message}"),
+            _ => {}
+        }
+    });
 }
 #[allow(unsafe_code)]
 unsafe extern "C" fn bridge_enabled() -> bool {
