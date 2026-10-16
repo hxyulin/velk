@@ -1,20 +1,18 @@
 use std::process::Command;
 
 #[test]
-fn rejects_missing_and_extra_paths_before_starting_the_ui() {
-    for arguments in [vec![], vec!["one.txt", "two.txt"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_velk"))
-            .args(arguments)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
-        assert!(
-            String::from_utf8(output.stderr)
-                .unwrap()
-                .contains("Usage: velk <file>")
-        );
-    }
+fn rejects_extra_paths_before_starting_the_ui() {
+    let output = Command::new(env!("CARGO_BIN_EXE_velk"))
+        .args(["one.txt", "two.txt"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("Usage: velk [file]")
+    );
 }
 
 #[test]

@@ -95,3 +95,8 @@ Reload transfers every open file-backed buffer and restores tab order and the
 selected tab. Inactive buffers retain unsaved text, undo history, selection,
 scroll, disk baseline and find state. Pending file opens or saves in any buffer
 block reload. See [buffers.md](buffers.md) for buffer ownership and lifecycle.
+
+Document IDs, the next-ID counter, and the explicit workspace root now survive
+replacement alongside untitled buffers. The replacement persists its initial
+recovery snapshot before acknowledging readiness; successful handoff retires the
+old process’s recovery snapshot. See [document-foundation.md](document-foundation.md).

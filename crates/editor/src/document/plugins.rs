@@ -175,7 +175,7 @@ impl Document {
                     _ => "Plugin worker unavailable".into(),
                 };
                 this.refresh_panels(cx);
-                if this.buffer.search.open {
+                if this.has_buffers() && this.buffer.search.open {
                     this.buffer.search.preserve_selection = true;
                     this.restart_search(cx);
                 }

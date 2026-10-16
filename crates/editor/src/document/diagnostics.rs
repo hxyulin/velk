@@ -12,14 +12,14 @@ impl Document {
         if self.diagnostics.is_some() || self.reloading() {
             return;
         }
-        self.buffer.status = Some(
+        self.notice(Some(
             if start {
                 "Starting trace capture…"
             } else {
                 "Finishing trace capture…"
             }
             .into(),
-        );
+        ));
         match cx.try_spawn_blocking(
             move || {
                 if start {
@@ -39,15 +39,15 @@ impl Document {
             },
             |this, result, _| {
                 this.diagnostics = None;
-                this.buffer.status = Some(match result {
+                this.notice(Some(match result {
                     Ok(Ok(message)) => message,
                     Ok(Err(error)) => format!("Trace failed: {error}"),
                     Err(error) => format!("Trace failed: {error}"),
-                });
+                }));
             },
         ) {
             Ok(task) => self.diagnostics = Some(task),
-            Err(error) => self.buffer.status = Some(format!("Trace failed: {error}")),
+            Err(error) => self.notice(Some(format!("Trace failed: {error}"))),
         }
     }
 }

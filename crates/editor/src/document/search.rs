@@ -134,6 +134,9 @@ async fn run(
 
 impl Document {
     pub(super) fn cancel_search(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.has_buffers() {
+            return;
+        }
         self.buffer.search.task = None;
         if let Some(state) = &self.plugins {
             let client = state.client.clone();
@@ -228,12 +231,13 @@ impl Document {
                                 this.buffer.search.preserve_selection = false;
                                 let range =
                                     this.buffer.editor.read(cx).buffer().selection().range();
-                                let results = this.buffer.search.results.as_ref().unwrap();
-                                this.buffer.search.selected = results
+                                let buffer = this.buffer.as_mut().unwrap();
+                                let results = buffer.search.results.as_ref().unwrap();
+                                buffer.search.selected = results
                                     .matches
                                     .iter()
                                     .position(|m| m.start == range.start && m.end == range.end);
-                                this.buffer.search.notice = match this.buffer.search.selected {
+                                buffer.search.notice = match buffer.search.selected {
                                     Some(index) => {
                                         format!("{} of {}", index + 1, results.matches.len())
                                     }
@@ -256,26 +260,29 @@ impl Document {
         }
     }
     fn select_search_match(&mut self, index: usize, cx: &mut Context<'_, Self>) {
-        let Some(results) = &self.buffer.search.results else {
+        let Some(buffer) = self.buffer.as_mut() else {
             return;
         };
-        if results.revision != self.buffer.editor.read(cx).buffer().revision() {
+        let Some(results) = &buffer.search.results else {
+            return;
+        };
+        if results.revision != buffer.editor.read(cx).buffer().revision() {
             return;
         }
         if let Some(m) = results.matches.get(index) {
             let range = m.start..m.end;
-            self.buffer.search.selected = Some(index);
-            self.buffer.search.notice = format!(
+            buffer.search.selected = Some(index);
+            buffer.search.notice = format!(
                 "{} of {}{}",
                 index + 1,
                 results.matches.len(),
                 if results.truncated { "+" } else { "" }
             );
-            self.buffer.editor.update(cx, |editor, _| {
+            buffer.editor.update(cx, |editor, _| {
                 editor.select_range(range);
             });
         } else {
-            self.buffer.search.notice = "No matches".into();
+            buffer.search.notice = "No matches".into();
         }
     }
     fn navigate_search(&mut self, previous: bool, cx: &mut Context<'_, Self>) {
@@ -314,8 +321,12 @@ impl Document {
     ) -> (rxui::CommandAction<Find>, Element) {
         let find = cx
             .command(Find, |this, _, cx| {
+                if !this.has_buffers() {
+                    return;
+                }
                 if !this.buffer.search.open {
-                    let editor = this.buffer.editor.read(cx);
+                    let entity = this.buffer.editor.clone();
+                    let editor = entity.read(cx);
                     let range = editor.buffer().selection().range();
                     if !range.is_empty() && range.len() <= model::MAX_QUERY_BYTES {
                         let selected = editor.buffer().text().slice(range);
@@ -329,7 +340,11 @@ impl Document {
                 this.restart_search(cx);
             })
             .label("Find in file")
+            .enabled(self.has_buffers())
             .shortcut(Shortcut::primary("f"));
+        if !self.has_buffers() {
+            return (find, column().into_element());
+        }
         let close = cx
             .command(Close, |this, _, cx| this.close_search(cx))
             .label("Close")

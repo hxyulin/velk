@@ -1,7 +1,8 @@
 # Velk
 
 A desktop editor built with Rust and [RXUI](https://github.com/hxyulin/rxui).
-The application opens a single UTF-8 file in a native rope-backed text editor.
+The application opens UTF-8 files and untitled documents in a native rope-backed
+text editor, with multiple buffers, recovery, and loadable feature plugins.
 
 Current development version: **0.0.0-dev** (set explicitly in `Cargo.toml`).
 The dependency-free [`velk` crate](crates/velk/README.md) reserves the package name
@@ -48,11 +49,15 @@ cargo build --release --locked
 ./target/release/velk path/to/file.txt
 ```
 
-Exactly one file path is required. Quote paths containing spaces. The app reports
+A file path is optional; omit it to open an untitled document or recover an
+interrupted workspace. Quote paths containing spaces. The app reports
 usage errors, unreadable files and invalid UTF-8 on stderr before starting the UI.
 Files load directly into a Rope; CRLF and CR line endings normalize to LF in the
 editing buffer. Loading creates no undo entry and leaves the source file unchanged.
-Command/Ctrl+S saves to the opened file asynchronously. A `*` in the window title
+Command/Ctrl+S saves asynchronously, prompting for a destination for untitled
+documents. Command/Ctrl+Shift+S invokes Save As; Command/Ctrl+Alt+S saves all dirty
+documents. See [documents and recovery](docs/document-foundation.md) for
+workspace state, recovery storage, disk-change reconciliation, and safety limits. A `*` in the window title
 and the status line indicate unsaved changes; undo/redo can return to a saved
 checkpoint. Closing or quitting a dirty document asks whether to save, discard,
 or cancel. Editing stays available while a save runs, and newer edits remain

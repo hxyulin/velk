@@ -1,9 +1,11 @@
 mod document;
 mod file;
 mod plugins;
+mod recovery;
 mod session;
 mod settings;
 mod theme;
+mod workspace;
 
 use rxui::{WeakEntity, prelude::*};
 use std::{
@@ -26,19 +28,19 @@ enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Usage => write!(f, "expected exactly one file path\nUsage: velk <file>"),
+            Self::Usage => write!(f, "expected at most one file path\nUsage: velk [file]"),
             Self::Open { path, source } => write!(f, "cannot open '{}': {source}", path.display()),
             Self::Application(error) => write!(f, "{error}"),
         }
     }
 }
 
-fn file_argument(mut arguments: impl Iterator<Item = OsString>) -> Result<PathBuf, Error> {
-    let path = arguments.next().ok_or(Error::Usage)?;
+fn file_argument(mut arguments: impl Iterator<Item = OsString>) -> Result<Option<PathBuf>, Error> {
+    let path = arguments.next();
     if arguments.next().is_some() {
         return Err(Error::Usage);
     }
-    Ok(PathBuf::from(path))
+    Ok(path.map(PathBuf::from))
 }
 
 fn open(path: &Path) -> Result<(file::FileState, Editor), Error> {
@@ -56,7 +58,10 @@ fn open(path: &Path) -> Result<(file::FileState, Editor), Error> {
 }
 
 fn run() -> Result<(), Error> {
-    let path = file_argument(std::env::args_os().skip(1))?;
+    let argument = file_argument(std::env::args_os().skip(1))?;
+    let mut path = argument
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("Untitled 1"));
     let restored = std::env::var_os(session::SNAPSHOT_ENV)
         .map(|snapshot| session::Session::read(snapshot.into(), &path))
         .transpose()
@@ -64,16 +69,25 @@ fn run() -> Result<(), Error> {
             path: path.clone(),
             source: io::Error::other(message),
         })?;
-    let (file, mut editor) = if let Some(session) = &restored {
+    let (mut file, mut editor) = if let Some(session) = &restored {
         (
             session.file.clone(),
-            session.editor().map_err(|message| Error::Open {
-                path: path.clone(),
-                source: io::Error::other(message),
-            })?,
+            if session.is_empty() {
+                Editor::new("")
+            } else {
+                session.editor().map_err(|message| Error::Open {
+                    path: path.clone(),
+                    source: io::Error::other(message),
+                })?
+            },
         )
     } else {
-        open(&path)?
+        if argument.is_some() {
+            let (file, editor) = open(&path)?;
+            (Some(file), editor)
+        } else {
+            (None, Editor::new(""))
+        }
     };
     if restored.is_some() {
         editor
@@ -82,6 +96,163 @@ fn run() -> Result<(), Error> {
                 path: path.clone(),
                 source: io::Error::other(error.to_string()),
             })?;
+    }
+    let (recovery_store, recovered, mut recovery_error) =
+        match recovery::Store::open(restored.is_none()) {
+            Ok((store, recovered)) => {
+                let warning = store.warning.clone();
+                (Some(store), recovered, warning)
+            }
+            Err(error) => (None, None, Some(format!("Recovery unavailable: {error}"))),
+        };
+    let recovery_handle = recovery_store.as_ref().map(|store| store.handle.clone());
+    let mut empty = restored.as_ref().is_some_and(|s| s.is_empty());
+    let mut document_id = restored
+        .as_ref()
+        .map_or(1, |s| if s.is_empty() { 0 } else { s.id.max(1) });
+    let mut next_document_id = restored
+        .as_ref()
+        .map_or(2, |s| s.next_id.max(document_id + 1));
+    let mut recovered_order = Vec::new();
+    let mut recovered_documents = Vec::new();
+    let mut recovered_workspace = workspace::Workspace::default();
+    let mut recovered_notice = false;
+    if let Some(mut recovered) = recovered {
+        recovered_notice = true;
+        next_document_id = recovered.next_id;
+        recovered_order = recovered.documents.iter().map(|d| d.id).collect();
+        if recovered.documents.is_empty() && argument.is_none() {
+            empty = true;
+            document_id = 0;
+            path = PathBuf::new();
+        }
+        let chosen = if argument.is_none() {
+            recovered
+                .documents
+                .iter()
+                .position(|d| d.id == recovered.active)
+        } else {
+            recovered.documents.iter().position(|d| {
+                d.file
+                    .as_ref()
+                    .zip(file.as_ref())
+                    .is_some_and(|(a, b)| a.path() == b.path())
+            })
+        };
+        if let Some(index) = chosen {
+            let primary = recovered.documents.remove(index);
+            document_id = primary.id;
+            path = primary.path;
+            file = primary.file;
+            editor = primary.editor;
+        } else if !empty {
+            if recovered.documents.len() >= 256 {
+                return Err(Error::Open {
+                    path,
+                    source: io::Error::other(
+                        "recovered workspace has 256 documents; launch without a file and close a document first",
+                    ),
+                });
+            }
+            document_id = recovered.next_id;
+            next_document_id = document_id + 1;
+        }
+        recovered_documents = recovered.documents;
+        recovered_workspace = recovered.workspace;
+    }
+    let reload_buffers = restored
+        .as_ref()
+        .map(session::Session::extra_editors)
+        .transpose()
+        .map_err(|message| Error::Open {
+            path: path.clone(),
+            source: io::Error::other(message),
+        })?
+        .unwrap_or_default();
+    next_document_id = next_document_id.max(
+        reload_buffers
+            .iter()
+            .enumerate()
+            .map(|(index, d)| {
+                if d.id == 0 {
+                    document_id + index as u64 + 2
+                } else {
+                    d.id + 1
+                }
+            })
+            .max()
+            .unwrap_or(document_id + 1),
+    );
+    if let Some(handle) = &recovery_handle {
+        let mut documents = vec![recovery::PendingDocument {
+            id: document_id,
+            path: path.clone(),
+            file: file.clone(),
+            buffer: editor.buffer().snapshot(),
+            scroll: editor.scroll_offset(),
+        }];
+        documents.extend(
+            recovered_documents
+                .iter()
+                .map(|d| recovery::PendingDocument {
+                    id: d.id,
+                    path: d.path.clone(),
+                    file: d.file.clone(),
+                    buffer: d.editor.buffer().snapshot(),
+                    scroll: d.editor.scroll_offset(),
+                }),
+        );
+        documents.extend(reload_buffers.iter().enumerate().map(|(index, d)| {
+            recovery::PendingDocument {
+                id: if d.id == 0 {
+                    document_id + index as u64 + 1
+                } else {
+                    d.id
+                },
+                path: d.path.clone(),
+                file: d.file.clone(),
+                buffer: d.editor.buffer().snapshot(),
+                scroll: d.editor.scroll_offset(),
+            }
+        }));
+        if empty {
+            documents.clear();
+        }
+        if let Some(session) = &restored
+            && !empty
+        {
+            let primary = documents.remove(0);
+            documents.insert(session.active_index.min(documents.len()), primary);
+        } else {
+            documents.sort_by_key(|d| {
+                recovered_order
+                    .iter()
+                    .position(|id| *id == d.id)
+                    .unwrap_or(recovered_order.len())
+            });
+        }
+        handle.update(recovery::Pending {
+            next_id: next_document_id,
+            documents,
+            active: document_id,
+            workspace: restored
+                .as_ref()
+                .map_or_else(|| recovered_workspace.clone(), |s| s.ui.workspace.clone()),
+        });
+        if let Err(error) = handle.flush() {
+            if restored.is_some() {
+                return Err(Error::Open {
+                    path: path.clone(),
+                    source: io::Error::other(error),
+                });
+            }
+            recovery_error = Some(format!("Recovery unavailable: {error}"));
+        }
+    } else if restored.is_some() {
+        return Err(Error::Open {
+            path: path.clone(),
+            source: io::Error::other("replacement cannot establish durable recovery"),
+        });
     }
     let size = restored
         .as_ref()
@@ -104,7 +275,7 @@ fn run() -> Result<(), Error> {
     let application = Application::new();
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let application = application.menu_bar(document::Document::menus());
-    application
+    let result = application
         .theme(theme::dark())
         // Unmapped, RXUI's generic monospace is Courier New; match the editor.
         .map_font_family(
@@ -160,9 +331,22 @@ fn run() -> Result<(), Error> {
             }
         })
         .run(move |cx| {
-            let editor = cx.new(|_| editor);
-            let root = cx.new(|cx| document::Document::new(editor, file, path, cx));
+            let root = if empty {
+                cx.new(|_| document::Document::empty(next_document_id))
+            } else {
+                let editor = cx.new(|_| editor);
+                cx.new(|cx| document::Document::new_with_id(document_id, editor, file, path, cx))
+            };
             root.update(cx, |this, _| this.configure_shell(settings));
+            root.update(cx, |this, cx| {
+                this.restore_recovered(
+                    recovered_documents,
+                    recovered_workspace,
+                    recovered_order,
+                    next_document_id,
+                    cx,
+                );
+            });
             if let Some(client) = plugin_client.clone() {
                 if let Some(session) = &restored {
                     root.update(cx, |this, cx| {
@@ -178,14 +362,25 @@ fn run() -> Result<(), Error> {
                 }
             }
             if let Some(session) = &restored {
-                let buffers = session
-                    .extra_editors()
-                    .map_err(|e| ApplicationError::Native(Box::new(io::Error::other(e))))?;
                 root.update(cx, |this, cx| {
-                    this.restore_buffers(buffers, session.active_index, cx)
+                    this.restore_buffers(reload_buffers, session.active_index, cx)
                 });
             }
             root.update(cx, |this, cx| this.start_all_semantics(cx));
+            root.update(cx, |this, cx| {
+                if let Some(handle) = recovery_handle {
+                    this.enable_recovery(handle, cx);
+                }
+                this.start_document_maintenance(cx);
+                if recovered_notice {
+                    this.recovery_notice(
+                        "Recovered your previous workspace. Source files were not changed.".into(),
+                    );
+                }
+                if let Some(error) = recovery_error {
+                    this.recovery_notice(error);
+                }
+            });
             let options = if let Some(session) = &restored {
                 WindowOptions::new()
                     .title(title)
@@ -209,7 +404,11 @@ fn run() -> Result<(), Error> {
             root.update(cx, |this, _| this.window = Some(window));
             Ok(())
         })
-        .map_err(Error::Application)
+        .map_err(Error::Application);
+    if let Some(store) = recovery_store {
+        store.shutdown();
+    }
+    result
 }
 
 fn main() -> ExitCode {
@@ -238,18 +437,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requires_exactly_one_path_and_keeps_spaces_and_flag_like_names() {
-        assert!(matches!(
-            file_argument(std::iter::empty()),
-            Err(Error::Usage)
-        ));
+    fn accepts_optional_path_and_keeps_spaces_and_flag_like_names() {
+        assert_eq!(file_argument(std::iter::empty()).unwrap(), None);
         assert!(matches!(
             file_argument(["one".into(), "two".into()].into_iter()),
             Err(Error::Usage)
         ));
         for path in ["folder/a file.txt", "世界.rs", "--showcase"] {
             assert_eq!(
-                file_argument([path.into()].into_iter()).unwrap(),
+                file_argument([path.into()].into_iter()).unwrap().unwrap(),
                 PathBuf::from(path)
             );
         }
@@ -280,6 +476,7 @@ mod tests {
         let name = OsString::from_vec(b"file-\xff.txt".to_vec());
         assert_eq!(
             file_argument([name.clone()].into_iter())
+                .unwrap()
                 .unwrap()
                 .into_os_string(),
             name

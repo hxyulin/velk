@@ -53,17 +53,26 @@ impl Document {
     pub(super) fn semantic_snapshot(&self, cx: &impl rxui::ReadContext) -> DocumentSnapshot {
         let editor = self.buffer.editor.read(cx);
         DocumentSnapshot {
-            path: self.buffer.file.path().to_path_buf(),
+            path: self
+                .buffer
+                .file
+                .as_ref()
+                .expect("semantic document is file-backed")
+                .path()
+                .to_path_buf(),
             language: "rust".into(),
             revision: editor.buffer().revision(),
             text: editor.buffer().text().clone(),
         }
     }
     pub(super) fn sync_semantics(&mut self, cx: &mut Context<'_, Self>) -> bool {
-        let Some(state) = &mut self.buffer.semantic else {
+        let Some(active) = self.buffer.as_mut() else {
             return false;
         };
-        let editor = self.buffer.editor.read(cx);
+        let Some(state) = &mut active.semantic else {
+            return false;
+        };
+        let editor = active.editor.read(cx);
         let buffer = editor.buffer();
         let target = editor.hover_request();
         if state.target != target {
@@ -91,7 +100,12 @@ impl Document {
         state.count = 0;
         state.notice = None;
         state.service.update(DocumentSnapshot {
-            path: self.buffer.file.path().to_path_buf(),
+            path: active
+                .file
+                .as_ref()
+                .expect("semantic document is file-backed")
+                .path()
+                .to_path_buf(),
             language: "rust".into(),
             revision: buffer.revision(),
             text: buffer.text().clone(),
@@ -99,10 +113,13 @@ impl Document {
         visible_changed
     }
     fn arm_semantics(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(state) = &mut self.buffer.semantic else {
+        let Some(active) = self.buffer.as_mut() else {
             return;
         };
-        let buffer_id = self.buffer.id;
+        let Some(state) = &mut active.semantic else {
+            return;
+        };
+        let buffer_id = active.id;
         let events = state.service.events.clone();
         match cx.try_spawn(
             async move { events.recv().await },
@@ -127,8 +144,11 @@ impl Document {
     }
     #[tracing::instrument(level = "debug", skip_all)]
     fn semantic_event(&mut self, event: Event, cx: &mut Context<'_, Self>) {
-        let buffer_id = self.buffer.id;
-        let Some(state) = &mut self.buffer.semantic else {
+        let Some(active) = self.buffer.as_mut() else {
+            return;
+        };
+        let buffer_id = active.id;
+        let Some(state) = &mut active.semantic else {
             return;
         };
         match event {
@@ -138,12 +158,12 @@ impl Document {
                     state.count = 0;
                     state.hover = None;
                     state.render_task = None;
-                    self.buffer
+                    active
                         .editor
                         .update(cx, |editor, _| editor.clear_annotations());
                 }
                 let enabled = matches!(status,Status::Ready(c) if c.hover);
-                self.buffer
+                active
                     .editor
                     .update(cx, |editor, _| editor.set_semantic_hover(enabled));
                 state.status = status;
@@ -158,14 +178,14 @@ impl Document {
                     "diagnostics received"
                 );
                 if matches!(state.status, Status::Failed(_) | Status::Stopped)
-                    || self.buffer.editor.read(cx).buffer().revision() != revision
+                    || active.editor.read(cx).buffer().revision() != revision
                 {
                     cx.unchanged();
                     return;
                 }
-                let annotations = annotations(self.buffer.editor.read(cx).buffer(), &diagnostics);
+                let annotations = annotations(active.editor.read(cx).buffer(), &diagnostics);
                 state.count = diagnostics.len();
-                self.buffer.editor.update(cx, |editor, _| {
+                active.editor.update(cx, |editor, _| {
                     let _ = editor.set_annotations(annotations);
                 });
             }
@@ -176,7 +196,7 @@ impl Document {
                     found = hover.is_some(),
                     "hover received"
                 );
-                let current = self.buffer.editor.read(cx);
+                let current = active.editor.read(cx);
                 let valid = state.hover == Some(request)
                     && state.target.is_some()
                     && current.hover_request() == state.target
@@ -222,7 +242,7 @@ impl Document {
                         ) {
                             Ok(task) => state.render_task = Some(task),
                             Err(error) => {
-                                self.buffer.editor.update(cx, |editor, _| {
+                                active.editor.update(cx, |editor, _| {
                                     editor.resolve_hover(target, None, None);
                                 });
                                 if target.source == HoverSource::Caret {
@@ -231,7 +251,7 @@ impl Document {
                             }
                         }
                     } else {
-                        self.buffer.editor.update(cx, |editor, _| {
+                        active.editor.update(cx, |editor, _| {
                             editor.resolve_hover(
                                 target,
                                 hover.range,
@@ -243,7 +263,7 @@ impl Document {
                         });
                     }
                 } else {
-                    self.buffer.editor.update(cx, |editor, _| {
+                    active.editor.update(cx, |editor, _| {
                         editor.resolve_hover(target, None, None);
                     });
                     if target.source == HoverSource::Caret {
@@ -254,14 +274,14 @@ impl Document {
             Event::RequestFailed { request, message } => {
                 if state.hover != Some(request)
                     || state.target.is_none()
-                    || self.buffer.editor.read(cx).hover_request() != state.target
+                    || active.editor.read(cx).hover_request() != state.target
                 {
                     cx.unchanged();
                     return;
                 }
                 state.hover = None;
                 let target = state.target.unwrap();
-                self.buffer.editor.update(cx, |editor, _| {
+                active.editor.update(cx, |editor, _| {
                     editor.resolve_hover(target, None, None);
                 });
                 if target.source == HoverSource::Caret {
@@ -271,7 +291,7 @@ impl Document {
         }
     }
     pub(super) fn request_hover(&mut self, cx: &mut Context<'_, Self>) {
-        if self.buffer.semantic.is_none() {
+        if !self.has_buffers() || self.buffer.semantic.is_none() {
             return;
         }
         self.buffer.editor.update(cx, |editor, _| {
@@ -282,7 +302,7 @@ impl Document {
     }
     /// Diagnostic count and a notice worth showing; steady states say nothing.
     pub(super) fn semantic_status(&self) -> (usize, Option<String>) {
-        let Some(state) = &self.buffer.semantic else {
+        let Some(state) = self.buffer.as_ref().and_then(|b| b.semantic.as_ref()) else {
             return (0, None);
         };
         let notice = state.notice.clone().or_else(|| match &state.status {

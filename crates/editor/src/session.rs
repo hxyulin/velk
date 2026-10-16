@@ -12,15 +12,17 @@ pub const SNAPSHOT_ENV: &str = "VELK_RELOAD_SESSION";
 pub const READY_ENV: &str = "VELK_RELOAD_READY";
 
 pub struct RestoredBuffer {
-    pub file: FileState,
+    pub id: u64,
+    pub file: Option<FileState>,
     pub editor: Editor,
     pub path: PathBuf,
     pub search_open: bool,
     pub search_query: velk_search::Query,
 }
 pub struct PendingBuffer {
+    pub id: u64,
     pub path: PathBuf,
-    pub file: FileState,
+    pub file: Option<FileState>,
     pub buffer: BufferSnapshot,
     pub scroll: [f32; 2],
     pub search_open: bool,
@@ -28,9 +30,11 @@ pub struct PendingBuffer {
 }
 #[derive(Serialize, Deserialize)]
 pub struct SessionBuffer {
+    #[serde(default)]
+    id: u64,
     #[serde(with = "path")]
     path: PathBuf,
-    file: FileState,
+    file: Option<FileState>,
     buffer: String,
     scroll: [f32; 2],
     #[serde(default)]
@@ -50,6 +54,7 @@ impl SessionBuffer {
 impl PendingBuffer {
     fn encode(self) -> Result<SessionBuffer, String> {
         Ok(SessionBuffer {
+            id: self.id,
             path: self.path,
             file: self.file,
             buffer: String::from_utf8(self.buffer.encode()?).map_err(|e| e.to_string())?,
@@ -60,9 +65,11 @@ impl PendingBuffer {
     }
 }
 pub struct Pending {
+    pub id: u64,
+    pub next_id: u64,
     pub path: PathBuf,
-    pub file: FileState,
-    pub buffer: BufferSnapshot,
+    pub file: Option<FileState>,
+    pub buffer: Option<BufferSnapshot>,
     pub scroll: [f32; 2],
     pub ui: UiState,
     pub size: [f64; 2],
@@ -74,11 +81,15 @@ pub struct Pending {
 }
 #[derive(Serialize, Deserialize)]
 pub struct Session {
+    #[serde(default)]
+    pub next_id: u64,
+    #[serde(default)]
+    pub id: u64,
     version: u32,
     #[serde(with = "path")]
     pub path: PathBuf,
-    pub file: FileState,
-    buffer: String,
+    pub file: Option<FileState>,
+    buffer: Option<String>,
     pub scroll: [f32; 2],
     pub ui: UiState,
     pub size: [f64; 2],
@@ -101,6 +112,8 @@ impl Pending {
             Vec::new()
         };
         Ok(Session {
+            next_id: self.next_id,
+            id: self.id,
             version: 1,
             buffers: self
                 .buffers
@@ -111,7 +124,10 @@ impl Pending {
             plugin_states,
             path: self.path,
             file: self.file,
-            buffer: String::from_utf8(self.buffer.encode()?).map_err(|e| e.to_string())?,
+            buffer: self
+                .buffer
+                .map(|buffer| String::from_utf8(buffer.encode()?).map_err(|e| e.to_string()))
+                .transpose()?,
             scroll: self.scroll,
             ui: self.ui,
             size: self.size,
@@ -136,6 +152,30 @@ impl Session {
         {
             return Err("invalid or unsupported reload session".into());
         }
+        if session.is_empty()
+            && (session.id != 0
+                || session.file.is_some()
+                || !session.buffers.is_empty()
+                || session.active_index != 0)
+        {
+            return Err("invalid empty reload session".into());
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        if !session.is_empty() {
+            ids.insert(session.id.max(1));
+        }
+        if session.buffers.len() >= 256
+            || session.id == u64::MAX
+            || session
+                .buffers
+                .iter()
+                .any(|b| b.id == u64::MAX || (b.id != 0 && !ids.insert(b.id)))
+            || (session.next_id != 0
+                && (session.next_id == u64::MAX
+                    || session.next_id <= ids.last().copied().unwrap_or(0)))
+        {
+            return Err("invalid reload document identities".into());
+        }
         Ok(session)
     }
     pub fn extra_editors(&self) -> Result<Vec<RestoredBuffer>, String> {
@@ -143,6 +183,7 @@ impl Session {
             .iter()
             .map(|b| {
                 Ok(RestoredBuffer {
+                    id: b.id,
                     file: b.file.clone(),
                     editor: b.editor()?,
                     path: b.path.clone(),
@@ -152,8 +193,17 @@ impl Session {
             })
             .collect()
     }
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_none()
+    }
     pub fn editor(&self) -> Result<Editor, String> {
-        Editor::from_session(self.buffer.as_bytes(), self.scroll)
+        Editor::from_session(
+            self.buffer
+                .as_ref()
+                .ok_or("workspace has no documents")?
+                .as_bytes(),
+            self.scroll,
+        )
     }
 }
 /// Runs only on the blocking pool. Keep the old app alive until the replacement
@@ -256,6 +306,28 @@ pub mod path {
     }
 }
 
+/// Native-encoded optional paths used by persistent workspace state.
+pub mod optional_path {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::path::PathBuf;
+    pub fn serialize<S: Serializer>(
+        value: &Option<PathBuf>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value
+            .as_ref()
+            .map(|p| velk_panels::NativePath::new(p))
+            .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<PathBuf>, D::Error> {
+        Option::<velk_panels::NativePath>::deserialize(deserializer)?
+            .map(|p| p.to_path().map_err(serde::de::Error::custom))
+            .transpose()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,9 +335,11 @@ mod tests {
         let (file, mut editor) = FileState::open(&path).unwrap();
         editor.insert("unsaved 🌍");
         Pending {
+            id: 1,
+            next_id: 3,
             path,
-            file,
-            buffer: editor.buffer().snapshot(),
+            file: Some(file),
+            buffer: Some(editor.buffer().snapshot()),
             scroll: [20., 400.],
             ui: UiState::default(),
             size: [900., 600.],
@@ -275,6 +349,34 @@ mod tests {
             buffers: Vec::new(),
             active_index: 0,
         }
+    }
+    #[test]
+    fn empty_reload_session_has_no_document_snapshot_or_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let session = Pending {
+            id: 0,
+            next_id: 42,
+            path: PathBuf::new(),
+            file: None,
+            buffer: None,
+            scroll: [0., 0.],
+            ui: Default::default(),
+            size: [900., 600.],
+            position: None,
+            maximized: false,
+            client: None,
+            buffers: vec![],
+            active_index: 0,
+        }
+        .encode()
+        .unwrap();
+        let snapshot = directory.path().join("session.json");
+        std::fs::write(&snapshot, serde_json::to_vec(&session).unwrap()).unwrap();
+        let restored = Session::read(snapshot, std::path::Path::new("")).unwrap();
+        assert!(restored.is_empty());
+        assert_eq!(restored.next_id, 42);
+        assert!(restored.extra_editors().unwrap().is_empty());
+        assert!(restored.editor().is_err());
     }
     #[test]
     fn session_preserves_unsaved_text_and_original_disk_baseline() {
@@ -295,6 +397,7 @@ mod tests {
         assert!(
             restored
                 .file
+                .unwrap()
                 .save(editor.buffer().text().clone())
                 .err()
                 .unwrap()
@@ -315,8 +418,9 @@ mod tests {
         editor.select_range(1..3);
         editor.insert("edited");
         pending.buffers.push(PendingBuffer {
+            id: 2,
             path: a.clone(),
-            file,
+            file: Some(file),
             buffer: editor.buffer().snapshot(),
             scroll: [10., 80.],
             search_open: true,

@@ -65,10 +65,8 @@ impl Connection {
                         return;
                     }
                     match result {
-                        Ok(Err(error)) => {
-                            this.buffer.status = Some(format!("Panel input: {error}"))
-                        }
-                        Err(error) => this.buffer.status = Some(format!("Panel input: {error}")),
+                        Ok(Err(error)) => this.notice(Some(format!("Panel input: {error}"))),
+                        Err(error) => this.notice(Some(format!("Panel input: {error}"))),
                         Ok(Ok(())) => {}
                     }
                 },
@@ -107,7 +105,7 @@ impl Connection {
                     .and_then(|text| paste_connection.send(Input::Text { text, paste: true }))
                 {
                     Ok(()) => cx.unchanged(),
-                    Err(e) => this.buffer.status = Some(e),
+                    Err(e) => this.notice(Some(e)),
                 }
             })
             .shortcut(Shortcut::primary("v"))
@@ -156,7 +154,7 @@ impl Connection {
                 event.stop_propagation();
                 match keys.send(input) {
                     Ok(()) => cx.unchanged(),
-                    Err(error) => this.buffer.status = Some(error),
+                    Err(error) => this.notice(Some(error)),
                 }
             } else {
                 cx.unchanged();
@@ -170,7 +168,7 @@ impl Connection {
                 text: event.text.clone(),
                 paste: event.source == TextInsertSource::Paste,
             }) {
-                this.buffer.status = Some(error);
+                this.notice(Some(error));
             } else if !had_preedit {
                 cx.unchanged();
             }
@@ -196,7 +194,7 @@ impl Connection {
             if lines != 0
                 && let Err(error) = wheel.send(Input::Scroll { lines })
             {
-                this.buffer.status = Some(error);
+                this.notice(Some(error));
                 return;
             }
             cx.unchanged();

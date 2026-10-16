@@ -431,12 +431,12 @@ mod tests {
         runtime.update(|cx| assert_eq!(document.read(cx).palette.selected, 0));
         // Enter on a button reached with Tab/focus runs that button, even when
         // the list's highlighted result is the disabled Save action.
-        let settings = ui
+        let save_all = ui
             .elements()
-            .find(|e| e.key == Some(&rxui::Key::from("velk.settings.open")))
+            .find(|e| e.key == Some(&rxui::Key::from("velk.file.save-all")))
             .unwrap()
             .id;
-        assert!(ui.focus(settings));
+        assert!(ui.focus(save_all));
         key(
             &mut ui,
             &mut runtime,
@@ -445,7 +445,7 @@ mod tests {
         );
         assert!(ui.activate_focused(&mut runtime).unwrap());
         prepare(&mut ui, &mut runtime);
-        runtime.update(|cx| assert!(document.read(cx).shell.open));
+        runtime.update(|cx| assert!(!document.read(cx).palette.open));
         key(
             &mut ui,
             &mut runtime,

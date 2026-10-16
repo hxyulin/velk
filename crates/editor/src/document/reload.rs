@@ -24,6 +24,8 @@ pub struct UiState {
     notice: Option<String>,
     #[serde(default)]
     panels: super::panels::UiState,
+    #[serde(default)]
+    pub(crate) workspace: crate::workspace::Workspace,
 }
 impl Document {
     pub(super) fn reloading(&self) -> bool {
@@ -37,11 +39,20 @@ impl Document {
             && self.diagnostics.is_none()
             && !self.plugins.as_ref().is_some_and(|_| self.plugins_busy())
             && self.shell.saving.is_none()
-            && !self.buffer.editor.read(cx).has_composition()
+            && self
+                .buffer
+                .as_ref()
+                .is_none_or(|b| !b.editor.read(cx).has_composition())
     }
     pub fn restore_ui(&mut self, state: UiState) {
         let panel_source = self.panels.ui.source.clone();
+        self.workspace = state.workspace;
         self.panels.ui = state.panels;
+        if self.workspace.root().is_none()
+            && let Some(root) = self.panels.ui.root.as_ref().and_then(|p| p.to_path().ok())
+        {
+            self.workspace.set_root(root);
+        }
         if self.panels.ui.source.is_none() {
             self.panels.ui.source = panel_source;
         }
@@ -51,16 +62,19 @@ impl Document {
         self.palette.open = state.palette_open;
         self.palette.query = state.palette_query;
         self.palette.selected = state.palette_selected;
-        self.buffer.search.open = state.search_open;
-        self.buffer.search.query = state.search_query;
-        self.buffer.search.preserve_selection = true;
-        self.buffer.status = match velk_diagnostics::status().filter(|status| status.recording) {
+        if let Some(buffer) = self.buffer.as_mut() {
+            buffer.search.open = state.search_open;
+            buffer.search.query = state.search_query;
+            buffer.search.preserve_selection = true;
+        }
+        let notice = match velk_diagnostics::status().filter(|status| status.recording) {
             Some(status) => Some(format!(
                 "Trace capture continued: {}",
                 status.path.display()
             )),
             None => state.notice,
         };
+        self.notice(notice);
         self.restore_focus_pending = true;
     }
     pub fn focus_restoration(&self) -> Option<rxui::CommandAction<RestoreFocus>> {
@@ -73,7 +87,7 @@ impl Document {
             Ok(()) // RXUI's modal owns autofocus and the focus trap.
         } else if let Some(result) = self.focus_bottom(cx) {
             result
-        } else if self.buffer.search.open {
+        } else if self.has_buffers() && self.buffer.search.open {
             self.buffer.search.focus.focus(cx)
         } else {
             self.editor_focus.focus(cx)
@@ -94,29 +108,43 @@ impl Document {
             palette_open: self.palette.open,
             palette_query: self.palette.query.clone(),
             palette_selected: self.palette.selected,
-            search_open: self.buffer.search.open,
-            search_query: self.buffer.search.query.clone(),
+            search_open: self.buffer.as_ref().is_some_and(|b| b.search.open),
+            search_query: self
+                .buffer
+                .as_ref()
+                .map(|b| b.search.query.clone())
+                .unwrap_or_default(),
             plugins: self.plugins.as_ref().map_or_else(Vec::new, |state| {
                 state.loaded.iter().map(|p| p.id.clone()).collect()
             }),
-            notice: self.buffer.status.clone(),
+            notice: self
+                .buffer
+                .as_ref()
+                .and_then(|b| b.status.clone())
+                .or_else(|| self.window_status.clone()),
             panels: self.panels.ui.clone(),
+            workspace: self.workspace.clone(),
         };
         let geometry = self
             .window
             .as_ref()
             .and_then(WindowHandle::geometry)
             .unwrap_or_else(|| rxui::WindowGeometry::new(1280., 800.));
-        let editor = self.buffer.editor.read(cx);
+        let current = self.buffer.as_ref();
+        let active_id = current.map_or(0, |b| b.id);
+        let editor = current.map(|b| b.editor.read(cx));
         let pending = session::Pending {
+            next_id: self.next_buffer,
+            id: active_id,
             buffers: self
                 .ids()
                 .into_iter()
-                .filter(|id| *id != self.buffer.id)
+                .filter(|id| *id != active_id)
                 .map(|id| {
                     let b = &self.inactive[&id];
                     let editor = b.editor.read(cx);
                     session::PendingBuffer {
+                        id: b.id,
                         path: b.path.clone(),
                         file: b.file.clone(),
                         buffer: editor.buffer().snapshot(),
@@ -129,12 +157,12 @@ impl Document {
             active_index: self
                 .ids()
                 .iter()
-                .position(|id| *id == self.buffer.id)
-                .unwrap(),
-            path: self.buffer.path.clone(),
-            file: self.buffer.file.clone(),
-            buffer: editor.buffer().snapshot(),
-            scroll: editor.scroll_offset(),
+                .position(|id| *id == active_id)
+                .unwrap_or(0),
+            path: current.map(|b| b.path.clone()).unwrap_or_default(),
+            file: current.and_then(|b| b.file.clone()),
+            buffer: editor.as_ref().map(|e| e.buffer().snapshot()),
+            scroll: editor.as_ref().map_or([0., 0.], |e| e.scroll_offset()),
             ui,
             size: geometry.inner_size,
             position: geometry.outer_position,
@@ -142,7 +170,7 @@ impl Document {
             client: self.plugins.as_ref().map(|state| state.client.clone()),
         };
         drop(editor);
-        self.buffer.status = Some("Reloading window…".into());
+        self.notice(Some("Reloading window…".into()));
         match cx.try_spawn_blocking(
             move || session::launch(pending),
             |this, result, cx| {
@@ -153,16 +181,18 @@ impl Document {
                             let _ = child.kill();
                             // Reap off the UI thread if the host refuses shutdown.
                             let _ = cx.try_spawn_blocking(move || child.wait(), |_, _, _| {});
-                            this.buffer.status = Some(format!("Reload failed: {error}"));
+                            this.notice(Some(format!("Reload failed: {error}")));
+                        } else if let Some(recovery) = &this.recovery {
+                            recovery.discard();
                         }
                     }
-                    Ok(Err(error)) => this.buffer.status = Some(format!("Reload failed: {error}")),
-                    Err(error) => this.buffer.status = Some(format!("Reload failed: {error}")),
+                    Ok(Err(error)) => this.notice(Some(format!("Reload failed: {error}"))),
+                    Err(error) => this.notice(Some(format!("Reload failed: {error}"))),
                 }
             },
         ) {
             Ok(task) => self.reload = Some(task),
-            Err(error) => self.buffer.status = Some(format!("Reload failed: {error}")),
+            Err(error) => self.notice(Some(format!("Reload failed: {error}"))),
         }
     }
 }

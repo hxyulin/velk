@@ -1,13 +1,16 @@
 # Open buffers
 
-The initial command line stays `velk <file>`. A window can then hold multiple
-file-backed buffers, shown in a horizontally scrollable tab bar above the editor.
+The command line accepts `velk [file]`. A window can hold multiple
+file-backed or untitled buffers, shown in a horizontally scrollable tab bar above the editor.
 Only the selected editor is mounted and rendered. Inactive buffers keep their
 Rope, selection, undo/redo history, scroll offset, syntax state, semantic service,
 find query and disk-save baseline in memory.
 
 | Action | Shortcut |
 | --- | --- |
+| New untitled document | Command+N / Control+N |
+| Save As | Command+Shift+S / Control+Shift+S |
+| Save All | Command+Option+S / Control+Alt+S |
 | Open another file | Command+O on macOS, Control+O elsewhere |
 | Save selected buffer | Command+S / Control+S |
 | Close selected buffer | Command+W / Control+W |
@@ -36,8 +39,9 @@ removing its owning buffer. IME composition prevents tab switching; if a file
 finishes opening during composition, the current composition is preserved and
 an explanatory notice asks the user to finish it before retrying.
 
-Closing a dirty tab asks Save / Don't Save / Cancel. Closing the last tab closes
-the window. Closing a window or quitting checks **all** dirty buffers. Earlier
+Closing a dirty tab asks Save / Don't Save / Cancel. Closing the last tab keeps the window open with no active document. The empty
+editor area offers New File and Open File; panels, plugins, settings and the
+workspace root remain available. Close Window and Quit are separate actions. Closing a window or quitting checks **all** dirty buffers. Earlier
 discard approvals leave their buffers in memory until all prompts succeed;
 cancelling a later prompt retains the entire buffer set. A failed save, or newer
 edits made during a save, aborts closing.
@@ -62,9 +66,11 @@ Reload Window transfers every buffer's unsaved text, history/checkpoints,
 selection, scroll, original disk baseline and find state. It restores the tab
 order and selected buffer along with the existing window/menu/plugin state.
 Syntax/rendering caches and semantic services rebuild in the replacement process.
-This remains a private process handoff, not persistent workspace storage.
+This remains a private process handoff; independent persistent recovery is
+described in [document-foundation.md](document-foundation.md).
 
-Current limits: file-backed buffers only, one editor pane, no tab reordering or
-Save All command. The semantic service still owns one document per session;
+See [document-foundation.md](document-foundation.md) for untitled documents,
+Save As, Save All, persistent recovery, stable IDs, and disk-change handling.
+Current limits: one editor pane and no tab reordering. The semantic service still owns one document per session;
 multiple Rust buffers can therefore start multiple language-server sessions.
 Sharing one LSP connection across a workspace is a separate backend improvement.

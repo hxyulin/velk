@@ -49,7 +49,7 @@ impl<R: Read> Read for TrackingReader<R> {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileState {
     /// Resolve the opened symlink once, so replacement updates its target.
     #[serde(with = "crate::session::path")]
@@ -57,6 +57,13 @@ pub struct FileState {
     #[serde(with = "hash")]
     hash: blake3::Hash,
     ending: LineEnding,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiskStamp {
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    inode: u64,
 }
 impl FileState {
     pub fn path(&self) -> &Path {
@@ -94,6 +101,112 @@ impl FileState {
         ))
     }
 
+    /// Select a destination independently of a document's identity. Existing
+    /// files get a fresh conflict baseline; a new file uses no-clobber creation.
+    /// Another open document must never be overwritten by Save As.
+    pub fn save_as(
+        source: Option<Self>,
+        destination: PathBuf,
+        text: Rope,
+        occupied: &[PathBuf],
+    ) -> io::Result<Self> {
+        let destination = if destination.exists() {
+            fs::canonicalize(destination)?
+        } else {
+            let parent = destination
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            fs::canonicalize(parent)?.join(
+                destination
+                    .file_name()
+                    .ok_or_else(|| io::Error::other("file needs a name"))?,
+            )
+        };
+        if occupied.contains(&destination) {
+            return Err(io::Error::other(
+                "destination is already open in another document",
+            ));
+        }
+        if let Some(source) = &source
+            && source.path == destination
+        {
+            return source.clone().save(text);
+        }
+        let ending = source.map_or(LineEnding::Lf, |s| s.ending);
+        if destination.exists() {
+            let metadata = fs::metadata(&destination)?;
+            if !metadata.is_file() {
+                return Err(io::Error::other("expected a regular file"));
+            }
+            let mut hash = blake3::Hasher::new();
+            io::copy(&mut File::open(&destination)?, &mut hash)?;
+            return Self {
+                path: destination,
+                hash: hash.finalize(),
+                ending,
+            }
+            .save(text);
+        }
+        Self::create_new(destination, text, ending)
+    }
+    fn create_new(destination: PathBuf, text: Rope, ending: LineEnding) -> io::Result<Self> {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o666));
+        }
+        let mut temporary = builder.tempfile_in(destination.parent().unwrap())?;
+        write_text(temporary.as_file_mut(), &text, ending)?;
+        temporary.as_file_mut().rewind()?;
+        let mut hash = blake3::Hasher::new();
+        io::copy(temporary.as_file_mut(), &mut hash)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist_noclobber(&destination)
+            .map_err(|e| e.error)?;
+        sync_parent(&destination);
+        Ok(Self {
+            path: destination,
+            hash: hash.finalize(),
+            ending,
+        })
+    }
+    pub fn disk_stamp(&self) -> io::Result<DiskStamp> {
+        let metadata = fs::metadata(&self.path)?;
+        Ok(DiskStamp {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            inode: {
+                use std::os::unix::fs::MetadataExt;
+                metadata.ino()
+            },
+        })
+    }
+    pub fn overwrite(self, text: Rope) -> io::Result<Self> {
+        match File::open(&self.path) {
+            Ok(mut current) => {
+                let mut hash = blake3::Hasher::new();
+                io::copy(&mut current, &mut hash)?;
+                Self {
+                    hash: hash.finalize(),
+                    ..self
+                }
+                .save(text)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Self::create_new(self.path, text, self.ending)
+            }
+            Err(error) => Err(error),
+        }
+    }
+    pub fn changed_on_disk(&self) -> io::Result<bool> {
+        let mut hash = blake3::Hasher::new();
+        io::copy(&mut File::open(&self.path)?, &mut hash)?;
+        Ok(hash.finalize() != self.hash)
+    }
     /// Write and sync a sibling temporary file, then replace the original.
     /// The content check detects ordinary external modifications. It is not an
     /// OS compare-and-swap: another process can still race the final rename.
@@ -104,20 +217,7 @@ impl FileState {
             .parent()
             .ok_or_else(|| io::Error::other("file has no parent directory"))?;
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        {
-            let mut writer = BufWriter::new(temporary.as_file_mut());
-            for chunk in text.chunks() {
-                for part in chunk.split_inclusive('\n') {
-                    if let Some(content) = part.strip_suffix('\n') {
-                        writer.write_all(content.as_bytes())?;
-                        writer.write_all(self.ending.bytes())?;
-                    } else {
-                        writer.write_all(part.as_bytes())?;
-                    }
-                }
-            }
-            writer.flush()?;
-        }
+        write_text(temporary.as_file_mut(), &text, self.ending)?;
         let metadata = fs::symlink_metadata(&self.path)?;
         if !metadata.is_file() || metadata.permissions().readonly() {
             return Err(io::Error::new(
@@ -152,9 +252,96 @@ impl FileState {
     }
 }
 
+fn write_text(file: &mut File, text: &Rope, ending: LineEnding) -> io::Result<()> {
+    let mut writer = BufWriter::new(file);
+    for chunk in text.chunks() {
+        for part in chunk.split_inclusive('\n') {
+            if let Some(content) = part.strip_suffix('\n') {
+                writer.write_all(content.as_bytes())?;
+                writer.write_all(ending.bytes())?;
+            } else {
+                writer.write_all(part.as_bytes())?;
+            }
+        }
+    }
+    writer.flush()
+}
+fn sync_parent(path: &Path) {
+    #[cfg(unix)]
+    if let Some(parent) = path.parent()
+        && let Ok(directory) = File::open(parent)
+    {
+        let _ = directory.sync_all();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn save_as_creates_new_files_preserves_source_and_endings_and_rejects_open_destinations() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.txt");
+        let destination = directory.path().join("copy.txt");
+        fs::write(&source, "original\r\n").unwrap();
+        let (file, _) = FileState::open(&source).unwrap();
+        let saved = FileState::save_as(
+            Some(file.clone()),
+            destination.clone(),
+            Rope::from_str("new\ntext\n"),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "original\r\n");
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "new\r\ntext\r\n");
+        assert!(!saved.changed_on_disk().unwrap());
+        let occupied = fs::canonicalize(&destination).unwrap();
+        assert!(
+            FileState::save_as(
+                Some(file),
+                destination.clone(),
+                Rope::from_str("overwrite"),
+                &[occupied]
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "new\r\ntext\r\n");
+        let blank = directory.path().join("blank.txt");
+        FileState::save_as(None, blank.clone(), Rope::new(), &[]).unwrap();
+        assert_eq!(fs::read(blank).unwrap(), b"");
+    }
+    #[test]
+    fn approved_overwrite_rechecks_existing_files_and_recreates_deleted_files_without_clobbering() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.txt");
+        fs::write(&path, "original\r\n").unwrap();
+        let (file, _) = FileState::open(&path).unwrap();
+        fs::write(&path, "external").unwrap();
+        assert!(file.clone().save(Rope::from_str("local\n")).is_err());
+        let file = file.overwrite(Rope::from_str("local\n")).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "local\r\n");
+        fs::remove_file(&path).unwrap();
+        let file = file.overwrite(Rope::from_str("recreated\n")).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), "recreated\r\n");
+        assert!(!file.changed_on_disk().unwrap());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn save_as_resolves_symlink_destinations_and_rejects_an_open_alias() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.txt");
+        let link = directory.path().join("link.txt");
+        fs::write(&path, "original").unwrap();
+        symlink(&path, &link).unwrap();
+        let occupied = fs::canonicalize(&path).unwrap();
+        assert!(
+            FileState::save_as(None, link.clone(), Rope::from_str("new"), &[occupied]).is_err()
+        );
+        FileState::save_as(None, link.clone(), Rope::from_str("new"), &[]).unwrap();
+        assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(path).unwrap(), "new");
+    }
     #[test]
     fn unicode_and_line_endings_round_trip_without_flattening_or_losing_final_newline() {
         for ending in ["\n", "\r\n", "\r"] {

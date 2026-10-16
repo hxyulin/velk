@@ -232,6 +232,21 @@ fn register_diagnostics<P: Plugin>(reg: &mut registry::Registrar<P>) -> Result<(
     }
 }
 
+fn register_metadata<P: Plugin>(registry: &mut registry::Registrar<P>) -> Result<(), String> {
+    let metadata = crate::PluginMetadata::of::<P>();
+    metadata.validate()?;
+    let bytes = serde_json::to_vec(&metadata).map_err(|e| e.to_string())?;
+    registry.provide(
+        registry::Request(METADATA_HOOK),
+        move |_: &mut P, input: &[u8]| {
+            if !input.is_empty() {
+                return Err("metadata request must be empty".into());
+            }
+            Ok(bytes.clone())
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,19 +345,4 @@ mod tests {
             assert_eq!(destroy::<Panicking>(instance), OK);
         }
     }
-}
-
-fn register_metadata<P: Plugin>(registry: &mut registry::Registrar<P>) -> Result<(), String> {
-    let metadata = crate::PluginMetadata::of::<P>();
-    metadata.validate()?;
-    let bytes = serde_json::to_vec(&metadata).map_err(|e| e.to_string())?;
-    registry.provide(
-        registry::Request(METADATA_HOOK),
-        move |_: &mut P, input: &[u8]| {
-            if !input.is_empty() {
-                return Err("metadata request must be empty".into());
-            }
-            Ok(bytes.clone())
-        },
-    )
 }

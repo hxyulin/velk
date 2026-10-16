@@ -386,7 +386,7 @@ impl Store {
         }
     }
 }
-fn settings_path() -> Option<PathBuf> {
+pub(crate) fn settings_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("VELK_SETTINGS_PATH") {
         return Some(PathBuf::from(path));
     }

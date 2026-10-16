@@ -66,7 +66,10 @@ impl Document {
     }
     /// The buffer's directory relative to the project, and its file name.
     pub(super) fn path_parts(&self) -> (String, String) {
-        let path = &self.buffer.path;
+        let Some(buffer) = self.buffer.as_ref() else {
+            return (String::new(), "No documents open".into());
+        };
+        let path = &buffer.path;
         let name = path
             .file_name()
             .unwrap_or(path.as_os_str())
@@ -263,8 +266,9 @@ impl Document {
         let (_, layout_error) = self.shell.store.preferences.resolve_layout();
         let message = self
             .buffer
-            .status
-            .clone()
+            .as_ref()
+            .and_then(|b| b.status.clone())
+            .or_else(|| self.window_status.clone())
             .or(layout_error)
             .or_else(|| self.shell.store.error.clone());
         if !layout.status_line {
@@ -276,6 +280,22 @@ impl Document {
                     .color(ThemeColor::TextMuted)
                     .into_element()
             });
+        }
+        if !self.has_buffers() {
+            return Some(
+                row()
+                    .key("status-line")
+                    .fill_width()
+                    .height(26.)
+                    .padding_x(10.)
+                    .background(ThemeColor::Background)
+                    .child(
+                        label(message.unwrap_or_else(|| "No documents open".into()))
+                            .key("document-status")
+                            .font_size(12.)
+                            .color(ThemeColor::TextMuted),
+                    ),
+            );
         }
         let (directory, name) = self.path_parts();
         let (diagnostics, semantic) = self.semantic_status();

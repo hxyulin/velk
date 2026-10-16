@@ -2,11 +2,13 @@ mod buffers;
 mod diagnostics;
 mod grid;
 mod icons;
+mod maintenance;
 mod palette;
 mod panels;
 mod plugins;
 mod plugins_page;
 pub(crate) mod reload;
+mod saving;
 mod search;
 mod semantic;
 mod settings_page;
@@ -19,6 +21,10 @@ use velk_editor_widget::Editor;
 
 struct Save;
 impl Command for Save {}
+struct SaveAs;
+impl Command for SaveAs {}
+struct SaveAll;
+impl Command for SaveAll {}
 struct LoadPlugins;
 impl Command for LoadPlugins {}
 struct UnloadPlugins;
@@ -41,12 +47,17 @@ pub enum Intent {
 }
 
 pub struct Document {
-    buffer: buffers::BufferState,
+    buffer: buffers::ActiveBuffer,
+    window_status: Option<String>,
     inactive: std::collections::BTreeMap<u64, buffers::BufferState>,
     next_buffer: u64,
+    workspace: crate::workspace::Workspace,
     buffer_order: Vec<u64>,
     background_buffer: bool,
     next_search: u64,
+    save_queue: std::collections::VecDeque<u64>,
+    overwrite_approved: bool,
+    saving_as: bool,
     opening: Option<Task>,
     pending_opens: std::collections::VecDeque<PathBuf>,
     closing: Option<Intent>,
@@ -54,6 +65,11 @@ pub struct Document {
     pub window: Option<WindowHandle>,
     reload: Option<Task>,
     diagnostics: Option<Task>,
+    recovery: Option<crate::recovery::Handle>,
+    recovery_task: Option<Task>,
+    recovery_key: Option<maintenance::RecoveryKey>,
+    maintenance: Option<Task>,
+    disk_check: Option<Task>,
     restore_focus_pending: bool,
     restore_focus_action: std::cell::RefCell<Option<rxui::CommandAction<reload::RestoreFocus>>>,
     dialog: Option<DialogTask>,
@@ -78,8 +94,11 @@ impl Document {
             )
             .menu(
                 NativeMenu::new("File")
+                    .command::<buffers::New>("New File")
                     .command::<buffers::Open>("Open…")
                     .command::<Save>("Save")
+                    .command::<SaveAs>("Save As…")
+                    .command::<SaveAll>("Save All")
                     .separator()
                     .command::<buffers::Close>("Close buffer")
                     .command::<commands::CloseWindow>("Close window"),
@@ -110,21 +129,49 @@ impl Document {
                     .command::<ToggleSettings>("Settings"),
             )
     }
+    #[cfg(test)]
     pub fn new(
         editor: Entity<Editor>,
-        file: FileState,
+        file: impl Into<Option<FileState>>,
         path: PathBuf,
         cx: &mut Context<'_, Self>,
     ) -> Self {
-        let panel_source = velk_panels::NativePath::new(file.path());
-        let buffer = buffers::BufferState::new(1, editor, file, path, cx);
+        Self::new_with_id(1, editor, file.into(), path, cx)
+    }
+    pub fn new_with_id(
+        id: u64,
+        editor: Entity<Editor>,
+        file: Option<FileState>,
+        path: PathBuf,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
+        let panel_source = file
+            .as_ref()
+            .map(|f| velk_panels::NativePath::new(f.path()));
+        let buffer = buffers::BufferState::new(id, editor, file, path, cx);
+        Self::window_state(Some(buffer), id + 1, panel_source)
+    }
+    pub fn empty(next_id: u64) -> Self {
+        Self::window_state(None, next_id.max(1), None)
+    }
+    fn window_state(
+        buffer: Option<buffers::BufferState>,
+        next_id: u64,
+        panel_source: Option<velk_panels::NativePath>,
+    ) -> Self {
+        let order = buffer.as_ref().map(|b| b.id).into_iter().collect();
         Self {
-            buffer,
+            buffer: buffer.into(),
+            window_status: None,
             inactive: Default::default(),
-            next_buffer: 2,
-            buffer_order: vec![1],
+            next_buffer: next_id,
+            workspace: Default::default(),
+            buffer_order: order,
             background_buffer: false,
             next_search: 0,
+            save_queue: Default::default(),
+            overwrite_approved: false,
+            saving_as: false,
             opening: None,
             pending_opens: Default::default(),
             closing: None,
@@ -132,6 +179,11 @@ impl Document {
             window: None,
             reload: None,
             diagnostics: None,
+            recovery: None,
+            recovery_task: None,
+            recovery_key: None,
+            maintenance: None,
+            disk_check: None,
             restore_focus_pending: false,
             restore_focus_action: Default::default(),
             dialog: None,
@@ -144,11 +196,25 @@ impl Document {
             panels: panels::State::new(panel_source),
         }
     }
+    pub(super) fn has_buffers(&self) -> bool {
+        self.buffer.is_some()
+    }
+    pub(super) fn notice(&mut self, message: Option<String>) {
+        if let Some(buffer) = self.buffer.as_mut() {
+            buffer.status = message;
+        } else {
+            self.window_status = message;
+        }
+    }
     pub fn title(&self) {
         if self.background_buffer {
             return;
         }
         if let Some(window) = self.window.as_ref().and_then(WindowHandle::native_window) {
+            if !self.has_buffers() {
+                window.set_title("Velk");
+                return;
+            }
             window.set_title(&format!(
                 "Velk — {}{}",
                 self.buffer.path.display(),
@@ -157,11 +223,28 @@ impl Document {
         }
     }
     fn busy(&self) -> bool {
-        self.buffer.saving.is_some() || self.dialog.is_some() || self.reloading()
+        self.buffer.as_ref().is_some_and(|b| b.saving.is_some())
+            || self.dialog.is_some()
+            || self.reloading()
     }
     #[tracing::instrument(level = "debug", skip_all)]
     fn save(&mut self, then: Option<Intent>, cx: &mut Context<'_, Self>) {
-        if self.busy() {
+        if self.busy() || !self.has_buffers() {
+            return;
+        }
+        if self.buffer.file.is_none() {
+            self.save_as(then, cx);
+            return;
+        }
+        self.save_to(None, then, cx);
+    }
+    fn save_to(
+        &mut self,
+        destination: Option<PathBuf>,
+        then: Option<Intent>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.busy() || !self.has_buffers() {
             return;
         }
         let (text, checkpoint) = {
@@ -175,6 +258,15 @@ impl Document {
             .as_ref()
             .map(|_| self.semantic_snapshot(cx));
         let file = self.buffer.file.clone();
+        let occupied: Vec<_> = self
+            .buffer
+            .iter()
+            .chain(self.inactive.values())
+            .filter(|b| b.id != buffer_id)
+            .filter_map(|b| b.file.as_ref().map(|f| f.path().to_path_buf()))
+            .collect();
+        let changing_path = destination.is_some();
+        let overwrite = self.overwrite_approved;
         let save_trace = tracing::debug_span!(
             "save.transaction",
             async_work = true,
@@ -182,7 +274,10 @@ impl Document {
         );
         let worker_trace = save_trace.clone();
         let queued = (!worker_trace.is_disabled()).then(std::time::Instant::now);
-        self.buffer.status = Some("Saving…".into());
+        self.notice(Some("Saving…".into()));
+        if changing_path {
+            self.saving_as = true;
+        }
         match cx.try_spawn_blocking(
             move || {
                 worker_trace.in_scope(|| {
@@ -192,10 +287,24 @@ impl Document {
                             "save dequeued"
                         );
                     }
-                    file.save(text)
+                    match destination {
+                        Some(path) => FileState::save_as(file, path, text, &occupied),
+                        None => {
+                            let file =
+                                file.ok_or_else(|| std::io::Error::other("document has no file"))?;
+                            if overwrite {
+                                file.overwrite(text)
+                            } else {
+                                file.save(text)
+                            }
+                        }
+                    }
                 })
             },
             move |this, result, cx| {
+                if changing_path {
+                    this.saving_as = false;
+                }
                 this.with_buffer(buffer_id, cx, |this, cx| {
                     if then.is_some() {
                         this.closing = None;
@@ -204,59 +313,107 @@ impl Document {
                     this.buffer.saving = None;
                     match result {
                         Ok(Ok(file)) => {
-                            this.buffer.file = file;
-                            if let (Some(state), Some(snapshot)) =
-                                (&this.buffer.semantic, saved_snapshot)
-                            {
+                            this.buffer.path = file.path().to_path_buf();
+                            this.buffer.file = Some(file);
+                            if changing_path {
+                                if let Some(state) = this.buffer.semantic.take() {
+                                    state.service.shutdown();
+                                }
+                                let _ = this.buffer.editor.update(cx, |editor, _| {
+                                    editor.set_language(velk_editor_widget::Language::for_path(
+                                        &this.buffer.path,
+                                    ))
+                                });
+                                this.start_buffer_semantics(cx);
+                            }
+                            if let (Some(state), Some(snapshot)) = (
+                                &this.buffer.semantic,
+                                saved_snapshot.filter(|_| !changing_path),
+                            ) {
                                 state.service.saved(snapshot);
                             }
                             this.buffer.editor.update(cx, |editor, _| {
                                 editor.mark_saved(checkpoint);
                             });
-                            this.buffer.dirty = this.buffer.editor.read(cx).buffer().is_dirty();
+                            let dirty = this.buffer.editor.read(cx).buffer().is_dirty();
+                            this.buffer.dirty = dirty;
+                            // A saved checkpoint can change even when the on-disk
+                            // bytes and current document revision stay identical.
+                            this.recovery_key = None;
                             this.title();
                             this.buffer.status = None;
+                            this.buffer.disk_changed = false;
+                            this.buffer.disk_stamp = None;
                             if let Some(intent) = then {
                                 if this.buffer.dirty {
-                                    this.buffer.status = Some(
+                                    this.notice(Some(
                                         "Saved the snapshot; newer edits are still unsaved.".into(),
-                                    );
+                                    ));
                                 } else {
                                     this.closing = Some(intent);
                                     this.finish(intent, cx);
                                 }
                             }
                         }
-                        Ok(Err(error)) => {
-                            this.buffer.status = Some(format!("Save failed: {error}"))
-                        }
-                        Err(error) => this.buffer.status = Some(format!("Save failed: {error}")),
+                        Ok(Err(error)) => this.notice(Some(format!("Save failed: {error}"))),
+                        Err(error) => this.notice(Some(format!("Save failed: {error}"))),
                     }
                 });
                 this.title();
+                if changing_path && this.panels.ui.source.is_none() {
+                    let file = if this.buffer.as_ref().is_some_and(|b| b.id == buffer_id) {
+                        this.buffer.file.as_ref()
+                    } else {
+                        this.inactive.get(&buffer_id).and_then(|b| b.file.as_ref())
+                    };
+                    if let Some(file) = file {
+                        this.panels.ui.source = Some(velk_panels::NativePath::new(file.path()));
+                        this.refresh_panels(cx);
+                    }
+                }
+                this.schedule_recovery(cx);
+                if let Some(error) = this.buffer_save_error(buffer_id) {
+                    this.save_queue.clear();
+                    if this.buffer.as_ref().is_none_or(|b| b.id != buffer_id) {
+                        this.notice(Some(error));
+                    }
+                } else {
+                    this.continue_save_all(cx);
+                }
             },
         ) {
             Ok(task) => self.buffer.saving = Some(task),
             Err(error) => {
+                if changing_path {
+                    self.saving_as = false;
+                }
                 self.closing = None;
-                self.buffer.status = Some(format!("Save failed: {error}"));
+                self.save_queue.clear();
+                self.notice(Some(format!("Save failed: {error}")));
             }
         }
     }
     pub fn intent(&mut self, intent: Intent, cx: &mut Context<'_, Self>) {
+        if !self.has_buffers() {
+            if !matches!(intent, Intent::Buffer) && !self.busy() && self.opening.is_none() {
+                self.finish(intent, cx);
+            }
+            return;
+        }
         if self.buffer.editor.read(cx).has_composition() {
-            self.buffer.status = Some("Finish text composition before closing.".into());
+            self.notice(Some("Finish text composition before closing.".into()));
             return;
         }
         if self.busy() {
             if self.buffer.saving.is_some() {
-                self.buffer.status = Some("Saving… Please wait before closing.".into());
+                self.notice(Some("Saving… Please wait before closing.".into()));
             }
             return;
         }
-        if self.any_saving() || self.opening.is_some() {
-            self.buffer.status =
-                Some("Please wait for file operations to finish before closing.".into());
+        if self.any_saving() || !self.save_queue.is_empty() || self.opening.is_some() {
+            self.notice(Some(
+                "Please wait for file operations to finish before closing.".into(),
+            ));
             return;
         }
         if self.closing.is_none() {
@@ -272,7 +429,7 @@ impl Document {
                 .map(|b| b.id)
         {
             let mut buffer = self.inactive.remove(&id).unwrap();
-            std::mem::swap(&mut self.buffer, &mut buffer);
+            std::mem::swap(self.buffer.as_mut().unwrap(), &mut buffer);
             self.inactive.insert(buffer.id, buffer);
             self.title();
         }
@@ -300,30 +457,28 @@ impl Document {
                 }
                 Err(error) => {
                     this.closing = None;
-                    this.buffer.status = Some(format!("Cannot show save dialog: {error}"));
+                    this.notice(Some(format!("Cannot show save dialog: {error}")));
                 }
             }
         }) {
             Ok(task) => self.dialog = Some(task),
             Err(error) => {
                 self.closing = None;
-                self.buffer.status = Some(format!("Cannot show save dialog: {error}"));
+                self.notice(Some(format!("Cannot show save dialog: {error}")));
             }
         }
     }
     fn finish(&mut self, intent: Intent, cx: &mut Context<'_, Self>) {
         if matches!(intent, Intent::Buffer) {
-            if self.inactive.is_empty() {
-                self.finish(Intent::Close, cx);
-            } else {
-                self.closing = None;
-                self.remove_current_buffer(cx);
-            }
+            self.closing = None;
+            self.remove_current_buffer(cx);
             return;
         }
         // Retain every buffer until all prompts succeed. Cancelling a later
         // prompt must not lose an earlier buffer whose discard was approved.
-        self.close_approved.insert(self.buffer.id);
+        if let Some(buffer) = self.buffer.as_ref() {
+            self.close_approved.insert(buffer.id);
+        }
         self.closing = Some(intent);
         if let Some(id) = self
             .inactive
@@ -332,7 +487,7 @@ impl Document {
             .map(|b| b.id)
         {
             let mut next = self.inactive.remove(&id).unwrap();
-            std::mem::swap(&mut self.buffer, &mut next);
+            std::mem::swap(self.buffer.as_mut().unwrap(), &mut next);
             self.inactive.insert(next.id, next);
             self.title();
             self.intent(intent, cx);
@@ -345,7 +500,9 @@ impl Document {
             Intent::Buffer => unreachable!(),
         };
         if let Err(error) = result {
-            self.buffer.status = Some(error.to_string());
+            self.notice(Some(error.to_string()));
+        } else if let Some(recovery) = &self.recovery {
+            recovery.discard();
         }
     }
 }
@@ -357,6 +514,23 @@ impl View for Document {
                 Some(cx.command(reload::RestoreFocus, |this, _, cx| this.restore_focus(cx)));
             cx.request_animation_frame();
         }
+        let new_file = cx
+            .command(buffers::New, |this, _, cx| this.new_buffer(cx))
+            .label("New File")
+            .enabled(!self.busy() && self.closing.is_none())
+            .shortcut(Shortcut::primary("n"));
+        let save_as = cx
+            .command(SaveAs, |this, _, cx| this.save_as(None, cx))
+            .label("Save As…")
+            .enabled(self.has_buffers() && !self.busy() && self.closing.is_none())
+            .shortcut(Shortcut::primary("s").shift());
+        let save_all = cx
+            .command(SaveAll, |this, _, cx| this.save_all(cx))
+            .label("Save All")
+            .enabled(
+                self.has_buffers() && !self.busy() && !self.any_saving() && self.closing.is_none(),
+            )
+            .shortcut(Shortcut::primary("s").alt());
         let open = cx
             .command(buffers::Open, |this, _, cx| this.open_file(cx))
             .label("Open file…")
@@ -368,7 +542,8 @@ impl View for Document {
             })
             .label("Close buffer")
             .enabled(
-                !self.busy()
+                self.has_buffers()
+                    && !self.busy()
                     && !self.any_saving()
                     && self.opening.is_none()
                     && self.closing.is_none(),
@@ -377,6 +552,7 @@ impl View for Document {
         let next_buffer = cx
             .command(buffers::Next, |this, _, cx| this.cycle_buffer(false, cx))
             .label("Next buffer")
+            .enabled(self.buffer_order.len() > 1)
             .shortcut(Shortcut::new(
                 KeyboardKey::Tab,
                 rxui::Modifiers {
@@ -387,6 +563,7 @@ impl View for Document {
         let previous_buffer = cx
             .command(buffers::Previous, |this, _, cx| this.cycle_buffer(true, cx))
             .label("Previous buffer")
+            .enabled(self.buffer_order.len() > 1)
             .shortcut(Shortcut::new(
                 KeyboardKey::Tab,
                 rxui::Modifiers {
@@ -411,14 +588,21 @@ impl View for Document {
         let save = cx
             .command(Save, |this, _, cx| this.save(None, cx))
             .label("Save")
-            .enabled(!self.busy() && self.buffer.dirty)
+            .enabled(
+                self.has_buffers()
+                    && !self.busy()
+                    && (self.buffer.dirty || self.buffer.file.is_none()),
+            )
             .shortcut(Shortcut::primary("s"));
         let hover = cx
             .command(Hover, |this, _, cx| this.request_hover(cx))
             .label("Show hover")
-            .enabled(self.buffer.semantic.as_ref().is_some_and(
-                |state| matches!(state.status, velk_semantic::Status::Ready(c) if c.hover),
-            ))
+            .enabled(
+                self.has_buffers()
+                    && self.buffer.semantic.as_ref().is_some_and(
+                        |state| matches!(state.status, velk_semantic::Status::Ready(c) if c.hover),
+                    ),
+            )
             .shortcut(Shortcut::new(
                 KeyboardKey::Other("F1".into()),
                 Default::default(),
@@ -519,7 +703,7 @@ impl View for Document {
         let trace_marker = cx
             .command(diagnostics::Marker, |this, _, _| {
                 velk_diagnostics::marker("User marker");
-                this.buffer.status = Some("Trace marker added".into());
+                this.notice(Some("Trace marker added".into()));
             })
             .label("Diagnostics: Add trace marker")
             .enabled(trace_available && velk_diagnostics::recording());
@@ -528,6 +712,17 @@ impl View for Document {
             if self.palette.open {
                 vec![
                     palette::Entry::new("velk.file.save", save.clone(), palette::primary("S")),
+                    palette::Entry::new("velk.file.new", new_file.clone(), palette::primary("N")),
+                    palette::Entry::new(
+                        "velk.file.save-as",
+                        save_as.clone(),
+                        palette::primary("Shift+S"),
+                    ),
+                    palette::Entry::new(
+                        "velk.file.save-all",
+                        save_all.clone(),
+                        palette::primary("Alt+S"),
+                    ),
                     palette::Entry::new("velk.file.open", open.clone(), palette::primary("O")),
                     palette::Entry::new(
                         "velk.buffer.close",
@@ -618,6 +813,9 @@ impl View for Document {
             .on_command(close_buffer.clone())
             .on_command(next_buffer)
             .on_command(previous_buffer)
+            .on_command(new_file)
+            .on_command(save_as)
+            .on_command(save_all)
             .on_command(save)
             .on_command(hover)
             .on_command(toggle_plugins)
@@ -650,6 +848,47 @@ impl Document {
         cx: &mut ViewContext<'_, Self>,
     ) -> rxui::Element {
         use velk_panels::Slot;
+        let content: rxui::Element = if self.has_buffers() {
+            self.buffer
+                .editor
+                .clone()
+                .into_element()
+                .focus_handle(self.editor_focus.clone())
+                .fill_width()
+                .fill_height()
+                .flex_shrink(1.)
+                .min_width(0.)
+                .min_height(0.)
+        } else {
+            column()
+                .key("empty-workspace")
+                .fill_width()
+                .fill_height()
+                .gap(12.)
+                .align_items(rxui::taffy::prelude::AlignItems::CENTER)
+                .justify_content(rxui::taffy::prelude::JustifyContent::CENTER)
+                .child(
+                    label("No documents open")
+                        .font_size(20.)
+                        .color(ThemeColor::TextMuted),
+                )
+                .child(
+                    row()
+                        .gap(10.)
+                        .child(
+                            button("New File")
+                                .key("empty-new")
+                                .focus_handle(self.editor_focus.clone())
+                                .on_click(cx.listener(|this, _, cx| this.new_buffer(cx))),
+                        )
+                        .child(
+                            button("Open File…")
+                                .key("empty-open")
+                                .on_click(cx.listener(|this, _, cx| this.open_file(cx))),
+                        ),
+                )
+                .into_element()
+        };
         let editor = column()
             .key("editor-column")
             .fill_width()
@@ -658,19 +897,9 @@ impl Document {
             .min_width(0.)
             .min_height(0.)
             .children(self.editor_tabs(layout, cx))
+            .children(self.disk_notice(cx))
             .child(search_bar)
-            .child(
-                self.buffer
-                    .editor
-                    .clone()
-                    .into_element()
-                    .focus_handle(self.editor_focus.clone())
-                    .fill_width()
-                    .fill_height()
-                    .flex_shrink(1.)
-                    .min_width(0.)
-                    .min_height(0.),
-            );
+            .child(content);
         let body = row()
             .key("body")
             .fill_width()

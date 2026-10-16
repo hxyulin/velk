@@ -11,12 +11,60 @@ enum Opened {
     Loaded(Box<(FileState, velk_editor_widget::Buffer, PathBuf)>),
 }
 
+/// Optional active document. Window-scoped operations inspect the option;
+/// buffer-scoped paths may dereference only after establishing an active ID.
+#[derive(Default)]
+pub(super) struct ActiveBuffer(Option<BufferState>);
+impl ActiveBuffer {
+    pub fn as_ref(&self) -> Option<&BufferState> {
+        self.0.as_ref()
+    }
+    pub fn as_mut(&mut self) -> Option<&mut BufferState> {
+        self.0.as_mut()
+    }
+    pub fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+    pub fn take(&mut self) -> Option<BufferState> {
+        self.0.take()
+    }
+    pub fn replace(&mut self, buffer: BufferState) -> Option<BufferState> {
+        self.0.replace(buffer)
+    }
+    pub fn iter(&self) -> std::option::Iter<'_, BufferState> {
+        self.0.iter()
+    }
+}
+impl From<Option<BufferState>> for ActiveBuffer {
+    fn from(buffer: Option<BufferState>) -> Self {
+        Self(buffer)
+    }
+}
+impl std::ops::Deref for ActiveBuffer {
+    type Target = BufferState;
+    fn deref(&self) -> &BufferState {
+        self.0
+            .as_ref()
+            .expect("buffer-scoped operation requires an active document")
+    }
+}
+impl std::ops::DerefMut for ActiveBuffer {
+    fn deref_mut(&mut self) -> &mut BufferState {
+        self.0
+            .as_mut()
+            .expect("buffer-scoped operation requires an active document")
+    }
+}
+
 pub(super) struct BufferState {
     pub id: u64,
     pub editor: Entity<Editor>,
-    pub file: FileState,
+    pub file: Option<FileState>,
     pub path: PathBuf,
     pub dirty: bool,
+    pub disk_changed: bool,
+    pub disk_stamp: Option<crate::file::DiskStamp>,
+    observed_revision: u64,
     pub status: Option<String>,
     pub saving: Option<Task>,
     pub semantic: Option<semantic::State>,
@@ -27,22 +75,31 @@ impl BufferState {
     pub fn new(
         id: u64,
         editor: Entity<Editor>,
-        file: FileState,
+        file: impl Into<Option<FileState>>,
         path: PathBuf,
         cx: &mut Context<'_, Document>,
     ) -> Self {
         let dirty = editor.read(cx).buffer().is_dirty();
+        let observed_revision = editor.read(cx).buffer().revision();
         let subscription = cx
             .observe(&editor, move |this, _, cx| {
                 let mut changed = false;
+                let mut recovery_changed = false;
                 this.with_buffer(id, cx, |this, cx| {
                     let dirty = this.buffer.editor.read(cx).buffer().is_dirty();
+                    let revision = this.buffer.editor.read(cx).buffer().revision();
+                    recovery_changed =
+                        revision != this.buffer.observed_revision || dirty != this.buffer.dirty;
+                    this.buffer.observed_revision = revision;
                     let semantic_changed = this.sync_semantics(cx);
                     let search_changed = this.sync_search(cx);
                     changed = this.buffer.dirty != dirty
                         || (!this.background_buffer && (semantic_changed || search_changed));
                     this.buffer.dirty = dirty;
                 });
+                if recovery_changed {
+                    this.schedule_recovery(cx);
+                }
                 if changed {
                     this.title();
                 } else {
@@ -53,9 +110,12 @@ impl BufferState {
         Self {
             id,
             editor,
-            file,
+            file: file.into(),
             path,
             dirty,
+            disk_changed: false,
+            disk_stamp: None,
+            observed_revision,
             status: None,
             saving: None,
             semantic: None,
@@ -72,6 +132,8 @@ impl Drop for BufferState {
     }
 }
 
+pub(super) struct New;
+impl Command for New {}
 pub(super) struct Open;
 impl Command for Open {}
 pub(super) struct Close;
@@ -90,6 +152,9 @@ impl Document {
         cx: &mut Context<'_, Self>,
         f: impl FnOnce(&mut Self, &mut Context<'_, Self>),
     ) {
+        if !self.has_buffers() {
+            return;
+        }
         if self.buffer.id == id {
             f(self, cx);
             return;
@@ -97,63 +162,91 @@ impl Document {
         let Some(mut buffer) = self.inactive.remove(&id) else {
             return;
         };
-        std::mem::swap(&mut self.buffer, &mut buffer);
+        std::mem::swap(self.buffer.as_mut().unwrap(), &mut buffer);
         self.background_buffer = true;
         f(self, cx);
         self.background_buffer = false;
-        std::mem::swap(&mut self.buffer, &mut buffer);
+        std::mem::swap(self.buffer.as_mut().unwrap(), &mut buffer);
         self.inactive.insert(id, buffer);
     }
     pub(super) fn ids(&self) -> Vec<u64> {
         self.buffer_order.clone()
     }
     pub(super) fn any_saving(&self) -> bool {
-        self.buffer.saving.is_some() || self.inactive.values().any(|b| b.saving.is_some())
+        self.buffer.as_ref().is_some_and(|b| b.saving.is_some())
+            || self.inactive.values().any(|b| b.saving.is_some())
     }
     pub(super) fn select_buffer(&mut self, id: u64, cx: &mut Context<'_, Self>) {
         if self.dialog.is_some()
             || self.closing.is_some()
             || self.reloading()
-            || self.buffer.editor.read(cx).has_composition()
+            || self
+                .buffer
+                .as_ref()
+                .is_some_and(|b| b.editor.read(cx).has_composition())
         {
             return;
         }
         if let Some(mut buffer) = self.inactive.remove(&id) {
             self.cancel_search(cx);
-            std::mem::swap(&mut self.buffer, &mut buffer);
+            std::mem::swap(self.buffer.as_mut().unwrap(), &mut buffer);
             self.inactive.insert(buffer.id, buffer);
             if self.buffer.search.open {
                 self.buffer.search.preserve_selection = true;
                 self.restart_search(cx);
             }
             self.title();
+            self.schedule_recovery(cx);
             self.restore_focus_pending = true;
         }
     }
     pub(super) fn cycle_buffer(&mut self, backwards: bool, cx: &mut Context<'_, Self>) {
         let ids = self.ids();
+        if ids.is_empty() {
+            return;
+        }
         let index = ids.iter().position(|id| *id == self.buffer.id).unwrap();
         let offset = if backwards { ids.len() - 1 } else { 1 };
         self.select_buffer(ids[(index + offset) % ids.len()], cx);
     }
     pub(super) fn add_buffer(
         &mut self,
-        file: FileState,
+        file: impl Into<Option<FileState>>,
         editor: Editor,
         path: PathBuf,
         cx: &mut Context<'_, Self>,
     ) {
-        let existing = std::iter::once(&self.buffer)
+        let file = file.into();
+        let existing = self
+            .buffer
+            .iter()
             .chain(self.inactive.values())
-            .find(|b| b.file.path() == file.path())
+            .find(|b| {
+                file.as_ref().is_some_and(|f| {
+                    b.file
+                        .as_ref()
+                        .is_some_and(|other| other.path() == f.path())
+                })
+            })
             .map(|b| b.id);
         if let Some(id) = existing {
             self.select_buffer(id, cx);
             return;
         }
-        if self.buffer.editor.read(cx).has_composition() {
-            self.buffer.status =
-                Some("Finish text composition before opening another buffer.".into());
+        if self
+            .buffer
+            .as_ref()
+            .is_some_and(|b| b.editor.read(cx).has_composition())
+        {
+            self.notice(Some(
+                "Finish text composition before opening another buffer.".into(),
+            ));
+            return;
+        }
+        if self.buffer_order.len() >= 256 {
+            self.notice(Some(
+                "This workspace already has 256 open documents.".into(),
+            ));
             return;
         }
         let editor = cx.new(|_| editor);
@@ -161,10 +254,19 @@ impl Document {
         self.next_buffer += 1;
         self.buffer_order.push(buffer.id);
         self.cancel_search(cx);
-        let old = std::mem::replace(&mut self.buffer, buffer);
-        self.inactive.insert(old.id, old);
+        if let Some(old) = self.buffer.replace(buffer) {
+            self.inactive.insert(old.id, old);
+        }
+        self.window_status = None;
+        if self.panels.ui.source.is_none()
+            && let Some(file) = &self.buffer.file
+        {
+            self.panels.ui.source = Some(velk_panels::NativePath::new(file.path()));
+            self.refresh_panels(cx);
+        }
         self.start_buffer_semantics(cx);
         self.title();
+        self.schedule_recovery(cx);
         self.restore_focus_pending = true;
     }
     pub fn restore_buffers(
@@ -173,15 +275,21 @@ impl Document {
         active_index: usize,
         cx: &mut Context<'_, Self>,
     ) {
-        let active = self.buffer.id;
+        let Some(active) = self.buffer.as_ref().map(|b| b.id) else {
+            return;
+        };
         for restored in buffers {
             let editor = cx.new(|_| restored.editor);
-            let mut buffer =
-                BufferState::new(self.next_buffer, editor, restored.file, restored.path, cx);
+            let id = if restored.id == 0 {
+                self.next_buffer
+            } else {
+                restored.id
+            };
+            let mut buffer = BufferState::new(id, editor, restored.file, restored.path, cx);
             buffer.search.open = restored.search_open;
             buffer.search.query = restored.search_query;
             buffer.search.preserve_selection = true;
-            self.next_buffer += 1;
+            self.next_buffer = self.next_buffer.max(buffer.id + 1);
             self.buffer_order.push(buffer.id);
             self.inactive.insert(buffer.id, buffer);
         }
@@ -189,22 +297,68 @@ impl Document {
         self.buffer_order
             .insert(active_index.min(self.buffer_order.len()), active);
     }
+    pub fn restore_recovered(
+        &mut self,
+        documents: Vec<crate::recovery::RestoredDocument>,
+        workspace: crate::workspace::Workspace,
+        order: Vec<u64>,
+        next_id: u64,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.workspace = workspace;
+        self.next_buffer = self.next_buffer.max(next_id);
+        self.panels.ui.root = self.workspace.root().map(velk_panels::NativePath::new);
+        for restored in documents {
+            let editor = cx.new(|_| restored.editor);
+            let buffer = BufferState::new(restored.id, editor, restored.file, restored.path, cx);
+            self.next_buffer = self.next_buffer.max(restored.id + 1);
+            self.buffer_order.push(restored.id);
+            self.inactive.insert(restored.id, buffer);
+        }
+        if self.panels.ui.source.is_none() {
+            self.panels.ui.source =
+                self.buffer
+                    .iter()
+                    .chain(self.inactive.values())
+                    .find_map(|b| {
+                        b.file
+                            .as_ref()
+                            .map(|f| velk_panels::NativePath::new(f.path()))
+                    });
+        }
+        self.buffer_order.sort_by_key(|id| {
+            order
+                .iter()
+                .position(|other| other == id)
+                .unwrap_or(order.len())
+        });
+    }
     pub fn start_all_semantics(&mut self, cx: &mut Context<'_, Self>) {
         for id in self.ids() {
             self.with_buffer(id, cx, |this, cx| this.start_buffer_semantics(cx));
         }
     }
     pub(super) fn start_buffer_semantics(&mut self, cx: &mut Context<'_, Self>) {
-        if Language::for_path(&self.buffer.path) == Some(Language::Rust)
+        if self.buffer.file.is_some()
+            && Language::for_path(&self.buffer.path) == Some(Language::Rust)
             && let Some(plugins) = &self.plugins
         {
             match plugins.client.semantic_service() {
                 Ok(service) => self.enable_semantics(service, cx),
-                Err(error) => {
-                    self.buffer.status = Some(format!("Semantic service unavailable: {error}"))
-                }
+                Err(error) => self.notice(Some(format!("Semantic service unavailable: {error}"))),
             }
         }
+    }
+    pub(super) fn new_buffer(&mut self, cx: &mut Context<'_, Self>) {
+        if self.busy() || self.closing.is_some() {
+            return;
+        }
+        self.add_buffer(
+            None,
+            Editor::new(""),
+            PathBuf::from(format!("Untitled {}", self.next_buffer)),
+            cx,
+        );
     }
     pub(super) fn open_file(&mut self, cx: &mut Context<'_, Self>) {
         if self.busy() || self.opening.is_some() {
@@ -219,28 +373,40 @@ impl Document {
             match result {
                 Ok(Some(path)) => this.open_path(path, cx),
                 Ok(None) => {}
-                Err(error) => this.buffer.status = Some(format!("Open failed: {error}")),
+                Err(error) => this.notice(Some(format!("Open failed: {error}"))),
             }
         }) {
             Ok(task) => self.dialog = Some(task),
-            Err(error) => self.buffer.status = Some(format!("Open failed: {error}")),
+            Err(error) => self.notice(Some(format!("Open failed: {error}"))),
         }
     }
     pub(super) fn open_path(&mut self, path: PathBuf, cx: &mut Context<'_, Self>) {
         if self.closing.is_some() || self.reloading() {
             return;
         }
+        if self.saving_as || self.dialog.is_some() {
+            self.notice(Some(
+                "Finish the current dialog or Save As before opening a file.".into(),
+            ));
+            return;
+        }
         if self.opening.is_some() {
             if self.pending_opens.len() >= 32 {
-                self.buffer.status = Some("Too many queued file opens; please wait".into());
+                self.notice(Some("Too many queued file opens; please wait".into()));
             } else if !self.pending_opens.contains(&path) {
                 self.pending_opens.push_back(path);
             }
             return;
         }
-        let open: Vec<_> = std::iter::once(&self.buffer)
+        let open: Vec<_> = self
+            .buffer
+            .iter()
             .chain(self.inactive.values())
-            .map(|b| (b.file.path().to_path_buf(), b.id))
+            .filter_map(|b| {
+                b.file
+                    .as_ref()
+                    .map(|file| (file.path().to_path_buf(), b.id))
+            })
             .collect();
         match cx.try_spawn_blocking(
             move || {
@@ -260,13 +426,11 @@ impl Document {
                         let mut editor = Editor::from_buffer(buffer);
                         match editor.set_language(Language::for_path(&path)) {
                             Ok(()) => this.add_buffer(file, editor, path, cx),
-                            Err(error) => {
-                                this.buffer.status = Some(format!("Open failed: {error}"))
-                            }
+                            Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                         }
                     }
-                    Ok(Err(error)) => this.buffer.status = Some(format!("Open failed: {error}")),
-                    Err(error) => this.buffer.status = Some(format!("Open failed: {error}")),
+                    Ok(Err(error)) => this.notice(Some(format!("Open failed: {error}"))),
+                    Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                 }
                 if let Some(next) = this.pending_opens.pop_front() {
                     this.open_path(next, cx);
@@ -276,12 +440,25 @@ impl Document {
             Ok(task) => self.opening = Some(task),
             Err(error) => {
                 self.pending_opens.clear();
-                self.buffer.status = Some(format!("Open failed: {error}"));
+                self.notice(Some(format!("Open failed: {error}")));
             }
         }
     }
     pub(super) fn remove_current_buffer(&mut self, cx: &mut Context<'_, Self>) {
         let ids = self.ids();
+        if ids.is_empty() {
+            return;
+        }
+        if ids.len() == 1 {
+            self.cancel_search(cx);
+            self.buffer.take();
+            self.buffer_order.clear();
+            self.window_status = None;
+            self.title();
+            self.schedule_recovery(cx);
+            self.restore_focus_pending = true;
+            return;
+        }
         let index = ids.iter().position(|id| *id == self.buffer.id).unwrap();
         let next = if index + 1 < ids.len() {
             ids[index + 1]
@@ -291,17 +468,21 @@ impl Document {
         let next = self.inactive.remove(&next).unwrap();
         self.cancel_search(cx);
         self.buffer_order.retain(|id| *id != self.buffer.id);
-        self.buffer = next;
+        self.buffer.replace(next);
         if self.buffer.search.open {
             self.buffer.search.preserve_selection = true;
             self.restart_search(cx);
         }
         self.title();
+        self.schedule_recovery(cx);
         self.restore_focus_pending = true;
     }
     fn close_buffer(&mut self, id: u64, cx: &mut Context<'_, Self>) {
         self.select_buffer(id, cx);
-        if self.buffer.id == id {
+        if !self.has_buffers() {
+            return;
+        }
+        if self.buffer.as_ref().is_some_and(|b| b.id == id) {
             self.intent(super::Intent::Buffer, cx);
         }
     }
@@ -459,6 +640,113 @@ mod tests {
             let editor = cx.new(|_| editor);
             cx.new(|cx| Document::new(editor, file, path.to_path_buf(), cx))
         })
+    }
+    #[test]
+    fn closing_last_document_keeps_a_real_empty_window_and_new_open_reuse_no_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "saved").unwrap();
+        let mut runtime = Runtime::new();
+        let executor = Arc::new(QueuedExecutor::default());
+        runtime.configure_tasks(executor.clone(), || {}).unwrap();
+        let root = create(&mut runtime, &path);
+        let mut ui = Ui::new(&mut runtime, root.clone()).unwrap();
+        prepare(&mut ui, &mut runtime);
+        runtime.update(|cx| {
+            root.update(cx, |d, cx| {
+                d.workspace.set_root(directory.path().into());
+                d.intent(Intent::Buffer, cx);
+                assert!(!d.has_buffers());
+                assert!(d.ids().is_empty());
+                assert!(d.inactive.is_empty());
+                assert!(d.closing.is_none());
+                assert_eq!(d.workspace.root(), Some(directory.path()));
+                d.intent(Intent::Buffer, cx); // closing an empty tab set is a no-op
+                d.save(None, cx);
+                d.save_as(None, cx);
+                d.save_all(cx);
+                d.cycle_buffer(false, cx);
+                d.request_hover(cx);
+                assert!(d.can_reload(cx));
+            })
+        });
+        prepare(&mut ui, &mut runtime);
+        assert!(
+            ui.elements()
+                .any(|e| e.key == Some(&rxui::Key::from("empty-workspace")))
+        );
+        assert!(
+            !ui.elements()
+                .any(|e| e.key == Some(&rxui::Key::from("editor-surface")))
+        );
+        assert!(
+            !ui.elements()
+                .any(|e| e.key == Some(&rxui::Key::from("buffer-tab-1")))
+        );
+        assert_eq!(
+            ui.dispatch_command::<super::super::Save>(&mut runtime)
+                .unwrap(),
+            CommandStatus::Disabled
+        );
+        assert_eq!(
+            ui.dispatch_command::<Close>(&mut runtime).unwrap(),
+            CommandStatus::Disabled
+        );
+        runtime.update(|cx| {
+            let action = root.read(cx).focus_restoration().unwrap();
+            action.invoke(cx).unwrap();
+        });
+        prepare(&mut ui, &mut runtime);
+        let new_button = ui
+            .elements()
+            .find(|e| e.key == Some(&rxui::Key::from("empty-new")))
+            .unwrap()
+            .id;
+        assert_eq!(ui.focused_element(), Some(new_button));
+        assert_eq!(
+            ui.dispatch_command::<New>(&mut runtime).unwrap(),
+            CommandStatus::Handled
+        );
+        prepare(&mut ui, &mut runtime);
+        runtime.update(|cx| {
+            root.update(cx, |d, cx| {
+                assert_eq!(d.buffer.id, 2);
+                assert!(d.buffer.file.is_none());
+                d.intent(Intent::Buffer, cx);
+                d.open_path(path.clone(), cx);
+            })
+        });
+        executor.complete(&mut runtime);
+        prepare(&mut ui, &mut runtime);
+        runtime.update(|cx| {
+            assert_eq!(root.read(cx).buffer.id, 3);
+            assert!(root.read(cx).has_buffers());
+        });
+        assert!(
+            ui.elements()
+                .any(|e| e.key == Some(&rxui::Key::from("editor-surface")))
+        );
+    }
+    #[test]
+    fn closed_last_buffer_rejects_late_observations_and_reports_window_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "saved").unwrap();
+        let mut runtime = Runtime::new();
+        let root = create(&mut runtime, &path);
+        let old_editor = runtime.update(|cx| root.read(cx).buffer.editor.clone());
+        runtime.update(|cx| root.update(cx, |d, cx| d.intent(Intent::Buffer, cx)));
+        runtime.update(|cx| old_editor.update(cx, |editor, _| editor.insert("late")));
+        runtime.flush().unwrap();
+        runtime.update(|cx| {
+            root.update(cx, |d, cx| {
+                d.with_buffer(1, cx, |_, _| panic!("closed ID must stay retired"));
+                d.notice(Some("Window-level message".into()));
+                assert_eq!(d.window_status.as_deref(), Some("Window-level message"));
+                d.restore_ui(Default::default());
+                assert!(!d.has_buffers());
+            })
+        });
     }
     #[test]
     fn saves_finish_in_their_own_buffers_after_switching_and_preserve_newer_edits() {

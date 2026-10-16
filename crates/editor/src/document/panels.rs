@@ -72,10 +72,10 @@ impl State {
     pub(super) fn epoch(&self) -> u64 {
         self.epoch
     }
-    pub(super) fn new(source: NativePath) -> Self {
+    pub(super) fn new(source: Option<NativePath>) -> Self {
         Self {
             ui: UiState {
-                source: Some(source),
+                source,
                 ..Default::default()
             },
             ..Default::default()
@@ -253,15 +253,17 @@ impl Document {
                     Err(e) => this.panels.error = Some(e.to_string()),
                 }
                 if let Some(error) = &this.panels.error {
-                    this.buffer.status = Some(format!("Panels: {error}"));
+                    this.notice(Some(format!("Panels: {error}")));
                 } else if this
                     .buffer
                     .status
                     .as_deref()
                     .is_some_and(|s| s.starts_with("Panels:"))
                 {
-                    this.buffer.status =
-                        Some(format!("Panels: {} available", this.panels.entries.len()));
+                    this.notice(Some(format!(
+                        "Panels: {} available",
+                        this.panels.entries.len()
+                    )));
                 }
                 this.start_panel_action(cx);
                 this.watch_panels(cx);
@@ -451,13 +453,13 @@ impl Document {
             .filter(|(key, _)| key.starts_with(&prefix))
             .collect();
         PanelContext {
-            root: self.panels.ui.root.clone(),
-            document: self
-                .panels
-                .ui
-                .source
-                .clone()
-                .or_else(|| Some(NativePath::new(self.buffer.file.path()))),
+            root: self.workspace.root().map(NativePath::new),
+            document: self.panels.ui.source.clone().or_else(|| {
+                self.buffer
+                    .as_ref()
+                    .and_then(|b| b.file.as_ref())
+                    .map(|f| NativePath::new(f.path()))
+            }),
             initialized: !views.is_empty(),
             expanded: views
                 .into_iter()
@@ -806,15 +808,17 @@ impl Document {
             match result {
                 Ok(Some(path)) => this.set_panel_root(path, cx),
                 Ok(None) => {}
-                Err(error) => this.buffer.status = Some(format!("Open folder failed: {error}")),
+                Err(error) => this.notice(Some(format!("Open folder failed: {error}"))),
             }
         }) {
             Ok(task) => self.dialog = Some(task),
-            Err(error) => self.buffer.status = Some(format!("Open folder failed: {error}")),
+            Err(error) => self.notice(Some(format!("Open folder failed: {error}"))),
         }
     }
     fn set_panel_root(&mut self, path: std::path::PathBuf, cx: &mut Context<'_, Self>) {
+        self.workspace.set_root(path.clone());
         self.panels.ui.root = Some(NativePath::new(&path));
+        self.schedule_recovery(cx);
         self.panels.ui.views.clear();
         self.panels.ui.visible = true;
         self.panels.ui.closed.clear();
@@ -842,7 +846,7 @@ impl Document {
                     .any(|e| !this.panels.ui.closed.contains(&e.panel.slot));
             this.panels.ui.visible = !showing;
             if this.panels.ui.visible && this.panels.entries.is_empty() {
-                this.buffer.status = Some(self::empty_notice(&this.panels));
+                this.notice(Some(self::empty_notice(&this.panels)));
             }
             if this.panels.ui.visible {
                 this.panels.ui.closed.clear();

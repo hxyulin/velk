@@ -1,5 +1,9 @@
 # Editor shell
 
+Closing the last document keeps the window open. The empty editor area provides
+New File and Open File actions, with no hidden document; window features and the
+workspace root remain available.
+
 Velk starts with a buffer tab bar, the editor and a compact bottom status bar. The bar shows save
 and semantic status and provides Settings and Plugins buttons. Enabling the left
 activity bar moves those buttons into it. Panels start hidden. The Files plugin reads the initial project root and loads subfolders only when opened.
@@ -62,7 +66,7 @@ commands remain visible, and Enter on a disabled result or an empty list does
 nothing. Reopening starts with an empty query.
 
 The catalogue includes Terminal: Toggle bottom panel (Control+backtick), Open file, Open folder (Command+Shift+O / Control+Shift+O),
-Panels: Refresh, Save, Close buffer, Next/Previous buffer,
+Panels: Refresh, New File, Save, Save As, Save All, Close buffer, Next/Previous buffer,
 Find in file, Settings, Plugins, Show hover,
 Plugins: Load from disk, Plugins: Unload all, Close window, and Quit Velk. Command
 entries wrap the same RXUI actions as existing buttons and shortcuts, sharing
