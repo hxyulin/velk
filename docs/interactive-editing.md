@@ -69,3 +69,8 @@ wraps selected text, preserving selection direction. It avoids inserting a close
 before identifier text. `pair_quotes` defaults to false; enabling it adds single
 and double quotes with basic identifier/escape guards. These rules are lexical,
 so language-aware quote, string, comment, and lifetime handling remains deferred.
+
+Typing a closing delimiter skips only a matching tracked close at the caret.
+Backspace removes both delimiters only between an empty tracked pair. Skipping
+changes only the caret; paired deletion is one undo step. The most recent 256
+pairs per buffer are tracked; older pairs fall back to literal editing.

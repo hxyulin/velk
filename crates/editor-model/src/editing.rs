@@ -121,7 +121,9 @@ impl Session {
             .map_err(|e| e.to_string())?;
         self.synchronize(buffer);
         self.pairs.extend(proposal.pairs);
-        self.pairs.truncate(256);
+        if self.pairs.len() > 256 {
+            self.pairs.drain(..self.pairs.len() - 256);
+        }
         Ok(true)
     }
 }
@@ -152,6 +154,22 @@ mod tests {
                 }],
             }))
         }
+    }
+    #[test]
+    fn tracking_keeps_the_newest_pairs_when_the_limit_is_reached() {
+        let mut buffer = Buffer::new("");
+        let mut session = Session::default();
+        session.set_providers(BTreeMap::from([(
+            Role::Pairing,
+            Arc::new(PairProvider { invalid: false }) as Arc<dyn Provider>,
+        )]));
+        for _ in 0..257 {
+            session
+                .evaluate(&mut buffer, Intent::Type("(".into()))
+                .unwrap();
+        }
+        assert_eq!(session.pairs.len(), 256);
+        assert_eq!(session.pairs.last().unwrap().close, buffer.selection().head);
     }
     #[test]
     fn proposals_are_atomic_and_pair_anchors_follow_text_changes_and_deletions() {

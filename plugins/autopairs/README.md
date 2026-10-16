@@ -12,3 +12,7 @@ Restart this plugin after changing its settings.
 Paste, IME commits, and programmatic edits are always literal. Pair tracking is
 owned by the host, scoped to the buffer, and cleared on undo/redo or provider
 changes. Brackets that were already in a file are not claimed as generated pairs.
+
+Typing a tracked close moves over it without changing text or creating an undo
+step. Backspace between an empty tracked pair removes both delimiters in one
+transaction. Untracked existing pairs use ordinary insertion and deletion.

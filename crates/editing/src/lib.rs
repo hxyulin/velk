@@ -88,6 +88,10 @@ impl Request {
             || range.start < self.offset
             || range.end > end
             || self.pairs.len() > 256
+            || self
+                .pairs
+                .iter()
+                .any(|pair| pair.open >= pair.close || pair.close >= self.document_length)
             || matches!(&self.intent, Intent::Type(text) if text.len() > MAX_TEXT)
         {
             return Err("invalid editing context".into());

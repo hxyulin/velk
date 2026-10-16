@@ -39,6 +39,27 @@ impl EditingBehavior for Autopairs {
     const ROLE: Role = Role::Pairing;
     fn evaluate(request: &Request) -> Result<Decision, String> {
         request.validate()?;
+        let range = request.selection.range();
+        if matches!(request.intent, Intent::Backspace) {
+            if range.is_empty()
+                && let Some(pair) = request
+                    .pairs
+                    .iter()
+                    .find(|pair| pair.open + 1 == range.start && pair.close == range.start)
+            {
+                return Ok(Decision::Apply(Proposal {
+                    revision: request.revision,
+                    edits: vec![Edit {
+                        start: pair.open,
+                        end: pair.close + 1,
+                        text: String::new(),
+                    }],
+                    selection: Some(Selection::caret(pair.open)),
+                    pairs: vec![],
+                }));
+            }
+            return Ok(Decision::Decline);
+        }
         let Intent::Type(typed) = &request.intent else {
             return Ok(Decision::Decline);
         };
@@ -48,6 +69,19 @@ impl EditingBehavior for Autopairs {
         };
         if characters.next().is_some() {
             return Ok(Decision::Decline);
+        }
+        if range.is_empty()
+            && request
+                .pairs
+                .iter()
+                .any(|pair| pair.close == range.start && pair.closing == opening)
+        {
+            return Ok(Decision::Apply(Proposal {
+                revision: request.revision,
+                edits: vec![],
+                selection: Some(Selection::caret(range.start + 1)),
+                pairs: vec![],
+            }));
         }
         let quotes = request
             .settings
@@ -61,7 +95,6 @@ impl EditingBehavior for Autopairs {
             '\'' | '"' if quotes => opening,
             _ => return Ok(Decision::Decline),
         };
-        let range = request.selection.range();
         let text = request.characters();
         let start = range.start - request.offset;
         let end = range.end - request.offset;
@@ -184,6 +217,36 @@ mod tests {
             assert_eq!(buffer.text().to_string(), "界");
             assert!(!buffer.can_undo());
         }
+    }
+    #[test]
+    fn skip_and_paired_backspace_require_a_tracked_empty_pair() {
+        let mut request = request("()", Selection::caret(1), ")", false);
+        assert_eq!(Autopairs::evaluate(&request).unwrap(), Decision::Decline);
+        request.pairs.push(Pair {
+            open: 0,
+            close: 1,
+            opening: '(',
+            closing: ')',
+        });
+        let Decision::Apply(proposal) = Autopairs::evaluate(&request).unwrap() else {
+            panic!("expected skip");
+        };
+        assert!(proposal.edits.is_empty());
+        assert_eq!(proposal.selection.unwrap().head, 2);
+        request.intent = Intent::Backspace;
+        let Decision::Apply(proposal) = Autopairs::evaluate(&request).unwrap() else {
+            panic!("expected deletion");
+        };
+        assert_eq!(
+            proposal.edits,
+            [Edit {
+                start: 0,
+                end: 2,
+                text: String::new()
+            }]
+        );
+        request.selection = Selection { anchor: 0, head: 2 };
+        assert_eq!(Autopairs::evaluate(&request).unwrap(), Decision::Decline);
     }
     #[test]
     fn quotes_are_opt_in_and_escaped_or_identifier_quotes_remain_literal() {

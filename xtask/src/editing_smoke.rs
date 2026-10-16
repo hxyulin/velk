@@ -74,6 +74,15 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     assert!(pairs.evaluate(&mut paired, Intent::Type("(".into()))?);
     assert_eq!(paired.text().to_string(), "界()");
     assert_eq!(paired.selection().head, 2);
+    assert!(pairs.evaluate(&mut paired, Intent::Type(")".into()))?);
+    assert_eq!(paired.text().to_string(), "界()");
+    assert_eq!(paired.selection().head, 3);
+    paired.set_caret(2, false);
+    assert!(pairs.evaluate(&mut paired, Intent::Backspace)?);
+    assert_eq!(paired.text().to_string(), "界");
+    paired.undo();
+    assert_eq!(paired.text().to_string(), "界()");
+    assert!(!pairs.evaluate(&mut paired, Intent::Backspace)?);
     paired.undo();
     assert_eq!(paired.text().to_string(), "界");
     manager.unload("velk.autopairs");

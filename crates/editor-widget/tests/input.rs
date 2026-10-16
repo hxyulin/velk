@@ -327,3 +327,57 @@ fn typing_uses_autopairs_but_pasting_an_opener_remains_literal() {
     );
     assert_eq!(text(&mut runtime, &editor), "(界)");
 }
+
+#[test]
+fn tracked_closers_skip_and_empty_pairs_delete_but_undo_and_existing_brackets_are_literal() {
+    let (mut runtime, editor, mut ui) = setup();
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_editing_providers(std::collections::BTreeMap::from([(
+                velk_editing::Role::Pairing,
+                std::sync::Arc::new(PairingProvider) as std::sync::Arc<dyn velk_editing::Provider>,
+            )]))
+        })
+    });
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("(".into()));
+    input(&mut runtime, &mut ui, TextInputEvent::Insert(")".into()));
+    assert_eq!(text(&mut runtime, &editor), "()");
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::ArrowLeft,
+        Modifiers::default(),
+    );
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Backspace,
+        Modifiers::default(),
+    );
+    assert_eq!(text(&mut runtime, &editor), "");
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Character("z".into()),
+        primary(),
+    );
+    assert_eq!(text(&mut runtime, &editor), "()");
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Backspace,
+        Modifiers::default(),
+    );
+    assert_eq!(text(&mut runtime, &editor), ")");
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_text(")");
+            editor.execute(velk_editor_widget::EditCommand::SetCaret {
+                position: 0,
+                extend: false,
+            });
+        })
+    });
+    input(&mut runtime, &mut ui, TextInputEvent::Insert(")".into()));
+    assert_eq!(text(&mut runtime, &editor), "))");
+}
