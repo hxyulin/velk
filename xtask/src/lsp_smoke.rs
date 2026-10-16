@@ -194,7 +194,7 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
             for (id, declaration) in loaded.plugins.iter().flat_map(|p| &p.metadata.commands).enumerate() {
                 let velk_commands::Handler::Semantic { payload } = &declaration.handler else { continue; };
                 let request = PositionRequest { id:1000+id as u64, revision:0, position:4 };
-                service.command(request, payload.clone())?;
+                service.command(request, payload.clone(), declaration.input.as_ref().map(|_|"renamed".into()))?;
                 let result = until(&service.events, |e| matches!(e, Event::Command { .. })).await?;
                 assert!(matches!(result, Event::Command { request:reply, result:Ok(_) } if reply == request));
             }

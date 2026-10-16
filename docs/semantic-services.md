@@ -81,7 +81,8 @@ ordered notifications, dropped acknowledgements, reply ownership, contained
 errors/panics, library-copy cleanup, and stale handles after unload/reload. SDK
 unit tests reject duplicate/malformed names and wrong contract/version/layout
 queries. The root native ABI and semantic-session contract remain version 1 during
-internal development; rebuild the editor and bundled plugins together.
+internal development. Rebuild the editor and bundled plugins together when
+their contracts change.
 
 ## Plugin commands
 
@@ -289,8 +290,7 @@ provider implicitly. The parser is not retained as a
 built-in fallback. See the README's local-plugin workflow for load/unload commands,
 ABI v1, limits, and the cooperative native-code lifecycle contract.
 
-Completion, formatting, inlay hints,
-code actions, pull diagnostics, file-watch registration, and automatic server
+Snippet completion, inlay hints, pull diagnostics, file-watch registration, and automatic server
 restart are deferred. Input modifiers, indentation, and pairing behavior are
 unchanged.
 

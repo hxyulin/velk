@@ -4,7 +4,7 @@ use velk_plugin_contracts::{PluginMetadata, settings};
 fn metadata_round_trips_commands_and_settings_without_native_or_sdk_types() {
     let payload = serde_json::json!({
         "name": "Example",
-        "commands": [{"id":"example.definition","title":"Go to definition","language":"rust","handler":{"kind":"semantic","payload":{"operation":"definition"}}}],
+        "commands": [{"id":"example.definition","title":"Go to definition","language":"rust","input":null,"shortcut":null,"handler":{"kind":"semantic","payload":{"operation":"definition"}}}],
         "readme": "# Example",
         "capabilities": [{
             "id": "editor.buffer.read",
@@ -40,6 +40,8 @@ fn command_ids_are_unique_within_plugin_metadata() {
     let mut metadata = PluginMetadata {
         name: "Commands".into(),
         commands: vec![velk_plugin_contracts::commands::Declaration {
+            input: None,
+            shortcut: None,
             id: "test.command".into(),
             title: "Command".into(),
             language: None,

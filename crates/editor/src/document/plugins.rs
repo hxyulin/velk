@@ -278,7 +278,7 @@ mod tests {
             .id;
         let source_bounds = ui.elements().find(|e| e.id == source).unwrap().bounds;
         assert!(ui.focus(source));
-        for spelling in ["F2", "Named(F2)"] {
+        for spelling in ["F4", "Named(F4)"] {
             for open in [true, false, true] {
                 ui.key(
                     &mut runtime,

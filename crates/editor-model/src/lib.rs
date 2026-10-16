@@ -4,6 +4,7 @@ mod annotations;
 pub mod commands;
 mod hover;
 pub mod inline;
+pub mod navigation;
 mod position;
 pub mod projection;
 
@@ -12,6 +13,6 @@ pub use annotations::{
     OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
 };
 pub use hover::{HoverSource, HoverTarget};
-pub use position::resolve_position;
+pub use position::{prepare_document_edit, resolve_position};
 
 pub use commands::EditCommand;

@@ -54,6 +54,8 @@ while (message := read()) is not None:
             "positionEncoding": "utf-16", "hoverProvider": True,
             "definitionProvider": True, "typeDefinitionProvider": True, "implementationProvider": True, "referencesProvider": True,
             "experimental": {"parentModule": True},
+            "documentFormattingProvider": True, "renameProvider": True,
+            "codeActionProvider": {"resolveProvider": True}, "completionProvider": {"resolveProvider": True},
             "textDocumentSync": {"openClose": True, "change": 2, "save": {"includeText": True}}
         }}})
         send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "rust-analyzer"}]}})
@@ -73,6 +75,34 @@ while (message := read()) is not None:
         log({"reconstructed": text, "version": version})
         for diagnostic_version in [version - 1, version]:
             send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": diagnostic_version, "diagnostics": [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "current" if diagnostic_version == version else "stale"}]}})
+    elif method == "textDocument/formatting":
+        send({"id": message["id"], "result": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// formatted\n"}]})
+    elif method == "textDocument/rename":
+        target = {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}
+        other = uri.rsplit("/", 1)[0] + "/other.rs"
+        send({"id": message["id"], "result": {"documentChanges": [
+            {"textDocument": {"uri": uri, "version": version}, "edits": [{"range": target, "newText": params["newName"]}]},
+            {"textDocument": {"uri": other, "version": None}, "edits": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}}, "newText": params["newName"]}]}
+        ]}})
+    elif method == "textDocument/codeAction":
+        send({"id": message["id"], "result": [
+            {"title": "Fix current symbol", "kind": "quickfix", "edit": {"changes": {uri: [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}, "newText": "fixed"}]}}},
+            {"title": "Resolve a fix", "kind": "quickfix", "data": {"fix": "symbol"}},
+            {"title": "Unsupported task", "command": "server.task"}
+        ]})
+    elif method == "codeAction/resolve":
+        action = dict(params)
+        action["edit"] = {"changes": {uri: [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}, "newText": "resolved"}]}}
+        send({"id": message["id"], "result": action})
+    elif method == "textDocument/completion":
+        send({"id": message["id"], "result": {"isIncomplete": False, "items": [
+            {"label": "complete_call", "detail": "with an import", "textEdit": {"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}, "newText": "complete_call()"}, "data": {"imports": True}},
+            {"label": "snippet", "insertTextFormat": 2, "insertText": "call(${1:value})"}
+        ]}})
+    elif method == "completionItem/resolve":
+        item = dict(params)
+        item["additionalTextEdits"] = [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "use support::complete_call;\n"}]
+        send({"id": message["id"], "result": item})
     elif method in ["textDocument/definition", "textDocument/typeDefinition", "textDocument/implementation", "textDocument/references", "experimental/parentModule"]:
         if mode == "hold-command":
             continue

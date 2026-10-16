@@ -170,7 +170,7 @@ impl Document {
                 drop(editor);
                 if valid && self.command_owner_loaded(&pending.plugin, pending.generation) {
                     match result {
-                        Ok(outcome) => self.apply_command_outcome(outcome, cx),
+                        Ok(outcome) => self.apply_guarded_outcome(outcome, pending.guard, cx),
                         Err(error) => self.notice(Some(error)),
                     }
                 }

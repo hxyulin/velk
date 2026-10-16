@@ -3,6 +3,7 @@ mod diagnostics;
 mod grid;
 mod icons;
 mod maintenance;
+mod navigation;
 mod palette;
 mod panels;
 mod plugin_commands;
@@ -14,6 +15,7 @@ mod search;
 mod semantic;
 mod settings_page;
 mod shell;
+mod workspace_edits;
 use crate::file::FileState;
 use crate::settings;
 use rxui::prelude::*;
@@ -57,6 +59,8 @@ pub struct Document {
     opening: Option<Task>,
     pending_opens: std::collections::VecDeque<buffers::OpenRequest>,
     command_task: Option<Task>,
+    workspace_edit: Option<Task>,
+    navigation: velk_editor_model::navigation::History,
     command_result: Option<plugin_commands::ResultView>,
     pub window: Option<WindowHandle>,
     reload: Option<Task>,
@@ -171,6 +175,8 @@ impl Document {
             opening: None,
             pending_opens: Default::default(),
             command_task: None,
+            workspace_edit: None,
+            navigation: Default::default(),
             command_result: None,
             window: None,
             reload: None,
@@ -219,7 +225,8 @@ impl Document {
         }
     }
     fn busy(&self) -> bool {
-        self.buffer.as_ref().is_some_and(|b| b.saving.is_some())
+        self.workspace_edit.is_some()
+            || self.buffer.as_ref().is_some_and(|b| b.saving.is_some())
             || self.dialog.is_some()
             || self.reloading()
     }
@@ -626,13 +633,13 @@ impl View for Document {
             .command(TogglePlugins, |this, _, cx| {
                 this.set_plugin_menu(!this.plugin_menu_open, cx);
             })
-            .label("Plugins (F2)")
+            .label("Plugins (F4)")
             .shortcut(Shortcut::new(
-                KeyboardKey::Other("F2".into()),
+                KeyboardKey::Other("F4".into()),
                 Default::default(),
             ))
             .shortcut(Shortcut::new(
-                KeyboardKey::Other("Named(F2)".into()),
+                KeyboardKey::Other("Named(F4)".into()),
                 Default::default(),
             ));
         let close_plugins = cx
@@ -716,10 +723,38 @@ impl View for Document {
             })
             .label("Diagnostics: Add trace marker")
             .enabled(trace_available && velk_diagnostics::recording());
+        let back = cx
+            .command(navigation::Back, |this, _, cx| {
+                this.navigate_history(false, cx)
+            })
+            .label("Navigate back")
+            .enabled(self.navigation.can_back() && !self.busy())
+            .shortcut(Shortcut::new(
+                KeyboardKey::ArrowLeft,
+                rxui::Modifiers {
+                    alt: true,
+                    ..Default::default()
+                },
+            ));
+        let forward = cx
+            .command(navigation::Forward, |this, _, cx| {
+                this.navigate_history(true, cx)
+            })
+            .label("Navigate forward")
+            .enabled(self.navigation.can_forward() && !self.busy())
+            .shortcut(Shortcut::new(
+                KeyboardKey::ArrowRight,
+                rxui::Modifiers {
+                    alt: true,
+                    ..Default::default()
+                },
+            ));
         let (toggle_palette, palette) = self.command_palette(
             cx,
             if self.palette.open {
                 let mut entries = vec![
+                    palette::Entry::new("velk.navigation.back", back.clone(), "Alt+Left"),
+                    palette::Entry::new("velk.navigation.forward", forward.clone(), "Alt+Right"),
                     palette::Entry::new("velk.file.save", save.clone(), palette::primary("S")),
                     palette::Entry::new("velk.file.new", new_file.clone(), palette::primary("N")),
                     palette::Entry::new(
@@ -753,7 +788,7 @@ impl View for Document {
                     palette::Entry::new(
                         "velk.plugins.open",
                         toggle_plugins.clone().label("Plugins"),
-                        "F2",
+                        "F4",
                     ),
                     palette::Entry::new("velk.editor.hover", hover.clone(), "F1"),
                     palette::Entry::new(
@@ -803,9 +838,12 @@ impl View for Document {
                 Vec::new()
             },
         );
-        column()
+        let shortcuts = self.plugin_shortcuts(cx);
+        let mut content = column()
             .fill_width()
             .fill_height()
+            .on_command(back)
+            .on_command(forward)
             .on_command(toggle_panels)
             .on_command(toggle_terminal)
             .on_command(trace_start)
@@ -848,7 +886,17 @@ impl View for Document {
             .on_command(layout_tiled)
             .children(self.title_bar(layout, cx))
             .child(self.body(layout, search_bar, cx))
-            .children(self.status_line(layout, cx))
+            .children(self.status_line(layout, cx));
+        // RXUI command identity is a Rust type. Dynamic bindings use separate
+        // outer scopes; the inner host scope retains shortcut precedence.
+        for action in shortcuts {
+            content = column()
+                .fill_width()
+                .fill_height()
+                .on_command(action)
+                .child(content);
+        }
+        content
     }
 }
 impl Document {

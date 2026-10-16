@@ -50,6 +50,31 @@ pub struct Transaction {
     pub selection: Option<Selection>,
 }
 
+impl Transaction {
+    /// Validate ranges against the original document without mutating it.
+    /// Explicit final selection is checked when applying the transaction.
+    pub fn validate_ranges(&self, revision: u64, length: usize) -> Result<(), TransactionError> {
+        if self.revision != revision {
+            return Err(TransactionError::StaleRevision);
+        }
+        let mut edits: Vec<_> = self.edits.iter().collect();
+        edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
+        if edits
+            .iter()
+            .any(|edit| edit.range.start > edit.range.end || edit.range.end > length)
+        {
+            return Err(TransactionError::InvalidRange);
+        }
+        for pair in edits.windows(2) {
+            if pair[0].range.end > pair[1].range.start || pair[0].range.start == pair[1].range.start
+            {
+                return Err(TransactionError::OverlappingEdits);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransactionError {
     StaleRevision,
@@ -386,23 +411,10 @@ impl Buffer {
         &mut self,
         mut transaction: Transaction,
     ) -> Result<bool, TransactionError> {
-        if transaction.revision != self.revision {
-            return Err(TransactionError::StaleRevision);
-        }
+        transaction.validate_ranges(self.revision, self.text().len_chars())?;
         transaction
             .edits
             .sort_by_key(|edit| (edit.range.start, edit.range.end));
-        for edit in &transaction.edits {
-            if edit.range.start > edit.range.end || edit.range.end > self.text().len_chars() {
-                return Err(TransactionError::InvalidRange);
-            }
-        }
-        for pair in transaction.edits.windows(2) {
-            if pair[0].range.end > pair[1].range.start || pair[0].range.start == pair[1].range.start
-            {
-                return Err(TransactionError::OverlappingEdits);
-            }
-        }
         let mut next = self.current.clone();
         let mut edits = Vec::with_capacity(transaction.edits.len());
         for edit in transaction.edits.into_iter().rev() {

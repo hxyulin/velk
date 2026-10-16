@@ -9,6 +9,21 @@ pub struct Declaration {
     pub title: String,
     pub language: Option<String>,
     pub handler: Handler,
+    pub input: Option<String>,
+    pub shortcut: Option<Shortcut>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Shortcut {
+    pub key: String,
+    #[serde(default)]
+    pub primary: bool,
+    #[serde(default)]
+    pub control: bool,
+    #[serde(default)]
+    pub alt: bool,
+    #[serde(default)]
+    pub shift: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -33,6 +48,24 @@ impl Declaration {
                 .is_some_and(|s| s.is_empty() || s.len() > 64 || s.chars().any(char::is_control))
         {
             return Err("invalid command declaration".into());
+        }
+        if self
+            .input
+            .as_ref()
+            .is_some_and(|s| s.is_empty() || s.len() > 256 || s.chars().any(char::is_control))
+        {
+            return Err("invalid command input prompt".into());
+        }
+        if self.shortcut.as_ref().is_some_and(|s| {
+            let key = &s.key;
+            !(key.chars().count() == 1 && !key.chars().any(char::is_control)
+                || key == "Space"
+                || key
+                    .strip_prefix('F')
+                    .and_then(|s| s.parse::<u8>().ok())
+                    .is_some_and(|n| (1..=24).contains(&n)))
+        }) {
+            return Err("invalid command shortcut".into());
         }
         match &self.handler {
             Handler::Request { hook } if !valid_id(hook) => {
@@ -64,6 +97,7 @@ fn valid_id(id: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
+    pub input: Option<String>,
     pub path: Option<PathBuf>,
     pub language: Option<String>,
     pub revision: Option<u64>,
@@ -92,8 +126,68 @@ pub struct Location {
     pub position: Position,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextEdit {
+    pub start: Position,
+    pub end: Position,
+    pub text: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentEdit {
+    pub path: PathBuf,
+    /// Host document revision, never an LSP document version. An unversioned
+    /// edit cannot modify a different dirty buffer whose text the provider may not know.
+    pub revision: Option<u64>,
+    pub edits: Vec<TextEdit>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceEdit {
+    pub documents: Vec<DocumentEdit>,
+}
+impl WorkspaceEdit {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.documents.len() > 256 {
+            return Err("workspace edit exceeds 256 documents".into());
+        }
+        let mut paths = std::collections::BTreeSet::new();
+        let mut count = 0usize;
+        for document in &self.documents {
+            if !document.path.is_absolute() || !paths.insert(&document.path) {
+                return Err("workspace edit contains invalid or duplicate paths".into());
+            }
+            count += document.edits.len();
+            if count > 10_000 {
+                return Err("workspace edit exceeds 10000 replacements".into());
+            }
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ChoiceAction {
+    Edit { edit: WorkspaceEdit },
+    Semantic { payload: serde_json::Value },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Choice {
+    pub title: String,
+    pub detail: Option<String>,
+    pub action: ChoiceAction,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Outcome {
+    Edit {
+        edit: WorkspaceEdit,
+    },
+    Choices {
+        title: String,
+        items: Vec<Choice>,
+    },
     Message {
         text: String,
     },
@@ -109,6 +203,32 @@ pub enum Outcome {
 impl Outcome {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::Edit { edit } => edit.validate()?,
+            Self::Choices { title, items } => {
+                if title.is_empty() || title.len() > 256 || items.len() > 1000 {
+                    return Err("invalid command choices".into());
+                }
+                for item in items {
+                    if item.title.trim().is_empty()
+                        || item.title.len() > 1024
+                        || item.title.chars().any(char::is_control)
+                    {
+                        return Err("invalid choice title".into());
+                    }
+                    match &item.action {
+                        ChoiceAction::Edit { edit } => edit.validate()?,
+                        ChoiceAction::Semantic { payload }
+                            if serde_json::to_vec(payload)
+                                .map_err(|e| e.to_string())?
+                                .len()
+                                > 16 * 1024 =>
+                        {
+                            return Err("choice payload exceeds 16 KiB".into());
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Self::Locations { locations }
                 if locations.len() > 10_000 || locations.iter().any(|l| !l.path.is_absolute()) =>
             {
@@ -136,6 +256,8 @@ mod declaration_tests {
     #[test]
     fn declarations_reject_invalid_ids_labels_hooks_and_unbounded_backend_payloads() {
         let valid = Declaration {
+            input: None,
+            shortcut: None,
             id: "test.action".into(),
             title: "Action".into(),
             language: None,

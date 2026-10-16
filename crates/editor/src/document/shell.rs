@@ -243,7 +243,7 @@ impl Document {
                 "rail-plugins".into(),
                 Icon::Plugins.element(17.),
                 plugins_open,
-                "Plugins (F2)".into(),
+                "Plugins (F4)".into(),
                 cx.listener(|this, _, cx| this.set_plugin_menu(!this.plugin_menu_open, cx)),
                 cx,
             ))

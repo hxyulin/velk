@@ -39,7 +39,24 @@ impl Entry {
         Self {
             id: format!("{}:{}", invocation.plugin, invocation.command.id),
             label: invocation.command.title.clone(),
-            shortcut: String::new(),
+            shortcut: invocation
+                .command
+                .shortcut
+                .as_ref()
+                .map_or_else(String::new, |s| {
+                    format!(
+                        "{}{}{}{}{}",
+                        if s.primary {
+                            primary("")
+                        } else {
+                            String::new()
+                        },
+                        if s.control { "Ctrl+" } else { "" },
+                        if s.alt { "Alt+" } else { "" },
+                        if s.shift { "Shift+" } else { "" },
+                        s.key
+                    )
+                }),
             enabled,
             invoke: Invocation::Plugin(invocation),
         }

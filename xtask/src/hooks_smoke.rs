@@ -75,6 +75,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     assert_eq!(metadata.commands.len(), 1);
     let command = manager.bind_hook("test.hooks", "test.command")?;
     let context = velk_commands::Context {
+        input: None,
         path: Some("/tmp/source.rs".into()),
         language: Some("rust".into()),
         revision: Some(7),

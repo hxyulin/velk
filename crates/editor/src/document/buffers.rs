@@ -10,6 +10,7 @@ use velk_editor_widget::{Editor, Language};
 pub(super) struct OpenRequest {
     path: PathBuf,
     position: Option<velk_commands::Position>,
+    origin: Option<(velk_editor_model::navigation::Anchor, u64)>,
 }
 enum Opened {
     Existing(u64),
@@ -95,6 +96,15 @@ impl BufferState {
                     let revision = this.buffer.editor.read(cx).buffer().revision();
                     recovery_changed =
                         revision != this.buffer.observed_revision || dirty != this.buffer.dirty;
+                    if revision != this.buffer.observed_revision {
+                        let changes = this
+                            .buffer
+                            .editor
+                            .read(cx)
+                            .buffer()
+                            .edits_since(this.buffer.observed_revision);
+                        this.navigation.edited(id, changes.as_deref());
+                    }
                     this.buffer.observed_revision = revision;
                     let semantic_changed = this.sync_semantics(cx);
                     let search_changed = this.sync_search(cx);
@@ -390,6 +400,7 @@ impl Document {
             OpenRequest {
                 path,
                 position: None,
+                origin: None,
             },
             cx,
         );
@@ -403,6 +414,9 @@ impl Document {
             OpenRequest {
                 path: location.path,
                 position: Some(location.position),
+                origin: self
+                    .navigation_anchor(cx)
+                    .map(|anchor| (anchor, self.buffer.editor.read(cx).buffer().revision())),
             },
             cx,
         );
@@ -410,6 +424,7 @@ impl Document {
     fn navigate_position(
         &mut self,
         position: Option<velk_commands::Position>,
+        origin: Option<velk_editor_model::navigation::Anchor>,
         cx: &mut Context<'_, Self>,
     ) {
         let Some(position) = position else {
@@ -421,12 +436,23 @@ impl Document {
         let offset =
             velk_editor_model::resolve_position(position, active.editor.read(cx).buffer().text());
         match offset {
-            Some(position) => active.editor.update(cx, |editor, _| {
-                editor.execute(velk_editor_widget::EditCommand::SetCaret {
-                    position,
-                    extend: false,
+            Some(position) => {
+                if let Some(origin) = origin
+                    && origin
+                        != (velk_editor_model::navigation::Anchor {
+                            buffer: active.id,
+                            position,
+                        })
+                {
+                    self.navigation.record(origin);
+                }
+                active.editor.update(cx, |editor, _| {
+                    editor.execute(velk_editor_widget::EditCommand::SetCaret {
+                        position,
+                        extend: false,
+                    });
                 });
-            }),
+            }
             None => self.notice(Some("Navigation target is outside the document".into())),
         }
         self.restore_focus_pending = true;
@@ -449,7 +475,11 @@ impl Document {
             }
             return;
         }
-        let OpenRequest { path, position } = request;
+        let OpenRequest {
+            path,
+            position,
+            origin,
+        } = request;
         let open: Vec<_> = self
             .buffer
             .iter()
@@ -471,34 +501,55 @@ impl Document {
             },
             move |this, result, cx| {
                 this.opening = None;
-                match result {
-                    Ok(Ok(Opened::Existing(id))) => {
-                        this.select_buffer(id, cx);
-                        if this.buffer.as_ref().is_some_and(|b| b.id == id) {
-                            this.navigate_position(position, cx);
-                        }
-                    }
-                    Ok(Ok(Opened::Loaded(loaded))) => {
-                        let (file, buffer, path) = *loaded;
-                        let mut editor = Editor::from_buffer(buffer);
-                        match editor.set_language(Language::for_path(&path)) {
-                            Ok(()) => {
-                                let canonical = file.path().to_path_buf();
-                                this.add_buffer(file, editor, path, cx);
-                                if this
-                                    .buffer
-                                    .as_ref()
-                                    .and_then(|b| b.file.as_ref())
-                                    .is_some_and(|f| f.path() == canonical)
-                                {
-                                    this.navigate_position(position, cx);
-                                }
+                let stale = origin.is_some_and(|(anchor, revision)| {
+                    this.navigation_anchor(cx) != Some(anchor)
+                        || this
+                            .buffer
+                            .as_ref()
+                            .is_none_or(|b| b.editor.read(cx).buffer().revision() != revision)
+                });
+                if stale {
+                    this.notice(Some(
+                        "Navigation cancelled because its source changed".into(),
+                    ));
+                } else {
+                    match result {
+                        Ok(Ok(Opened::Existing(id))) => {
+                            this.select_buffer(id, cx);
+                            if this.buffer.as_ref().is_some_and(|b| b.id == id) {
+                                this.navigate_position(
+                                    position,
+                                    origin.map(|(anchor, _)| anchor),
+                                    cx,
+                                );
                             }
-                            Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                         }
+                        Ok(Ok(Opened::Loaded(loaded))) => {
+                            let (file, buffer, path) = *loaded;
+                            let mut editor = Editor::from_buffer(buffer);
+                            match editor.set_language(Language::for_path(&path)) {
+                                Ok(()) => {
+                                    let canonical = file.path().to_path_buf();
+                                    this.add_buffer(file, editor, path, cx);
+                                    if this
+                                        .buffer
+                                        .as_ref()
+                                        .and_then(|b| b.file.as_ref())
+                                        .is_some_and(|f| f.path() == canonical)
+                                    {
+                                        this.navigate_position(
+                                            position,
+                                            origin.map(|(anchor, _)| anchor),
+                                            cx,
+                                        );
+                                    }
+                                }
+                                Err(error) => this.notice(Some(format!("Open failed: {error}"))),
+                            }
+                        }
+                        Ok(Err(error)) => this.notice(Some(format!("Open failed: {error}"))),
+                        Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                     }
-                    Ok(Err(error)) => this.notice(Some(format!("Open failed: {error}"))),
-                    Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                 }
                 if let Some(next) = this.pending_opens.pop_front() {
                     this.open_request(next, cx);
@@ -513,6 +564,10 @@ impl Document {
         }
     }
     pub(super) fn remove_current_buffer(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some(buffer) = self.buffer.as_ref() {
+            let id = buffer.id;
+            self.navigation.retain(|buffer| buffer != id);
+        }
         let ids = self.ids();
         if ids.is_empty() {
             return;

@@ -1,7 +1,7 @@
 # Plugin restart and Reload Window
 
 The command palette exposes **Plugins: Restart active plugins** and **Reload
-window**. Each loaded plugin also has a Restart button in the F2 Plugins modal.
+window**. Each loaded plugin also has a Restart button in the F4 Plugins modal.
 Reload Window has a direct shortcut: Command+Option+R on macOS, Control+Alt+R
 elsewhere. The direct shortcut works inside supported menus, preserving the open
 menu; selecting a palette command closes that palette as normal.

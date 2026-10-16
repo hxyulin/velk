@@ -41,6 +41,38 @@ pub fn resolve_position(position: Position, text: &ropey::Rope) -> Option<usize>
     (offset <= end).then_some(offset)
 }
 
+/// Convert a provider's replacements to one validated Core transaction.
+pub fn prepare_document_edit(
+    edit: &velk_commands::DocumentEdit,
+    text: &ropey::Rope,
+    revision: u64,
+) -> Result<velk_core::Transaction, String> {
+    if edit.revision.is_some_and(|expected| expected != revision) {
+        return Err("edit targets a stale document revision".into());
+    }
+    let edits = edit
+        .edits
+        .iter()
+        .map(|edit| {
+            let start = resolve_position(edit.start, text).ok_or("invalid edit start")?;
+            let end = resolve_position(edit.end, text).ok_or("invalid edit end")?;
+            Ok(velk_core::TextEdit {
+                range: start..end,
+                text: edit.text.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let transaction = velk_core::Transaction {
+        revision,
+        edits,
+        selection: None,
+    };
+    transaction
+        .validate_ranges(revision, text.len_chars())
+        .map_err(|e| e.to_string())?;
+    Ok(transaction)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,7 +11,7 @@ activity bar moves those buttons into it. Panels start hidden. The Files plugin 
 Settings opens as a modal with Command+, on macOS and Control+, elsewhere. It can
 hide either bar, including both; the shortcut remains available. Escape, the
 close button, or clicking the backdrop dismisses Settings and restores editing
-focus. Settings and Plugins are mutually exclusive modals. F2 still opens Plugins.
+focus. Settings and Plugins are mutually exclusive modals. F4 still opens Plugins.
 Save notices/errors remain visible even with the status bar hidden.
 
 The current appearance settings are `status_bar` (default true) and `activity_bar`

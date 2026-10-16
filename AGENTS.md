@@ -49,6 +49,8 @@ and any checks that could not run.
 
 During early development, prefer correcting the design over compatibility. Do not
 add compatibility shims, deprecated aliases, or migrations unless requested.
+Keep internal contract versions at 1 during this phase; update the host, SDK, and
+bundled plugins together instead of bumping versions for development changes.
 
 Implement the current requirement with the smallest coherent change. Avoid
 speculative features, configuration, dependencies, and abstractions for imagined

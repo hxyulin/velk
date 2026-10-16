@@ -333,7 +333,18 @@ async fn declared_navigation_and_rust_commands_cross_the_backend_with_negotiated
     let commands = velk_plugin_lsp::Lsp::commands()
         .into_iter()
         .chain(velk_plugin_rust_analyzer::RustAnalyzer::commands());
-    for (id, command) in commands.enumerate() {
+    for (id, command) in commands
+        .filter(|command| {
+            !matches!(
+                command.id.as_str(),
+                "velk.lsp.format"
+                    | "velk.lsp.rename"
+                    | "velk.lsp.code-actions"
+                    | "velk.lsp.complete"
+            )
+        })
+        .enumerate()
+    {
         let Handler::Semantic { payload } = command.handler else {
             panic!("expected semantic command");
         };
@@ -342,7 +353,7 @@ async fn declared_navigation_and_rust_commands_cross_the_backend_with_negotiated
             revision: 9,
             position: 3,
         };
-        service.command(request, payload).unwrap();
+        service.command(request, payload, None).unwrap();
         let Event::Command {
             request: reply,
             result,
@@ -361,7 +372,7 @@ async fn declared_navigation_and_rust_commands_cross_the_backend_with_negotiated
             _ => panic!("unexpected command result"),
         }
     }
-    service.command(PositionRequest { id:99, revision:9, position:3 }, serde_json::json!({"method":"textDocument/declaration","result":"locations","capability":"/declarationProvider"})).unwrap();
+    service.command(PositionRequest { id:99, revision:9, position:3 }, serde_json::json!({"method":"textDocument/declaration","result":"locations","capability":"/declarationProvider"}), None).unwrap();
     assert!(matches!(
         until(&service.events, |e| matches!(e, Event::Command { .. })).await,
         Event::Command { result: Err(_), .. }
@@ -402,7 +413,7 @@ async fn source_changes_cancel_commands_without_interfering_with_hover() {
         revision: 0,
         position: 1,
     };
-    service.command(request, serde_json::json!({"method":"textDocument/definition","result":"locations","capability":"/definitionProvider"})).unwrap();
+    service.command(request, serde_json::json!({"method":"textDocument/definition","result":"locations","capability":"/definitionProvider"}), None).unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while !log(&logfile)
             .iter()
@@ -415,7 +426,11 @@ async fn source_changes_cancel_commands_without_interfering_with_hover() {
     .unwrap();
     service.hover(PositionRequest { id: 31, ..request });
     service.cancel_hover();
-    assert!(service.command(request, serde_json::json!({})).is_err());
+    assert!(
+        service
+            .command(request, serde_json::json!({}), None)
+            .is_err()
+    );
     service.update(document(&path, 1, "changed"));
     assert!(
         matches!(until(&service.events, |e| matches!(e, Event::Command { .. })).await, Event::Command { request:r, result:Err(message) } if r == request && message.contains("cancelled"))
@@ -430,5 +445,116 @@ async fn source_changes_cancel_commands_without_interfering_with_hover() {
         messages
             .iter()
             .any(|m| m["method"] == "$/cancelRequest" && &m["params"]["id"] == id)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn formatting_rename_actions_and_completion_return_checked_edit_proposals() {
+    use velk_plugin_sdk::{
+        Plugin,
+        commands::{ChoiceAction, Handler, Outcome},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("source.rs");
+    let logfile = dir.path().join("edits.jsonl");
+    let service = Service::start(backend(&logfile, "normal")).unwrap();
+    service.update(document(&path, 42, "fn old() {}"));
+    until(&service.events, |e| {
+        matches!(e, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let mut id = 100;
+    for name in ["format", "rename", "code-actions", "complete"] {
+        let declaration = velk_plugin_lsp::Lsp::commands()
+            .into_iter()
+            .find(|d| d.id == format!("velk.lsp.{name}"))
+            .unwrap();
+        let Handler::Semantic { payload } = declaration.handler else {
+            unreachable!()
+        };
+        let request = PositionRequest {
+            id,
+            revision: 42,
+            position: 6,
+        };
+        id += 1;
+        service
+            .command(
+                request,
+                payload,
+                declaration.input.map(|_| "renamed".into()),
+            )
+            .unwrap();
+        let Event::Command { result, .. } =
+            until(&service.events, |e| matches!(e, Event::Command { .. })).await
+        else {
+            unreachable!()
+        };
+        match result.unwrap() {
+            Outcome::Edit { edit } => {
+                assert_eq!(edit.documents[0].revision, Some(42));
+                if name == "rename" {
+                    assert_eq!(edit.documents.len(), 2);
+                    assert_eq!(edit.documents[1].revision, None);
+                    assert_eq!(edit.documents[0].edits[0].text, "renamed");
+                } else {
+                    assert_eq!(edit.documents[0].edits[0].text, "// formatted\n");
+                }
+            }
+            Outcome::Choices { items, .. } => {
+                assert_eq!(items.len(), if name == "complete" { 1 } else { 2 });
+                for item in items {
+                    let ChoiceAction::Semantic { payload } = item.action else {
+                        continue;
+                    };
+                    service
+                        .command(PositionRequest { id, ..request }, payload, None)
+                        .unwrap();
+                    id += 1;
+                    let Event::Command { result, .. } =
+                        until(&service.events, |e| matches!(e, Event::Command { .. })).await
+                    else {
+                        unreachable!()
+                    };
+                    let Outcome::Edit { edit } = result.unwrap() else {
+                        panic!("resolve returned no edit")
+                    };
+                    assert_eq!(edit.documents[0].revision, Some(42));
+                    assert_eq!(
+                        edit.documents[0].edits.len(),
+                        if name == "complete" { 2 } else { 1 }
+                    );
+                }
+            }
+            _ => panic!("unexpected edit command result"),
+        }
+    }
+    // Invalid user input is a command failure, not a failed server session.
+    service.command(PositionRequest {id,revision:42,position:6},serde_json::json!({"method":"textDocument/rename","result":"workspace_edit","capability":"/renameProvider"}),None).unwrap();
+    assert!(matches!(
+        until(&service.events, |e| matches!(e, Event::Command { .. })).await,
+        Event::Command { result: Err(_), .. }
+    ));
+    service.shutdown_and_join().unwrap();
+    let messages = log(&logfile);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["method"] == "textDocument/rename" && m["params"]["newName"] == "renamed")
+    );
+    assert!(messages.iter().any(|m| {
+        m["method"] == "textDocument/codeAction"
+            && !m["params"]["context"]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+    }));
+    let init = &messages
+        .iter()
+        .find(|m| m["method"] == "initialize")
+        .unwrap()["params"]["capabilities"];
+    assert_eq!(
+        init["textDocument"]["completion"]["completionItem"]["snippetSupport"],
+        false
     );
 }

@@ -81,7 +81,7 @@ Useful shortcuts:
 - **Command/Ctrl+S:** Save.
 - **Command/Ctrl+Shift+S:** Save As.
 - **Command/Ctrl+Alt+S:** Save All.
-- **F2:** Open the plugin manager.
+- **F4:** Open the plugin manager.
 
 Unsaved documents prompt before closing. Closing the last document keeps the
 application running. See [documents and recovery](docs/document-foundation.md)
@@ -123,8 +123,10 @@ Plugins declare a display name, a short description, a Markdown README, and
 required or optional capabilities with explanations. The plugin manager exposes
 this metadata alongside plugin state and controls. Plugins can also declare
 [command palette actions](docs/plugin-commands.md); bundled actions include
-definition/type/implementation navigation, references, Rust parent modules, and
-macro expansion.
+definition/type/implementation navigation, references, formatting, rename, code
+actions, explicit completion, Rust parent modules, and macro expansion. Plugins
+propose [workspace text edits](docs/workspace-edits.md); the host validates targets
+and applies changes through document transactions.
 
 **Native plugins are trusted code running inside the editor process.** Capability
 declarations describe what a plugin needs; they are not currently a sandbox or
@@ -149,15 +151,17 @@ We prioritize correcting the design over preserving early decisions. Breaking
 changes to APIs, plugin contracts, configuration, and storage formats are allowed;
 we do not add compatibility shims, deprecated aliases, or migration machinery just
 to preserve experimental behavior. Update the host, SDK, and bundled plugins
-together when their contracts change.
+together when their contracts change. Internal contract versions stay at 1 during
+this development phase; API changes do not trigger version bumps.
 
 macOS is the primary development environment. Other platforms are not yet
 release-tested.
 
 Current limitations include:
 
-- Language integration focuses on Rust. Completion, formatting, code actions,
-  and workspace edits are not yet implemented.
+- Language integration focuses on Rust. Completion is explicitly invoked and
+  plain-text only; snippets, automatic suggestions, and server command execution
+  are not yet implemented.
 - Language-server sessions are currently per buffer rather than shared across
   an entire workspace.
 - Disk conflicts are detected during saves, but automatic reload and interactive
@@ -175,7 +179,8 @@ Current limitations include:
   [window reloading](docs/reloading.md)
 - [Plugin API and shared contracts](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
   [plugin settings](docs/plugin-settings.md)
-- [Plugin commands](docs/plugin-commands.md) and [semantic services and Rust LSP](docs/semantic-services.md)
+- [Plugin commands](docs/plugin-commands.md), [workspace edits](docs/workspace-edits.md),
+  and [semantic services and Rust LSP](docs/semantic-services.md)
 - [Core and component boundaries](docs/core.md)
 - [Files](docs/files.md), [search](docs/search.md), and [terminal](docs/terminal.md)
 - [Profiling and performance tooling](docs/profiling.md)

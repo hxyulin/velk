@@ -1,6 +1,7 @@
 //! LSP adapter. Wire types, URIs, encoding negotiation, and child processes stay
 //! here; the editor and other semantic backends do not depend on them.
 mod commands;
+mod edits;
 mod positions;
 mod transport;
 use self::{positions::Encoding, transport::Connection};
@@ -87,10 +88,13 @@ async fn drive(
         "rootUri":root_uri, "workspaceFolders":[{"uri":root_uri,"name":root.file_name().unwrap_or_default().to_string_lossy()}],
         "capabilities": {
             "general":{"positionEncodings":["utf-8","utf-16","utf-32"]},
-            "workspace":{"configuration":true,"workspaceFolders":true,"applyEdit":false},
+            "workspace":{"configuration":true,"workspaceFolders":true,"applyEdit":false,"workspaceEdit":{"documentChanges":true,"failureHandling":"abort"}},
             "textDocument":{
                 "synchronization":{"dynamicRegistration":false,"didSave":true},
                 "hover":{"dynamicRegistration":false,"contentFormat":["markdown","plaintext"]},
+                "formatting":{"dynamicRegistration":false}, "rename":{"dynamicRegistration":false},
+                "codeAction":{"dynamicRegistration":false,"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix","refactor","source"]}},"resolveSupport":{"properties":["edit"]}},
+                "completion":{"dynamicRegistration":false,"completionItem":{"snippetSupport":false,"insertReplaceSupport":true,"resolveSupport":{"properties":["additionalTextEdits"]}}},
                 "publishDiagnostics":{"versionSupport":true,"relatedInformation":false}
             }
         }, "initializationOptions":options
@@ -145,6 +149,7 @@ async fn drive(
     session
         .events()
         .publish(Event::Status(Status::Ready(capabilities)));
+    let mut diagnostic_context = Vec::new();
     let mut command: Option<(u64, PositionRequest, commands::Request, Instant)> = None;
     let mut pending: Option<(u64, PositionRequest, Instant)> = None;
     let mut hover_trace = None;
@@ -174,6 +179,7 @@ async fn drive(
                     version = version.checked_add(1).ok_or("LSP document version overflow")?;
                     connection.notify("textDocument/didChange", json!({"textDocument":{"uri":document_uri,"version":version},"contentChanges":[change]})).await?;
                     document = next;
+                    diagnostic_context.clear();
                 }
                 Some(Input::Saved(saved)) => {
                     if saved.path != document.path { continue; }
@@ -186,7 +192,7 @@ async fn drive(
                         }
                     }
                 }
-                Some(Input::Command { request, payload }) => {
+                Some(Input::Command { request, payload, input }) => {
                     if request.revision != document.revision || request.position > document.text.len_chars() {
                         session.events().publish(Event::Command { request, result:Err("command source is stale".into()) }); continue;
                     }
@@ -197,7 +203,10 @@ async fn drive(
                     if command.is_some() { session.events().publish(Event::Command { request, result:Err("another command is running".into()) }); continue; }
                     if next_id >= i32::MAX as u64 { return Err("LSP request ID space exhausted".into()); }
                     let id = next_id; next_id += 1;
-                    connection.request(id, &spec.method, spec.params(&document_uri, encoding.position(&document.text, request.position))).await?;
+                    let params=match spec.params(&document_uri, encoding.position(&document.text, request.position), input.as_deref(), &diagnostic_context) {
+                        Ok(params)=>params,Err(error)=>{session.events().publish(Event::Command {request,result:Err(error)});continue;}
+                    };
+                    connection.request(id, &spec.method, params).await?;
                     command = Some((id, request, spec, Instant::now()+Duration::from_secs(10)));
                 }
                 Some(Input::CancelHover) => {
@@ -221,6 +230,7 @@ async fn drive(
                     if message["method"] == "textDocument/publishDiagnostics" {
                         if let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(message["params"].clone()) {
                             if params.uri.as_str() != document_uri || !(params.version == Some(version) || params.version.is_none() && version == 1) { continue; }
+                            diagnostic_context = params.diagnostics.clone();
                             let diagnostics = params.diagnostics.into_iter().take(10_000).filter_map(|d| {
                                 let range = encoding.decode_range(&document.text,d.range)?;
                                 Some(Diagnostic { range, severity: match d.severity {
@@ -236,7 +246,7 @@ async fn drive(
                 } else if command.as_ref().is_some_and(|(id,_,_,_)| message.get("id") == Some(&json!(id))) {
                     let (_, request, spec, _) = command.take().unwrap();
                     let result = if let Some(error) = message.get("error") { Err(format!("Command failed: {error}")) }
-                        else { spec.outcome(message["result"].clone(), encoding) };
+                        else { spec.outcome(message["result"].clone(), encoding, &document, version, request, &server_capabilities) };
                     session.events().publish(Event::Command { request, result });
                 } else if let Some((id,request,_)) = pending {
                     if message.get("id") != Some(&json!(id)) { continue; }

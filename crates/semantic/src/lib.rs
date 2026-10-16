@@ -80,6 +80,7 @@ pub enum Event {
 pub enum Input {
     Command {
         request: PositionRequest,
+        input: Option<String>,
         payload: serde_json::Value,
     },
     Document(DocumentSnapshot),
@@ -410,8 +411,9 @@ impl Service {
         &self,
         request: PositionRequest,
         payload: serde_json::Value,
+        input: Option<String>,
     ) -> Result<(), String> {
-        if serde_json::to_vec(&payload)
+        if serde_json::to_vec(&serde_json::json!({"payload":&payload,"input":&input}))
             .map_err(|e| e.to_string())?
             .len()
             > 16 * 1024
@@ -430,7 +432,11 @@ impl Service {
         {
             return Err("a command is already running".into());
         }
-        if let Err(error) = self.commands.try_send(Input::Command { request, payload }) {
+        if let Err(error) = self.commands.try_send(Input::Command {
+            request,
+            payload,
+            input,
+        }) {
             self.command_busy
                 .store(false, std::sync::atomic::Ordering::Release);
             return Err(format!("command queue unavailable: {error}"));
@@ -607,9 +613,13 @@ mod command_tests {
             position: 0,
         };
         service
-            .command(request, serde_json::json!({"operation":"test"}))
+            .command(request, serde_json::json!({"operation":"test"}), None)
             .unwrap();
-        assert!(service.command(request, serde_json::Value::Null).is_err());
+        assert!(
+            service
+                .command(request, serde_json::Value::Null, None)
+                .is_err()
+        );
         assert!(matches!(session.try_next(), Some(Input::Command { .. })));
         session.events().publish(Event::Command {
             request,
@@ -627,7 +637,11 @@ mod command_tests {
                 diagnostics: vec![],
             });
         }
-        assert!(service.command(request, serde_json::Value::Null).is_err());
+        assert!(
+            service
+                .command(request, serde_json::Value::Null, None)
+                .is_err()
+        );
         loop {
             if let Event::Command { result, .. } = service.events.recv().await.unwrap() {
                 assert!(
@@ -636,12 +650,18 @@ mod command_tests {
                 break;
             }
         }
-        service.command(request, serde_json::Value::Null).unwrap();
+        service
+            .command(request, serde_json::Value::Null, None)
+            .unwrap();
         assert!(matches!(session.try_next(), Some(Input::Command { .. })));
         session.clear_requests();
-        service.command(request, serde_json::Value::Null).unwrap();
+        service
+            .command(request, serde_json::Value::Null, None)
+            .unwrap();
         session.clear_requests();
         assert!(session.try_next().is_none());
-        service.command(request, serde_json::Value::Null).unwrap();
+        service
+            .command(request, serde_json::Value::Null, None)
+            .unwrap();
     }
 }

@@ -29,6 +29,8 @@ impl Plugin for Example {
             id: "example.show-context".into(),
             title: "Example: Show caret position".into(),
             language: None,
+            input: None,
+            shortcut: None,
             handler: commands::Handler::Request {
                 hook: "example.show-context".into(),
             },
@@ -52,7 +54,8 @@ impl Plugin for Example {
 
 Context contains an optional file path, language, revision, and Unicode scalar
 caret offset. A command with no language filter can run with no buffers open;
-its document context is then empty. Source text is not copied into the context.
+its document context is then empty. `Context::input` contains a submitted prompt
+value when the declaration requests one. Source text is not copied into the context.
 The SDK serializes context/results over the existing bounded bytes-request ABI.
 A declaration naming a missing or incompatible request hook rejects plugin load.
 
@@ -81,8 +84,9 @@ The LSP plugin currently accepts payloads shaped as:
 
 `capability` is a JSON pointer into the initialized server capabilities, or null
 when the extension has no capability flag. Unsupported capabilities produce a
-command error without sending a request. Supported response kinds are `locations`
-and `macro_expansion`. Parameters contain the current document URI and caret
+command error without sending a request. Supported response kinds include `locations`, `macro_expansion`, `text_edits`,
+`workspace_edit`, `code_actions`, and `completion`, plus the adapters for resolved
+actions and completion items. Parameters contain the current document URI and caret
 position using the negotiated encoding; references also include declarations.
 Other semantic backends can define their own payload schema and return the same
 neutral outcomes. They must complete each accepted command with `Event::Command`.
@@ -93,6 +97,10 @@ The bundled LSP plugin declares:
 - Go to type definition.
 - Go to implementation.
 - Find references.
+- Format document.
+- Rename symbol.
+- Code actions and quick fixes.
+- Complete at caret.
 
 The Rust Analyzer definition plugin declares:
 
@@ -102,8 +110,8 @@ The Rust Analyzer definition plugin declares:
 Rust actions are filtered to Rust documents. The LSP transport owns request IDs,
 encoding conversion, response parsing, timeouts, and cancellation. Editing the
 source cancels pending requests, and the UI discards replies after navigation or
-provider retirement. A command times out after ten seconds. Server command
-execution, refactorings/workspace edits, and task execution are not implemented.
+provider retirement. A command times out after ten seconds. Server command execution, file resource operations, and task execution are not
+implemented. Text refactorings use the [shared edit proposal](workspace-edits.md).
 
 Protocol references: [LSP definition](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_definition)
 and [rust-analyzer extensions](https://rust-analyzer.github.io/book/contributing/lsp-extensions.html).
@@ -113,6 +121,9 @@ and [rust-analyzer extensions](https://rust-analyzer.github.io/book/contributing
 `velk-commands` contains the UI-independent data shared by contracts, semantic
 services, and presentation adapters. Outcomes are:
 
+- `Edit`: a workspace text-edit proposal, validated and applied by the host.
+- `Choices`: searchable results whose selection applies an edit or requests
+  backend resolution, using the original source and provider guard.
 - `Message`: a status message.
 - `Locations`: one target opens directly; multiple targets open a chooser. Targets
   use absolute local file paths, zero-based lines/columns, and an explicit UTF-8,
@@ -130,7 +141,35 @@ metadata remains bounded to 512 KiB. Command declarations describe available
 actions; access requirements remain capability declarations and are not enforced
 permissions for trusted native plugins.
 
-The semantic-session contract remains version 1 during internal development. Its C records now carry bounded
-command payloads and results. The root native ABI, language-definition contract,
-and generic bytes-request contract remain version 1. Rebuild the host and plugins
-together when the internal layout changes.
+The semantic-session contract remains version 1 during internal development. Its C
+records carry bounded command payloads, submitted input, and results. The root
+native ABI, language-definition contract, and generic bytes-request contract also
+remain version 1. Rebuild the host and plugins together when their contracts change.
+
+## Prompts, shortcuts, and navigation history
+
+Set a declaration's `input` to a prompt label to collect a string before dispatch.
+The source and provider must still match when the user submits it. Enter submits;
+Escape or Close cancels. Input is limited to 1,024 bytes.
+
+`shortcut` accepts a character, `Space`, or `F1` through `F24`, plus `primary`,
+`control`, `alt` and `shift` flags. `primary` means Command on macOS and Control
+elsewhere. Shortcuts share the palette's handler and availability checks. Host
+commands take precedence; among plugins declaring the same effective shortcut,
+the first loaded plugin in the host's deterministic order wins. Other commands
+remain available from the palette. User keymap overrides are not implemented.
+
+Bundled shortcuts:
+
+- F12: Go to definition.
+- F2: Rename symbol.
+- F4: Plugin manager.
+- Alt+Shift+F: Format document.
+- Primary+period: Code actions and quick fixes.
+- Ctrl+Space: Complete at caret.
+- Alt+Left / Alt+Right: Navigate back / forward.
+
+Navigation records successful provider-directed jumps. The bounded history follows
+text edits and removes closed buffers. Back/forward do not create another jump.
+Normal tab switches and file-dialog opens do not add entries. History is local
+to the window and is not persisted across Reload Window.

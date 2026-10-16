@@ -24,6 +24,8 @@ impl Plugin for Probe {
     const VERSION: &'static str = "1";
     fn commands() -> Vec<velk_plugin_sdk::commands::Declaration> {
         vec![velk_plugin_sdk::commands::Declaration {
+            input: None,
+            shortcut: None,
             id: "test.show-context".into(),
             title: "Show command context".into(),
             language: None,

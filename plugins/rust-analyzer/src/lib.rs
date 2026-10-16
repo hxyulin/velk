@@ -24,7 +24,7 @@ impl Plugin for RustAnalyzer {
         [
             ("parent-module", "Rust: Go to parent module", "experimental/parentModule", "locations", Some("/experimental/parentModule")),
             ("expand-macro", "Rust: Expand macro", "rust-analyzer/expandMacro", "macro_expansion", None),
-        ].into_iter().map(|(id, title, method, result, capability)| Declaration {
+        ].into_iter().map(|(id, title, method, result, capability)| Declaration { input:None, shortcut:None,
             id:format!("{}.{}", Self::ID, id), title:title.into(), language:Some("rust".into()),
             handler:Handler::Semantic { payload:serde_json::json!({"method":method,"result":result,"capability":capability}) },
         }).collect()

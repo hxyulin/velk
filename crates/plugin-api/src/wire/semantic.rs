@@ -69,8 +69,11 @@ pub fn with_input<R>(
         model::Input::Command {
             request: r,
             payload,
+            input,
         } => {
-            let payload = serde_json::to_string(payload).map_err(|e| e.to_string())?;
+            let payload =
+                serde_json::to_string(&serde_json::json!({"payload":payload,"input":input}))
+                    .map_err(|e| e.to_string())?;
             if payload.len() > 16 * 1024 {
                 return Err("command payload exceeds 16 KiB".into());
             }
@@ -127,11 +130,25 @@ pub fn with_input<R>(
 /// All nested views must be readable and valid for this call. Output is owned.
 pub unsafe fn decode_input(raw: &SemanticInput) -> Result<model::Input, String> {
     Ok(match raw.kind {
-        COMMAND => model::Input::Command {
-            request: hover_request(raw.request),
-            payload: serde_json::from_str(unsafe { text(&raw.payload, 16 * 1024)? })
-                .map_err(|e| e.to_string())?,
-        },
+        COMMAND => {
+            let envelope: serde_json::Value =
+                serde_json::from_str(unsafe { text(&raw.payload, 16 * 1024)? })
+                    .map_err(|e| e.to_string())?;
+            let payload = envelope
+                .get("payload")
+                .ok_or("missing command payload")?
+                .clone();
+            let input = match envelope.get("input") {
+                Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(s)) => Some(s.clone()),
+                _ => return Err("invalid command input".into()),
+            };
+            model::Input::Command {
+                request: hover_request(raw.request),
+                payload,
+                input,
+            }
+        }
         DOCUMENT | SAVED => {
             // SAFETY: input document is live for this call and copied before return.
             let d = unsafe { raw.document.as_ref() }.ok_or("null semantic document")?;
@@ -390,6 +407,7 @@ mod tests {
             model::Input::Hover(r),
             model::Input::CancelHover,
             model::Input::Command {
+                input: Some("new name".into()),
                 request: r,
                 payload: serde_json::json!({"method":"test/command"}),
             },
@@ -409,14 +427,17 @@ mod tests {
                     model::Input::Command {
                         request: a,
                         payload: p,
+                        input: a_input,
                     },
                     model::Input::Command {
                         request: b,
                         payload: q,
+                        input: b_input,
                     },
                 ) => {
                     assert_eq!(*a, b);
                     assert_eq!(*p, q);
+                    assert_eq!(*a_input, b_input);
                 }
                 (model::Input::CancelHover, model::Input::CancelHover) => {}
                 _ => panic!("input kind changed"),
