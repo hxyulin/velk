@@ -4062,6 +4062,7 @@ dependencies = [
  "velk-editing",
  "velk-editor-model",
  "velk-markup",
+ "velk-plugin-autopairs",
  "velk-plugin-indentation",
  "velk-plugin-sdk",
  "velk-syntax",
@@ -4092,9 +4093,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "velk-plugin-autopairs"
+version = "0.0.0-dev"
+dependencies = [
+ "velk-core",
+ "velk-plugin-sdk",
+]
+
+[[package]]
 name = "velk-plugin-builtin"
 version = "0.0.0-dev"
 dependencies = [
+ "velk-plugin-autopairs",
  "velk-plugin-files",
  "velk-plugin-indentation",
  "velk-plugin-lsp",

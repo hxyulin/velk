@@ -92,6 +92,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         "velk.files",
         "velk.terminal",
         "velk.indentation",
+        "velk.autopairs",
     ]
     .into_iter()
     .map(|id| PluginSpec {
@@ -117,6 +118,8 @@ fn build_standalone(root: &Path, release: bool) -> Result<(), String> {
         "velk-plugin-search",
         "-p",
         "velk-plugin-indentation",
+        "-p",
+        "velk-plugin-autopairs",
     ]);
     if release {
         command.arg("--release");

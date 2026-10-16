@@ -61,3 +61,11 @@ unit after `(`, `[`, or `{`. Before a matching close, it inserts an indented bla
 line and places the caret inside. Existing whitespace before the close is
 replaced so it does not accumulate. These initial rules are lexical; strings,
 comments, and language-specific continuation alignment are not parsed.
+
+## Bundled autopairs
+
+`velk.autopairs` inserts matching `()`, `[]`, and `{}` for ordinary typing and
+wraps selected text, preserving selection direction. It avoids inserting a close
+before identifier text. `pair_quotes` defaults to false; enabling it adds single
+and double quotes with basic identifier/escape guards. These rules are lexical,
+so language-aware quote, string, comment, and lifetime handling remains deferred.

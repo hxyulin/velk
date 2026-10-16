@@ -294,3 +294,36 @@ fn enter_uses_indentation_and_keeps_the_caret_inside_expanded_brackets() {
     );
     assert_eq!(text(&mut runtime, &editor), "{\n    inside\n}");
 }
+
+#[derive(Debug)]
+struct PairingProvider;
+impl velk_editing::Provider for PairingProvider {
+    fn evaluate(&self, request: &velk_editing::Request) -> Result<velk_editing::Decision, String> {
+        <velk_plugin_autopairs::Autopairs as velk_plugin_sdk::EditingBehavior>::evaluate(request)
+    }
+}
+#[test]
+fn typing_uses_autopairs_but_pasting_an_opener_remains_literal() {
+    let (mut runtime, editor, mut ui) = setup();
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_editing_providers(std::collections::BTreeMap::from([(
+                velk_editing::Role::Pairing,
+                std::sync::Arc::new(PairingProvider) as std::sync::Arc<dyn velk_editing::Provider>,
+            )]))
+        })
+    });
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("(".into()));
+    assert_eq!(text(&mut runtime, &editor), "()");
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("界".into()));
+    assert_eq!(text(&mut runtime, &editor), "(界)");
+    input(&mut runtime, &mut ui, TextInputEvent::Paste("[".into()));
+    assert_eq!(text(&mut runtime, &editor), "(界[)");
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Character("z".into()),
+        primary(),
+    );
+    assert_eq!(text(&mut runtime, &editor), "(界)");
+}

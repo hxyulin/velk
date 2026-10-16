@@ -21,13 +21,13 @@ can work with the same documents and interface conventions.
 
 Today, Velk opens UTF-8 files in a GPU-rendered, rope-backed editor with multiple
 buffers, Rust syntax highlighting, and bundled plugins for files, search,
-language services, Markdown, indentation, and a terminal.
+language services, Markdown, indentation, autopairs, and a terminal.
 
 ## What works today
 
 - **Native editing:** Unicode and grapheme-aware navigation, IME input,
   selection, clipboard operations, undo/redo, and virtualized text rendering.
-- **Plugin-provided indentation:** Tab stops and selection indentation with Tab / Shift+Tab.
+- **Plugin-provided editing:** Tab / Shift+Tab indentation, aligned newlines, matching brackets, and selection wrapping.
 - **Documents that survive interruptions:** untitled and file-backed buffers,
   Save As, Save All, atomic file replacement, disk-change conflict protection,
   and separate recovery snapshots with undo history.
