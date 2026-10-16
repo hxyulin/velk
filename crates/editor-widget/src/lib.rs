@@ -27,8 +27,9 @@ pub use velk_core::{
 };
 use velk_editor_model::inline;
 pub use velk_editor_model::{
-    AnnotationError, Annotations, Color, EditorAppearance, HoverCard, HoverSource, HoverTarget,
-    LinePattern, OverlayKind, OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
+    AnnotationError, Annotations, Color, EditCommand, EditorAppearance, HoverCard, HoverSource,
+    HoverTarget, LinePattern, OverlayKind, OverlayPlacement, SpanStyle, StyledRange, TextOverlay,
+    Underline,
 };
 pub use velk_syntax::Language;
 
@@ -142,20 +143,7 @@ impl Editor {
     /// Select a result from a versioned external service without creating an
     /// edit or undo entry. Clamp endpoints to the buffer's grapheme boundaries.
     pub fn select_range(&mut self, range: std::ops::Range<usize>) -> bool {
-        if range.start > range.end || range.end > self.buffer.text().len_chars() {
-            return false;
-        }
-        self.composition = None;
-        self.buffer.set_caret(range.start, false);
-        self.buffer.set_caret(range.end, true);
-        if !range.is_empty() && self.buffer.selection().head < range.end {
-            self.buffer.horizontal(true, true);
-        }
-        self.caret_epoch += 1;
-        self.epoch += 1;
-        self.hide_hover();
-        self.reveal_caret = true;
-        true
+        self.execute(EditCommand::SelectRange(range))
     }
 
     pub fn set_annotations(&mut self, annotations: Annotations) -> Result<(), AnnotationError> {
@@ -188,20 +176,27 @@ impl Editor {
 
     /// Replace the entire document as one undoable edit.
     pub fn set_text(&mut self, text: &str) {
-        self.buffer.select_all();
-        self.insert(text);
+        self.execute(EditCommand::ReplaceAll(text));
     }
 
     #[tracing::instrument(level = "debug", skip_all, fields(bytes = text.len(), revision = self.buffer.revision()))]
     pub fn insert(&mut self, text: &str) {
+        self.execute(EditCommand::Insert(text));
+    }
+
+    /// Apply editor intent and refresh syntax, annotations, hover, and caret state.
+    pub fn execute(&mut self, command: EditCommand<'_>) -> bool {
         self.note_input();
         #[cfg(any(test, feature = "performance"))]
         {
             self.input_started = Some(Instant::now());
         }
+        if !command.apply(&mut self.buffer) {
+            return false;
+        }
         self.composition = None;
-        self.buffer.insert(text);
         self.edited();
+        true
     }
 
     /// Commit programmatic edits as one undo step and one UI/syntax update.
@@ -273,85 +268,33 @@ impl Editor {
         }
         let had_hover = self.has_hover();
         self.hide_hover();
-        let extend = key.modifiers.shift;
-        // Leave unsupported modifier chords untouched. Word movement will be
-        // added in a later editor increment.
-        if key.modifiers.alt || key.modifiers.control && !key.modifiers.primary() {
-            if !had_hover {
-                cx.unchanged();
-            }
-            return;
-        }
-        let handled = match &key.key {
-            KeyboardKey::Home => {
-                if key.modifiers.primary() {
-                    self.buffer.document_edge(false, extend);
-                } else {
-                    self.buffer.line_edge(false, extend);
-                }
-                true
-            }
-            KeyboardKey::End => {
-                if key.modifiers.primary() {
-                    self.buffer.document_edge(true, extend);
-                } else {
-                    self.buffer.line_edge(true, extend);
-                }
-                true
-            }
-            KeyboardKey::ArrowLeft if cfg!(target_os = "macos") && key.modifiers.primary() => {
-                self.buffer.line_edge(false, extend);
-                true
-            }
-            KeyboardKey::ArrowRight if cfg!(target_os = "macos") && key.modifiers.primary() => {
-                self.buffer.line_edge(true, extend);
-                true
-            }
-            KeyboardKey::ArrowUp if cfg!(target_os = "macos") && key.modifiers.primary() => {
-                self.buffer.document_edge(false, extend);
-                true
-            }
-            KeyboardKey::ArrowDown if cfg!(target_os = "macos") && key.modifiers.primary() => {
-                self.buffer.document_edge(true, extend);
-                true
-            }
-            _ if key.modifiers.primary() => false,
-            KeyboardKey::ArrowLeft => {
-                self.buffer.horizontal(false, extend);
-                true
-            }
-            KeyboardKey::ArrowRight => {
-                self.buffer.horizontal(true, extend);
-                true
-            }
-            KeyboardKey::ArrowUp => {
-                self.buffer.vertical(false, extend);
-                true
-            }
-            KeyboardKey::ArrowDown => {
-                self.buffer.vertical(true, extend);
-                true
-            }
-            KeyboardKey::Backspace => {
-                self.buffer.backspace();
-                true
-            }
-            KeyboardKey::Delete => {
-                self.buffer.delete();
-                true
-            }
-            KeyboardKey::Enter => {
-                self.buffer.insert("\n");
-                true
-            }
-            KeyboardKey::Tab if !extend => {
-                self.buffer.insert("    ");
-                true
-            }
-            // Shift+Tab remains available for focus traversal out of this widget.
-            _ => false,
+        use velk_editor_model::commands::{Key, Modifiers, Platform, key_command};
+        let key_name = match key.key {
+            KeyboardKey::Home => Key::Home,
+            KeyboardKey::End => Key::End,
+            KeyboardKey::ArrowLeft => Key::Left,
+            KeyboardKey::ArrowRight => Key::Right,
+            KeyboardKey::ArrowUp => Key::Up,
+            KeyboardKey::ArrowDown => Key::Down,
+            KeyboardKey::Backspace => Key::Backspace,
+            KeyboardKey::Delete => Key::Delete,
+            KeyboardKey::Enter => Key::Enter,
+            KeyboardKey::Tab => Key::Tab,
+            _ => Key::Other,
         };
-        if handled {
+        let modifiers = Modifiers {
+            shift: key.modifiers.shift,
+            control: key.modifiers.control,
+            alt: key.modifiers.alt,
+            meta: key.modifiers.meta,
+        };
+        let platform = if cfg!(target_os = "macos") {
+            Platform::Mac
+        } else {
+            Platform::Other
+        };
+        if let Some(command) = key_command(key_name, modifiers, platform) {
+            command.apply(&mut self.buffer);
             #[cfg(any(test, feature = "performance"))]
             {
                 self.input_started = Some(input_started);
@@ -380,8 +323,11 @@ impl Editor {
             {
                 self.input_started = Some(input_started);
             }
-            self.buffer
-                .set_caret(position, drag || event.modifiers.shift);
+            EditCommand::SetCaret {
+                position,
+                extend: drag || event.modifiers.shift,
+            }
+            .apply(&mut self.buffer);
             self.composition = None;
             self.edited();
         }
@@ -452,7 +398,7 @@ impl View for Editor {
                 match cx.write_clipboard_text(this.buffer.selected_text()) {
                     Ok(()) => {
                         this.composition = None;
-                        this.buffer.delete();
+                        EditCommand::Delete.apply(&mut this.buffer);
                         this.edited();
                     }
                     Err(error) => eprintln!("Velk clipboard: {error}"),
@@ -467,7 +413,7 @@ impl View for Editor {
                     this.input_started = Some(Instant::now());
                 }
                 this.note_input();
-                this.buffer.undo();
+                EditCommand::Undo.apply(&mut this.buffer);
                 this.edited();
             })
             .enabled(self.buffer.can_undo() && self.composition.is_none())
@@ -479,7 +425,7 @@ impl View for Editor {
                     this.input_started = Some(Instant::now());
                 }
                 this.note_input();
-                this.buffer.redo();
+                EditCommand::Redo.apply(&mut this.buffer);
                 this.edited();
             })
             .enabled(self.buffer.can_redo() && self.composition.is_none())
@@ -491,7 +437,7 @@ impl View for Editor {
                 {
                     this.input_started = Some(Instant::now());
                 }
-                this.buffer.select_all();
+                EditCommand::SelectAll.apply(&mut this.buffer);
                 this.edited();
             })
             .enabled(self.composition.is_none())

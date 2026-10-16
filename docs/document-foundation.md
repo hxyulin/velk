@@ -6,6 +6,10 @@ An explicit file argument still reports open errors before creating a window.
 
 ## Documents and destinations
 
+Close/prompt decisions and Save All ordering live in Core's UI-independent
+`lifecycle` module. The application supplies current document facts and adapts
+the returned actions to RXUI dialogs and file jobs. See [Core boundaries](core.md).
+
 Each document has a window-scoped numeric ID, independent of its optional disk
 file. Opening a file resolves its canonical path for deduplication. Untitled
 names are display labels: no placeholder files are created on disk. New File

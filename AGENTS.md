@@ -20,9 +20,10 @@ and any checks that could not run.
 
 ## Structure and boundaries
 
-- `crates/core` owns UI-independent text, transactions, history, and snapshots.
-- `crates/editor-model` owns renderer-independent annotations and text projections.
-- `crates/editor` coordinates document lifecycle, saves, recovery, workspace state,
+- `crates/core` owns text, history, snapshots, and UI-independent close/save policy.
+- `crates/editor-model` owns editing commands, key mapping, annotations, and text
+  projections without renderer dependencies.
+- `crates/editor` adapts document lifecycle, saves, recovery, workspace state,
   and the shell. `crates/editor-widget` adapts Core to RXUI input and rendering.
 - Shared contracts and services live in `crates/`; feature plugins live in
   `plugins/`. Build and staging commands live in `xtask/`.

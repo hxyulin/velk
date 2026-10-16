@@ -39,12 +39,7 @@ struct ToggleSettings;
 impl Command for ToggleSettings {}
 struct CloseSettings;
 impl Command for CloseSettings {}
-#[derive(Clone, Copy)]
-pub enum Intent {
-    Close,
-    Quit,
-    Buffer,
-}
+pub use velk_core::lifecycle::CloseIntent as Intent;
 
 pub struct Document {
     buffer: buffers::ActiveBuffer,
@@ -55,13 +50,11 @@ pub struct Document {
     buffer_order: Vec<u64>,
     background_buffer: bool,
     next_search: u64,
-    save_queue: std::collections::VecDeque<u64>,
+    lifecycle: velk_core::lifecycle::Lifecycle,
     overwrite_approved: bool,
     saving_as: bool,
     opening: Option<Task>,
     pending_opens: std::collections::VecDeque<PathBuf>,
-    closing: Option<Intent>,
-    close_approved: std::collections::BTreeSet<u64>,
     pub window: Option<WindowHandle>,
     reload: Option<Task>,
     diagnostics: Option<Task>,
@@ -169,13 +162,11 @@ impl Document {
             buffer_order: order,
             background_buffer: false,
             next_search: 0,
-            save_queue: Default::default(),
+            lifecycle: Default::default(),
             overwrite_approved: false,
             saving_as: false,
             opening: None,
             pending_opens: Default::default(),
-            closing: None,
-            close_approved: Default::default(),
             window: None,
             reload: None,
             diagnostics: None,
@@ -307,7 +298,7 @@ impl Document {
                 }
                 this.with_buffer(buffer_id, cx, |this, cx| {
                     if then.is_some() {
-                        this.closing = None;
+                        this.lifecycle.cancel_close();
                     }
                     let _entered = save_trace.enter();
                     this.buffer.saving = None;
@@ -345,14 +336,9 @@ impl Document {
                             this.buffer.disk_changed = false;
                             this.buffer.disk_stamp = None;
                             if let Some(intent) = then {
-                                if this.buffer.dirty {
-                                    this.notice(Some(
-                                        "Saved the snapshot; newer edits are still unsaved.".into(),
-                                    ));
-                                } else {
-                                    this.closing = Some(intent);
-                                    this.finish(intent, cx);
-                                }
+                                let documents = this.lifecycle_documents(cx);
+                                let action = this.lifecycle.saved(intent, &documents);
+                                this.close_action(action, cx);
                             }
                         }
                         Ok(Err(error)) => this.notice(Some(format!("Save failed: {error}"))),
@@ -373,7 +359,7 @@ impl Document {
                 }
                 this.schedule_recovery(cx);
                 if let Some(error) = this.buffer_save_error(buffer_id) {
-                    this.save_queue.clear();
+                    this.lifecycle.cancel_save_all();
                     if this.buffer.as_ref().is_none_or(|b| b.id != buffer_id) {
                         this.notice(Some(error));
                     }
@@ -387,57 +373,105 @@ impl Document {
                 if changing_path {
                     self.saving_as = false;
                 }
-                self.closing = None;
-                self.save_queue.clear();
+                self.lifecycle.cancel_close();
+                self.lifecycle.cancel_save_all();
                 self.notice(Some(format!("Save failed: {error}")));
             }
         }
     }
+    fn lifecycle_documents(
+        &self,
+        cx: &impl rxui::ReadContext,
+    ) -> Vec<velk_core::lifecycle::DocumentState> {
+        self.buffer
+            .iter()
+            .chain(self.inactive.values())
+            .map(|b| {
+                let editor = b.editor.read(cx);
+                velk_core::lifecycle::DocumentState {
+                    id: b.id,
+                    dirty: editor.buffer().is_dirty(),
+                    composing: editor.has_composition(),
+                    saving: b.saving.is_some(),
+                }
+            })
+            .collect()
+    }
+
+    fn lifecycle_activity(&self) -> velk_core::lifecycle::Activity {
+        velk_core::lifecycle::Activity {
+            busy: self.busy(),
+            opening: self.opening.is_some(),
+            saving: self.any_saving(),
+        }
+    }
+
     pub fn intent(&mut self, intent: Intent, cx: &mut Context<'_, Self>) {
-        if !self.has_buffers() {
-            if !matches!(intent, Intent::Buffer) && !self.busy() && self.opening.is_none() {
-                self.finish(intent, cx);
+        let documents = self.lifecycle_documents(cx);
+        let activity = self.lifecycle_activity();
+        let action = self.lifecycle.request_close(intent, &documents, activity);
+        self.close_action(action, cx);
+    }
+
+    fn close_action(
+        &mut self,
+        action: velk_core::lifecycle::CloseAction,
+        cx: &mut Context<'_, Self>,
+    ) {
+        use velk_core::lifecycle::{CloseAction, CloseBlock};
+        match action {
+            CloseAction::Ignore => {}
+            CloseAction::Blocked(reason) => self.notice(Some(
+                match reason {
+                    CloseBlock::Composition => "Finish text composition before closing.",
+                    CloseBlock::Saving => "Saving… Please wait before closing.",
+                    CloseBlock::FileOperations => {
+                        "Please wait for file operations to finish before closing."
+                    }
+                    CloseBlock::NewerEdits => "Saved the snapshot; newer edits are still unsaved.",
+                }
+                .into(),
+            )),
+            CloseAction::Prompt(id) => {
+                if self.buffer.as_ref().is_none_or(|b| b.id != id) {
+                    let Some(mut next) = self.inactive.remove(&id) else {
+                        self.lifecycle.cancel_close();
+                        return;
+                    };
+                    std::mem::swap(self.buffer.as_mut().unwrap(), &mut next);
+                    self.inactive.insert(next.id, next);
+                    self.title();
+                }
+                self.show_close_dialog(cx);
             }
-            return;
-        }
-        if self.buffer.editor.read(cx).has_composition() {
-            self.notice(Some("Finish text composition before closing.".into()));
-            return;
-        }
-        if self.busy() {
-            if self.buffer.saving.is_some() {
-                self.notice(Some("Saving… Please wait before closing.".into()));
+            CloseAction::Save { id, then } => {
+                self.with_buffer(id, cx, |this, cx| this.save(Some(then), cx))
             }
-            return;
+            CloseAction::Remove(id) => {
+                if self.buffer.as_ref().is_some_and(|b| b.id == id) {
+                    self.remove_current_buffer(cx);
+                }
+            }
+            CloseAction::Finish(intent) => {
+                let result = match intent {
+                    Intent::Close => {
+                        cx.close_window(self.window.as_ref().expect("native document window"))
+                    }
+                    Intent::Quit => cx.exit(),
+                    Intent::Buffer => unreachable!(),
+                };
+                if let Err(error) = result {
+                    self.notice(Some(error.to_string()));
+                } else if let Some(recovery) = &self.recovery {
+                    recovery.discard();
+                }
+            }
         }
-        if self.any_saving() || !self.save_queue.is_empty() || self.opening.is_some() {
-            self.notice(Some(
-                "Please wait for file operations to finish before closing.".into(),
-            ));
-            return;
-        }
-        if self.closing.is_none() {
-            self.close_approved.clear();
-        }
-        self.closing = Some(intent);
-        if !matches!(intent, Intent::Buffer)
-            && !self.buffer.editor.read(cx).buffer().is_dirty()
-            && let Some(id) = self
-                .inactive
-                .values()
-                .find(|b| b.editor.read(cx).buffer().is_dirty())
-                .map(|b| b.id)
-        {
-            let mut buffer = self.inactive.remove(&id).unwrap();
-            std::mem::swap(self.buffer.as_mut().unwrap(), &mut buffer);
-            self.inactive.insert(buffer.id, buffer);
-            self.title();
-        }
-        // Read the buffer directly: its observer may not yet have run.
-        if !self.buffer.editor.read(cx).buffer().is_dirty() {
-            self.finish(intent, cx);
-            return;
-        }
+    }
+
+    fn show_close_dialog(&mut self, cx: &mut Context<'_, Self>) {
+        use velk_core::lifecycle::CloseResponse;
+        let id = self.buffer.id;
         let options = MessageDialog::new()
             .parent(self.window.as_ref().expect("native document window"))
             .title("Save changes?")
@@ -449,60 +483,25 @@ impl Document {
             .buttons(MessageButtons::YesNoCancel);
         match cx.show_message(options, move |this, result, cx| {
             this.dialog = None;
-            match result {
-                Ok(MessageResponse::Yes) => this.save(Some(intent), cx),
-                Ok(MessageResponse::No) => this.finish(intent, cx),
-                Ok(_) => {
-                    this.closing = None;
-                }
+            let response = match result {
+                Ok(MessageResponse::Yes) => CloseResponse::Save,
+                Ok(MessageResponse::No) => CloseResponse::Discard,
+                Ok(_) => CloseResponse::Cancel,
                 Err(error) => {
-                    this.closing = None;
+                    this.lifecycle.cancel_close();
                     this.notice(Some(format!("Cannot show save dialog: {error}")));
+                    return;
                 }
-            }
+            };
+            let documents = this.lifecycle_documents(cx);
+            let action = this.lifecycle.respond(id, response, &documents);
+            this.close_action(action, cx);
         }) {
             Ok(task) => self.dialog = Some(task),
             Err(error) => {
-                self.closing = None;
+                self.lifecycle.cancel_close();
                 self.notice(Some(format!("Cannot show save dialog: {error}")));
             }
-        }
-    }
-    fn finish(&mut self, intent: Intent, cx: &mut Context<'_, Self>) {
-        if matches!(intent, Intent::Buffer) {
-            self.closing = None;
-            self.remove_current_buffer(cx);
-            return;
-        }
-        // Retain every buffer until all prompts succeed. Cancelling a later
-        // prompt must not lose an earlier buffer whose discard was approved.
-        if let Some(buffer) = self.buffer.as_ref() {
-            self.close_approved.insert(buffer.id);
-        }
-        self.closing = Some(intent);
-        if let Some(id) = self
-            .inactive
-            .values()
-            .find(|b| !self.close_approved.contains(&b.id) && b.editor.read(cx).buffer().is_dirty())
-            .map(|b| b.id)
-        {
-            let mut next = self.inactive.remove(&id).unwrap();
-            std::mem::swap(self.buffer.as_mut().unwrap(), &mut next);
-            self.inactive.insert(next.id, next);
-            self.title();
-            self.intent(intent, cx);
-            return;
-        }
-        self.closing = None;
-        let result = match intent {
-            Intent::Close => cx.close_window(self.window.as_ref().expect("native document window")),
-            Intent::Quit => cx.exit(),
-            Intent::Buffer => unreachable!(),
-        };
-        if let Err(error) = result {
-            self.notice(Some(error.to_string()));
-        } else if let Some(recovery) = &self.recovery {
-            recovery.discard();
         }
     }
 }
@@ -517,24 +516,29 @@ impl View for Document {
         let new_file = cx
             .command(buffers::New, |this, _, cx| this.new_buffer(cx))
             .label("New File")
-            .enabled(!self.busy() && self.closing.is_none())
+            .enabled(!self.busy() && self.lifecycle.close_intent().is_none())
             .shortcut(Shortcut::primary("n"));
         let save_as = cx
             .command(SaveAs, |this, _, cx| this.save_as(None, cx))
             .label("Save As…")
-            .enabled(self.has_buffers() && !self.busy() && self.closing.is_none())
+            .enabled(self.has_buffers() && !self.busy() && self.lifecycle.close_intent().is_none())
             .shortcut(Shortcut::primary("s").shift());
         let save_all = cx
             .command(SaveAll, |this, _, cx| this.save_all(cx))
             .label("Save All")
             .enabled(
-                self.has_buffers() && !self.busy() && !self.any_saving() && self.closing.is_none(),
+                self.has_buffers()
+                    && !self.busy()
+                    && !self.any_saving()
+                    && self.lifecycle.close_intent().is_none(),
             )
             .shortcut(Shortcut::primary("s").alt());
         let open = cx
             .command(buffers::Open, |this, _, cx| this.open_file(cx))
             .label("Open file…")
-            .enabled(!self.busy() && self.opening.is_none() && self.closing.is_none())
+            .enabled(
+                !self.busy() && self.opening.is_none() && self.lifecycle.close_intent().is_none(),
+            )
             .shortcut(Shortcut::primary("o"));
         let close_buffer = cx
             .command(buffers::Close, |this, _, cx| {
@@ -546,7 +550,7 @@ impl View for Document {
                     && !self.busy()
                     && !self.any_saving()
                     && self.opening.is_none()
-                    && self.closing.is_none(),
+                    && self.lifecycle.close_intent().is_none(),
             )
             .shortcut(Shortcut::primary("w"));
         let next_buffer = cx

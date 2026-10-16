@@ -8,8 +8,8 @@ impl Document {
             return;
         }
         let Some(window) = &self.window else {
-            self.closing = None;
-            self.save_queue.clear();
+            self.lifecycle.cancel_close();
+            self.lifecycle.cancel_save_all();
             self.buffer.status = Some("Save As requires a document window.".into());
             return;
         };
@@ -33,12 +33,12 @@ impl Document {
                     this.with_buffer(id, cx, |this, cx| this.save_to(Some(path), then, cx))
                 }
                 Ok(None) => {
-                    this.closing = None;
-                    this.save_queue.clear();
+                    this.lifecycle.cancel_close();
+                    this.lifecycle.cancel_save_all();
                 }
                 Err(error) => {
-                    this.closing = None;
-                    this.save_queue.clear();
+                    this.lifecycle.cancel_close();
+                    this.lifecycle.cancel_save_all();
                     this.with_buffer(id, cx, |this, _| {
                         this.buffer.status = Some(format!("Save As failed: {error}"))
                     });
@@ -47,8 +47,8 @@ impl Document {
         }) {
             Ok(task) => self.dialog = Some(task),
             Err(error) => {
-                self.closing = None;
-                self.save_queue.clear();
+                self.lifecycle.cancel_close();
+                self.lifecycle.cancel_save_all();
                 self.buffer.status = Some(format!("Save As failed: {error}"));
             }
         }
@@ -67,29 +67,16 @@ impl Document {
         })
     }
     pub(super) fn save_all(&mut self, cx: &mut Context<'_, Self>) {
-        if self.busy()
-            || self.any_saving()
-            || self.opening.is_some()
-            || self.closing.is_some()
-            || !self.save_queue.is_empty()
-        {
-            return;
+        let ids = self.ids();
+        let activity = self.lifecycle_activity();
+        if self.lifecycle.begin_save_all(ids, activity) {
+            self.continue_save_all(cx);
         }
-        self.save_queue = self.ids().into();
-        self.continue_save_all(cx);
     }
     pub(super) fn continue_save_all(&mut self, cx: &mut Context<'_, Self>) {
-        while let Some(id) = self.save_queue.pop_front() {
-            let mut started = false;
-            self.with_buffer(id, cx, |this, cx| {
-                if this.buffer.editor.read(cx).buffer().is_dirty() {
-                    started = true;
-                    this.save(None, cx);
-                }
-            });
-            if started {
-                return;
-            }
+        let documents = self.lifecycle_documents(cx);
+        if let Some(id) = self.lifecycle.next_save(&documents) {
+            self.with_buffer(id, cx, |this, cx| this.save(None, cx));
         }
     }
 }
@@ -182,7 +169,7 @@ mod tests {
                 assert_eq!(d.buffer.id, 2);
                 assert!(d.buffer.file.is_none());
                 d.save(Some(Intent::Buffer), cx); // no window: cancelled safely
-                assert!(d.closing.is_none());
+                assert!(d.lifecycle.close_intent().is_none());
                 assert!(d.buffer.saving.is_none());
             })
         });
@@ -219,7 +206,7 @@ mod tests {
         runtime.update(|cx| {
             root.update(cx, |d, cx| {
                 assert_eq!(d.buffer.id, 2);
-                assert!(d.save_queue.is_empty());
+                assert!(!d.lifecycle.save_all_pending());
                 for id in d.ids() {
                     d.with_buffer(id, cx, |d, cx| {
                         d.buffer.editor.update(cx, |e, _| e.insert("more"))
@@ -234,7 +221,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "Bb");
         runtime.update(|cx| {
             root.update(cx, |d, cx| {
-                assert!(d.save_queue.is_empty());
+                assert!(!d.lifecycle.save_all_pending());
                 assert!(d.buffer.editor.read(cx).buffer().is_dirty());
                 assert!(d.inactive[&1].editor.read(cx).buffer().is_dirty());
             })

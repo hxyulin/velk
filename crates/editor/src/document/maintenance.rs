@@ -128,7 +128,10 @@ impl Document {
         }
     }
     fn check_disk(&mut self, cx: &mut Context<'_, Self>) {
-        if self.disk_check.is_some() || self.dialog.is_some() || self.closing.is_some() {
+        if self.disk_check.is_some()
+            || self.dialog.is_some()
+            || self.lifecycle.close_intent().is_some()
+        {
             return;
         }
         let files: Vec<_> = self
@@ -186,7 +189,7 @@ impl Document {
         if !self.has_buffers() || !self.buffer.disk_changed {
             return None;
         }
-        let busy = self.busy() || self.closing.is_some();
+        let busy = self.busy() || self.lifecycle.close_intent().is_some();
         Some(column().key("disk-change-notice").fill_width().padding(10.).gap(6.)
             .background(ThemeColor::Raised)
             .child(label("This file changed on disk or is unavailable. Your editor contents have been kept.").font_size(12.5))

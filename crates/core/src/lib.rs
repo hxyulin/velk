@@ -3,6 +3,7 @@
 mod buffer;
 mod change;
 pub mod graphemes;
+pub mod lifecycle;
 
 pub use buffer::{
     Buffer, BufferSnapshot, Checkpoint, Selection, TextEdit, Transaction, TransactionError,

@@ -9,11 +9,14 @@ does not need to live permanently in the application executable.
 `velk-core` is a linked Rust crate with no RXUI, plugin-host, or Tree-sitter
 dependency. It owns buffer text, selection and grapheme navigation, revisioned
 transactions, undo/redo, saved checkpoints, change tracking, and session snapshots.
+Its `lifecycle` module owns close/prompt decisions and Save All sequencing,
+returning actions for the frontend to execute against stable document IDs.
 Ropey remains the storage implementation, and Rust callers still have direct
 access to it. This is an extraction of the default implementation, not a stable
 engine API or a dynamically replaceable storage provider.
 
-`velk-editor-model` owns renderer-independent annotation styles, overlays, hover
+`velk-editor-model` owns editing commands and default key mapping, along with
+renderer-independent annotation styles, overlays, hover
 request tokens, validation, and source/display coordinate projections for inline
 hints and IME replacements. It depends only on Core. Semantic presentation code
 can build annotations without depending on RXUI, Astrelis, or the widget crate.
@@ -23,9 +26,10 @@ and text rendering, and presentation of annotations and syntax. It translates
 model styles into Astrelis text spans. It consumes Core and the presentation
 model, re-exporting their existing types for callers embedding the widget.
 
-`velk-editor` still coordinates document lifecycle, file I/O, recovery, workspace
-state, settings, and the shell. Those responsibilities have not moved into a
-loadable Core module yet.
+`velk-editor` supplies document facts to Core's lifecycle policy and performs
+native dialogs, file I/O, recovery, workspace state, settings, and shell effects.
+It still owns open document entities and path deduplication. This is not a
+loadable Core module or a complete platform-independent workspace implementation.
 
 Core emits parser-independent changes with document revisions, Unicode scalar
 ranges, and UTF-8 byte/line coordinates. `velk-syntax` translates these changes to
@@ -44,6 +48,28 @@ native frontend or terminal:
 cargo test -p velk-core --locked
 cargo test -p velk-editor-model --locked
 ```
+
+## Commands and lifecycle
+
+`velk-editor-model::EditCommand` describes editing intent over a Core buffer:
+insert/replace text, delete, undo/redo, selection, and cursor movement. Its `apply`
+result reports acceptance, including valid no-ops at boundaries; it does not mean
+the text revision changed. Invalid selection ranges leave the buffer unchanged.
+`commands::key_command` maps normalized keys and modifiers with an explicit
+platform argument, so Mac and other-platform bindings can be tested on any host.
+Clipboard I/O, native menu shortcuts, focus traversal, and IME events stay in the
+frontend. `Editor::execute` applies a command and refreshes widget presentation.
+The command type is a linked Rust API, not a plugin wire format.
+
+`velk-core::lifecycle::Lifecycle` takes current document facts, rather than UI
+entities or cached dirty labels. Close actions request a prompt, save, document
+removal, window close, or application exit. Prompt responses refer to the prompted
+document ID. All documents remain alive until a whole-window close is approved;
+cancelling a later prompt must not discard earlier documents. A successful save
+of an older snapshot keeps newer edits open. Save All chooses dirty documents in
+the supplied order and can stop after a cancelled destination picker or failed
+write. Dialogs, async file jobs, checkpoint updates, and final recovery cleanup
+remain frontend responsibilities.
 
 ## Intended boundaries
 

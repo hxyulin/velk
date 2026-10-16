@@ -178,7 +178,7 @@ impl Document {
     }
     pub(super) fn select_buffer(&mut self, id: u64, cx: &mut Context<'_, Self>) {
         if self.dialog.is_some()
-            || self.closing.is_some()
+            || self.lifecycle.close_intent().is_some()
             || self.reloading()
             || self
                 .buffer
@@ -350,7 +350,7 @@ impl Document {
         }
     }
     pub(super) fn new_buffer(&mut self, cx: &mut Context<'_, Self>) {
-        if self.busy() || self.closing.is_some() {
+        if self.busy() || self.lifecycle.close_intent().is_some() {
             return;
         }
         self.add_buffer(
@@ -381,7 +381,7 @@ impl Document {
         }
     }
     pub(super) fn open_path(&mut self, path: PathBuf, cx: &mut Context<'_, Self>) {
-        if self.closing.is_some() || self.reloading() {
+        if self.lifecycle.close_intent().is_some() || self.reloading() {
             return;
         }
         if self.saving_as || self.dialog.is_some() {
@@ -659,7 +659,7 @@ mod tests {
                 assert!(!d.has_buffers());
                 assert!(d.ids().is_empty());
                 assert!(d.inactive.is_empty());
-                assert!(d.closing.is_none());
+                assert!(d.lifecycle.close_intent().is_none());
                 assert_eq!(d.workspace.root(), Some(directory.path()));
                 d.intent(Intent::Buffer, cx); // closing an empty tab set is a no-op
                 d.save(None, cx);

@@ -35,7 +35,7 @@ impl Document {
         !self.busy()
             && !self.any_saving()
             && self.opening.is_none()
-            && self.closing.is_none()
+            && self.lifecycle.close_intent().is_none()
             && self.diagnostics.is_none()
             && !self.plugins.as_ref().is_some_and(|_| self.plugins_busy())
             && self.shell.saving.is_none()
