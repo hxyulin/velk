@@ -62,6 +62,8 @@ future needs. Introduce shared machinery when concrete use cases justify it.
   Scope is optional; use `!` for breaking changes.
 - Keep `Cargo.lock` and `flake.lock` tracked. They are excluded from default
   ripgrep searches; use an explicit file path or `rg --no-ignore` to inspect them.
+- During sustained build/test work, occasionally inspect `target/` disk usage and
+  clean reproducible build output between builds when it grows large.
 - Keep generated reports, measurements, traces, logs, caches, and build output
   out of Git. Prefer `target/` or a system temporary directory for local artifacts.
 - Keep instructions concise and update the relevant docs when behavior changes.

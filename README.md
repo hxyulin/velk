@@ -269,6 +269,21 @@ cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+Development and test builds use line-table debug information and disable
+incremental compilation to limit local build output. This retains file/line
+backtraces, but local-variable debugging requires a rebuild with
+`CARGO_PROFILE_DEV_DEBUG=2` (or `CARGO_PROFILE_TEST_DEBUG=2` for tests). Set
+`CARGO_INCREMENTAL=1` temporarily when faster repeated builds matter more than
+disk space. The profiling profile retains full debug information.
+
+Cargo retains artifacts from previous dependency versions, compiler flags, and
+feature combinations. Run `cargo clean` periodically when `target/` grows too
+large; it removes staged plugins and cached builds, so the next build is cold.
+Keep these cleanup runs between builds. Terminal toolchain inputs cached outside
+`target/` remain available. The intentionally broken
+[diagnostics demo](examples/diagnostics/README.md) is a separate workspace for
+trying Problems and diagnostic navigation.
+
 `cargo xtask test-plugins` exercises the native plugin loading path. The separate
 widget showcase is available with:
 

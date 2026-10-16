@@ -37,6 +37,10 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = "warn"
 
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
 [profile.profiling]
 inherits = "release"
 debug = 2
