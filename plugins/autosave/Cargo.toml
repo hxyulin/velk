@@ -1,0 +1,18 @@
+[package]
+name = "velk-plugin-autosave"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lib]
+crate-type = ["rlib"]
+[[example]]
+name = "velk_plugin_autosave"
+path = "examples/standalone.rs"
+crate-type = ["cdylib"]
+[dependencies]
+velk-plugin-sdk.workspace = true
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"

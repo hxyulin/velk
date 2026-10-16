@@ -8,7 +8,7 @@ pub use velk_editing as editing;
 #[cfg(feature = "markup")]
 pub use velk_markup as markup;
 pub use velk_plugin_api as api;
-pub use velk_plugin_contracts::host;
+pub use velk_plugin_contracts::{buffers, host};
 pub use velk_semantic as semantic;
 pub mod hooks {
     #[cfg(feature = "markup")]

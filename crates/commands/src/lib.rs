@@ -31,6 +31,10 @@ pub enum Handler {
     Request {
         hook: String,
     },
+    Picker {
+        hook: String,
+        mode: PickerMode,
+    },
     /// Opaque backend-owned data. The host does not interpret protocol methods.
     Semantic {
         payload: serde_json::Value,
@@ -68,7 +72,7 @@ impl Declaration {
             return Err("invalid command shortcut".into());
         }
         match &self.handler {
-            Handler::Request { hook } if !valid_id(hook) => {
+            Handler::Request { hook } | Handler::Picker { hook, .. } if !valid_id(hook) => {
                 return Err("invalid command hook".into());
             }
             Handler::Semantic { payload }
@@ -168,6 +172,7 @@ impl WorkspaceEdit {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChoiceAction {
+    Location { location: Location },
     Edit { edit: WorkspaceEdit },
     Semantic { payload: serde_json::Value },
 }
@@ -216,6 +221,9 @@ impl Outcome {
                         return Err("invalid choice title".into());
                     }
                     match &item.action {
+                        ChoiceAction::Location { location } if !location.path.is_absolute() => {
+                            return Err("choice location must be absolute".into());
+                        }
                         ChoiceAction::Edit { edit } => edit.validate()?,
                         ChoiceAction::Semantic { payload }
                             if serde_json::to_vec(payload)
@@ -299,4 +307,37 @@ mod declaration_tests {
             .is_err()
         );
     }
+}
+
+/// Interactive pickers have cancellable background jobs and host-rendered controls.
+pub const PICKER_CANCEL_HOOK: &str = "velk.picker.cancel.v1";
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PickerMode {
+    Files,
+    Content,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PickerRequest {
+    Begin {
+        id: u64,
+        context: Context,
+        query: velk_search::Query,
+    },
+    Poll {
+        id: u64,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PickerReply {
+    Pending,
+    Ready { items: Vec<Choice>, notice: String },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickerCancel {
+    pub plugin: String,
+    pub id: u64,
 }

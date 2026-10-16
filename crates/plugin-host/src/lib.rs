@@ -14,7 +14,7 @@ pub use services::HostRequest;
 
 /// The bundled default; callers may select any compatible loaded provider.
 pub const DEFAULT_MARKDOWN_PROVIDER: &str = "velk.markdown";
-pub use velk_plugin_contracts::{Capability, PluginMetadata, host, settings};
+pub use velk_plugin_contracts::{Capability, PluginMetadata, buffers, host, settings};
 
 pub mod hook_kind {
     pub use velk_plugin_api::{CONTRIBUTION, EVENT, REQUEST, SERVICE};
@@ -192,11 +192,33 @@ pub struct Client {
     next_session: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Client {
+    /// Publish the authoritative UI-owned workspace context for worker-side file reads.
+    pub fn set_workspace(&self, workspace: host::Workspace) {
+        *self.host.workspace.lock().unwrap() = Some(workspace);
+    }
     /// One editor receiver should consume requests for this runtime.
     pub fn host_requests(&self) -> async_channel::Receiver<HostRequest> {
         self.host.receiver.clone()
     }
 
+    /// Blocking delivery for an editor-owned background dispatcher, never the UI.
+    pub fn publish_buffer_events(
+        &self,
+        events: Vec<velk_plugin_contracts::buffers::Event>,
+    ) -> Result<(), String> {
+        let input = serde_json::to_vec(&events).map_err(|e| e.to_string())?;
+        if events.len() > 512 || input.len() > velk_plugin_api::MAX_INPUT_BYTES {
+            return Err("buffer event batch exceeds native limits".into());
+        }
+        let (reply, receive) = async_channel::bounded(1);
+        self.sender.send(Request::Emit {
+            name: velk_plugin_contracts::buffers::HOOK.into(),
+            input,
+            reply,
+        })?;
+        receive.recv_blocking().map_err(|e| e.to_string())??;
+        Ok(())
+    }
     /// Store overrides for the next load/restart; running instances are unchanged.
     pub fn set_settings(&self, settings: settings::PluginValues) -> Result<(), String> {
         if serde_json::to_vec(&settings)

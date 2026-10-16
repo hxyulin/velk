@@ -52,6 +52,7 @@ impl Document {
         states: Vec<(String, Vec<u8>)>,
         cx: &mut Context<'_, Self>,
     ) {
+        self.publish_plugin_workspace(&client);
         self.listen_host_requests(client.host_requests(), cx);
         self.plugins = Some(State::new(
             client,
@@ -228,6 +229,7 @@ impl Document {
                     Ok(Ok(Err(error))) => format!("Plugins: {error}"),
                     _ => "Plugin worker unavailable".into(),
                 };
+                this.publish_buffer_snapshot(cx);
                 this.refresh_panels(cx);
                 if this.has_buffers() && this.buffer.search.open {
                     this.buffer.search.preserve_selection = true;

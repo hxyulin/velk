@@ -6,6 +6,15 @@ use velk_plugin_contracts::host::{self, Request, Response};
 use velk_plugin_host::HostRequest;
 
 impl Document {
+    pub(super) fn publish_plugin_workspace(&self, client: &velk_plugin_host::Client) {
+        if let Ok(current_directory) = std::env::current_dir() {
+            client.set_workspace(host::Workspace {
+                current_directory,
+                project_root: self.workspace.root().map(std::path::Path::to_path_buf),
+            });
+        }
+    }
+
     pub(super) fn listen_host_requests(
         &mut self,
         receiver: async_channel::Receiver<HostRequest>,
@@ -42,7 +51,11 @@ impl Document {
             .or_else(|| self.inactive.get(&id))
             .ok_or_else(|| format!("buffer {id} is not open"))
     }
-    fn buffer_info(&self, buffer: &BufferState, cx: &impl rxui::ReadContext) -> host::Buffer {
+    pub(super) fn buffer_info(
+        &self,
+        buffer: &BufferState,
+        cx: &impl rxui::ReadContext,
+    ) -> host::Buffer {
         let editor = buffer.editor.read(cx);
         let model = editor.buffer();
         let selection = model.selection();
@@ -57,7 +70,8 @@ impl Document {
             path: buffer.file.as_ref().map(|f| f.path().to_path_buf()),
             revision: model.revision(),
             dirty: model.is_dirty(),
-            active: self.buffer.as_ref().is_some_and(|b| b.id == buffer.id),
+            active: !self.background_buffer
+                && self.buffer.as_ref().is_some_and(|b| b.id == buffer.id),
             anchor: selection.anchor,
             head: selection.head,
         }
@@ -150,7 +164,19 @@ impl Document {
                 self.host_buffer(id)?;
                 self.close_buffer(id, cx);
             }
-            Request::SaveBuffer { id } => {
+            Request::SaveBuffer {
+                id,
+                expected_revision,
+            } => {
+                let buffer = self.host_buffer(id)?;
+                if let Some(expected) = expected_revision
+                    && (buffer.file.is_none()
+                        || buffer.editor.read(cx).buffer().revision() != expected)
+                {
+                    return Err(
+                        "conditional save targets an untitled buffer or stale revision".into(),
+                    );
+                }
                 if self.host_buffer(id)?.file.is_some() {
                     self.with_buffer(id, cx, |this, cx| this.save(None, cx));
                 } else {
@@ -360,9 +386,28 @@ mod tests {
                 assert_eq!(d.ids().len(), 1);
                 let id = d.buffer.id;
                 let revision = d.buffer.editor.read(cx).buffer().revision();
+                assert!(
+                    d.host_request(
+                        Request::SaveBuffer {
+                            id,
+                            expected_revision: Some(revision + 1)
+                        },
+                        None,
+                        cx
+                    )
+                    .is_err()
+                );
+                assert!(d.buffer.saving.is_none());
                 d.host_request(edit(id, revision, "O"), None, cx).unwrap();
-                d.host_request(Request::SaveBuffer { id }, None, cx)
-                    .unwrap();
+                d.host_request(
+                    Request::SaveBuffer {
+                        id,
+                        expected_revision: None,
+                    },
+                    None,
+                    cx,
+                )
+                .unwrap();
             })
         });
         executor.complete(&mut runtime);
@@ -373,8 +418,15 @@ mod tests {
                 let revision = d.buffer.editor.read(cx).buffer().revision();
                 d.host_request(edit(id, revision, "X"), None, cx).unwrap();
                 std::fs::write(&path, "external").unwrap();
-                d.host_request(Request::SaveBuffer { id }, None, cx)
-                    .unwrap();
+                d.host_request(
+                    Request::SaveBuffer {
+                        id,
+                        expected_revision: None,
+                    },
+                    None,
+                    cx,
+                )
+                .unwrap();
             })
         });
         executor.complete(&mut runtime);

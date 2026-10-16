@@ -29,6 +29,13 @@ callback layouts may change. Rebuild the host, SDK, and bundled plugins together
 Standard hook names and plugin-ID helpers are available from `velk-plugin-api`
 through re-exports.
 
+## Buffer events and live pickers
+
+The SDK exposes post-commit buffer subscriptions through `Registrar::on_buffer_event`.
+See [buffer events and autosave](buffer-events.md). Plugin commands can also declare
+interactive pickers with cancellable worker queries and host-rendered results; see
+[project tools](project-tools.md).
+
 ## Interactive editing service
 
 `velk-editing` carries bounded editing context and transaction proposals. A native

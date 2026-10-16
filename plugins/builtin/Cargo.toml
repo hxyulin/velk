@@ -7,6 +7,8 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib"]
 [dependencies]
+velk-plugin-project = { path = "../project" }
+velk-plugin-autosave = { path = "../autosave" }
 velk-plugin-autopairs = { path = "../autopairs" }
 velk-plugin-indentation = { path = "../indentation" }
 velk-plugin-terminal = { path = "../terminal" }

@@ -1,3 +1,4 @@
+mod buffer_events;
 mod buffers;
 mod closing;
 mod diagnostics;
@@ -8,6 +9,7 @@ mod maintenance;
 mod navigation;
 mod palette;
 mod panels;
+mod picker;
 mod plugin_commands;
 mod plugins;
 mod plugins_page;
@@ -61,7 +63,9 @@ pub struct Document {
     opening: Option<Task>,
     pending_opens: std::collections::VecDeque<buffers::OpenRequest>,
     command_task: Option<Task>,
+    next_picker: u64,
     host_requests: Option<Task>,
+    buffer_events: buffer_events::Delivery,
     workspace_edit: Option<Task>,
     navigation: velk_editor_model::navigation::History,
     command_result: Option<plugin_commands::ResultView>,
@@ -178,7 +182,9 @@ impl Document {
             opening: None,
             pending_opens: Default::default(),
             command_task: None,
+            next_picker: 1,
             host_requests: None,
+            buffer_events: Default::default(),
             workspace_edit: None,
             navigation: Default::default(),
             command_result: None,
@@ -259,6 +265,7 @@ impl Document {
             let editor = self.buffer.editor.read(cx);
             (editor.buffer().text().clone(), editor.buffer().checkpoint())
         };
+        let saved_revision = self.buffer.editor.read(cx).buffer().revision();
         let buffer_id = self.buffer.id;
         let saved_snapshot = self
             .buffer
@@ -349,6 +356,14 @@ impl Document {
                             this.buffer.status = None;
                             this.buffer.disk_changed = false;
                             this.buffer.disk_stamp = None;
+                            let buffer = this.buffer_info(&this.buffer, cx);
+                            this.publish_buffer_event(
+                                velk_plugin_contracts::buffers::Event::Saved {
+                                    buffer,
+                                    saved_revision,
+                                },
+                                cx,
+                            );
                             if let Some(intent) = then {
                                 let documents = this.lifecycle_documents(cx);
                                 let action = this.lifecycle.saved(intent, &documents);

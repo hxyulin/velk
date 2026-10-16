@@ -9,6 +9,7 @@ mod editing_smoke;
 mod hooks_smoke;
 mod lsp_smoke;
 mod pack_smoke;
+mod project_smoke;
 mod search_smoke;
 mod terminal_tools;
 mod trace_summary;
@@ -93,6 +94,9 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         "velk.terminal",
         "velk.indentation",
         "velk.autopairs",
+        "velk.autosave",
+        "velk.quick-open",
+        "velk.workspace-find",
     ]
     .into_iter()
     .map(|id| PluginSpec {
@@ -272,6 +276,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     let mut manager = Manager::new(directory.into());
     build(root, release, false)?;
     pack_smoke::run(root, output, release)?;
+    project_smoke::run(output)?;
     build_standalone(root, release)?;
     editing_smoke::run(output, false)?;
     editing_smoke::run(output, true)?;

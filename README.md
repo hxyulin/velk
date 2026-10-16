@@ -150,6 +150,9 @@ The bundled pack contains:
 - `velk.language-server.rust-analyzer`: the Rust language-server definition.
 - `velk.indentation`: Tab / Shift+Tab indentation and aligned newlines.
 - `velk.autopairs`: matching brackets, selection wrapping, closer skipping, and paired deletion.
+- `velk.autosave`: opt-in saves after an idle delay.
+- `velk.quick-open`: fuzzy project file opening with Cmd/Ctrl+P.
+- `velk.workspace-find`: workspace text search with Cmd/Ctrl+Shift+F.
 
 Plugins declare a display name, a short description, a Markdown README, and
 required or optional capabilities with explanations. The plugin manager exposes
@@ -221,6 +224,7 @@ Current limitations include:
   [plugin settings](docs/plugin-settings.md)
 - [Interactive editing, indentation, and autopairs](docs/interactive-editing.md)
 - [Workspace and buffer host services](docs/host-services.md)
+- [Buffer events and autosave](docs/buffer-events.md), [Quick Open and workspace search](docs/project-tools.md)
 - [Plugin commands](docs/plugin-commands.md), [workspace edits](docs/workspace-edits.md),
   and [semantic services and Rust LSP](docs/semantic-services.md)
 - [Core and component boundaries](docs/core.md)

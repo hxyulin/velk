@@ -24,16 +24,26 @@ impl Endpoint {
         }
         let directory = matches!(request, Request::ReadDirectory { .. });
         match request {
+            Request::Workspace => self
+                .workspace()
+                .map(|workspace| Response::Workspace { workspace }),
             Request::ReadFile { path } | Request::ReadDirectory { path } => {
-                let Response::Workspace { workspace } = self.dispatch(Request::Workspace)? else {
-                    return Err("invalid workspace reply".into());
-                };
+                let workspace = self.workspace()?;
                 let root = workspace
                     .project_root
                     .ok_or("no project folder is selected")?;
                 read_project(&root, &path, directory)
             }
             _ => self.dispatch(request),
+        }
+    }
+    fn workspace(&self) -> Result<host::Workspace, String> {
+        if let Some(workspace) = self.bridge.workspace.lock().unwrap().clone() {
+            return Ok(workspace);
+        }
+        match self.dispatch(Request::Workspace)? {
+            Response::Workspace { workspace } => Ok(workspace),
+            _ => Err("invalid workspace reply".into()),
         }
     }
     fn dispatch(&self, request: Request) -> Result<Response, String> {

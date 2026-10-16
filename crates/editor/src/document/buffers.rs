@@ -104,6 +104,11 @@ impl BufferState {
                             .buffer()
                             .edits_since(this.buffer.observed_revision);
                         this.navigation.edited(id, changes.as_deref());
+                        let buffer = this.buffer_info(&this.buffer, cx);
+                        this.publish_buffer_event(
+                            velk_plugin_contracts::buffers::Event::Changed { buffer },
+                            cx,
+                        );
                     }
                     this.buffer.observed_revision = revision;
                     let semantic_changed = this.sync_semantics(cx);
@@ -112,6 +117,7 @@ impl BufferState {
                         || (!this.background_buffer && (semantic_changed || search_changed));
                     this.buffer.dirty = dirty;
                 });
+                this.deliver_buffer_events(cx);
                 if recovery_changed {
                     this.schedule_recovery(cx);
                 }
@@ -281,6 +287,8 @@ impl Document {
         }
         self.start_buffer_semantics(cx);
         self.title();
+        let buffer = self.buffer_info(&self.buffer, cx);
+        self.publish_buffer_event(velk_plugin_contracts::buffers::Event::Opened { buffer }, cx);
         self.schedule_recovery(cx);
         self.restore_focus_pending = true;
     }
@@ -570,6 +578,7 @@ impl Document {
     pub(super) fn remove_current_buffer(&mut self, cx: &mut Context<'_, Self>) {
         if let Some(buffer) = self.buffer.as_ref() {
             let id = buffer.id;
+            self.publish_buffer_event(velk_plugin_contracts::buffers::Event::Closed { id }, cx);
             self.navigation.retain(|buffer| buffer != id);
         }
         let ids = self.ids();

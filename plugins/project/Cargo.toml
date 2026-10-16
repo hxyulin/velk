@@ -1,0 +1,27 @@
+[package]
+name = "velk-plugin-project"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lib]
+crate-type = ["rlib"]
+[[example]]
+name = "velk_plugin_quick_open"
+path = "examples/quick_open.rs"
+crate-type = ["cdylib"]
+[[example]]
+name = "velk_plugin_workspace_find"
+path = "examples/workspace_find.rs"
+crate-type = ["cdylib"]
+[dependencies]
+velk-plugin-sdk.workspace = true
+serde_json = "1"
+velk-search.workspace = true
+ignore = "0.4"
+[dev-dependencies]
+tempfile = "3"
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"

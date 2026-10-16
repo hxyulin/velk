@@ -26,6 +26,7 @@ pub(crate) struct Bridge {
     pub sender: async_channel::Sender<HostRequest>,
     pub receiver: async_channel::Receiver<HostRequest>,
     pub closed: Arc<AtomicBool>,
+    pub workspace: std::sync::Mutex<Option<velk_plugin_contracts::host::Workspace>>,
 }
 impl Bridge {
     pub fn new() -> Arc<Self> {
@@ -34,6 +35,7 @@ impl Bridge {
             sender,
             receiver,
             closed: Arc::new(AtomicBool::new(false)),
+            workspace: Default::default(),
         })
     }
     pub fn close(&self) {
@@ -63,7 +65,12 @@ impl Bridge {
                 return Err("host service retired".into());
             }
             match result.recv_timeout(std::time::Duration::from_millis(25)) {
-                Ok(result) => return result,
+                Ok(result) => {
+                    if let Ok(Response::Workspace { workspace }) = &result {
+                        *self.workspace.lock().unwrap() = Some(workspace.clone());
+                    }
+                    return result;
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("editor dropped host request".into());
                 }

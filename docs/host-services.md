@@ -112,3 +112,7 @@ the plugin worker. Waiting calls fail, and queued retired requests cannot mutate
 the editor. Plugins must still stop and join their workers before unload.
 Internal contracts remain at version 1; rebuild the host, SDK, and native plugins
 together after changes.
+
+`SaveBuffer.expected_revision` is `None` for ordinary saves. Autosave supplies
+`Some(revision)` to require a file-backed buffer at that exact revision.
+See [buffer events and autosave](buffer-events.md) for post-commit subscriptions.

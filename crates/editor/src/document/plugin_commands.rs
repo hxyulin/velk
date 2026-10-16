@@ -16,6 +16,7 @@ pub(super) struct Pending {
     pub guard: super::workspace_edits::Guard,
 }
 pub(super) enum ResultView {
+    Picker(super::picker::State),
     Locations(Vec<Location>),
     Document {
         title: String,
@@ -125,7 +126,7 @@ impl Document {
                     })
                     .map(|command| {
                         let ready = match &command.handler {
-                            Handler::Request { .. } => true,
+                            Handler::Request { .. } | Handler::Picker { .. } => true,
                             Handler::Semantic { .. } => self
                                 .buffer
                                 .as_ref()
@@ -175,7 +176,7 @@ impl Document {
                     && plugins.task.is_none()
                     && self.command_task.is_none()
                     && match &command.handler {
-                        Handler::Request { .. } => true,
+                        Handler::Request { .. } | Handler::Picker { .. } => true,
                         Handler::Semantic { .. } => self
                             .buffer
                             .as_ref()
@@ -217,6 +218,10 @@ impl Document {
         }
         let mut guard = self.edit_guard(cx);
         guard.owner = Some((invocation.plugin.clone(), invocation.generation));
+        if matches!(invocation.command.handler, Handler::Picker { .. }) {
+            self.open_picker(invocation, guard, cx);
+            return;
+        }
         if invocation.command.input.is_some() {
             self.command_result = Some(ResultView::Prompt {
                 invocation,
@@ -251,6 +256,7 @@ impl Document {
             return;
         }
         match invocation.command.handler {
+            Handler::Picker { .. } => unreachable!("pickers use their own live query flow"),
             Handler::Semantic { payload } => {
                 let Some(state) = self.buffer.as_mut().and_then(|b| b.semantic.as_mut()) else {
                     return;
@@ -375,6 +381,9 @@ impl Document {
             return;
         };
         match result {
+            ResultView::Picker(state) => {
+                self.accept_picker(state, cx);
+            }
             ResultView::Prompt {
                 invocation,
                 guard,
@@ -401,6 +410,9 @@ impl Document {
                     return;
                 }
                 match items[index].action.clone() {
+                    velk_commands::ChoiceAction::Location { location } => {
+                        self.open_location(location, cx)
+                    }
                     velk_commands::ChoiceAction::Edit { edit } => {
                         self.apply_workspace_edit(edit, guard, cx)
                     }
@@ -442,6 +454,9 @@ impl Document {
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
         let mut content = column().gap(8.).padding(12.).on_command(close.clone());
         match result {
+            ResultView::Picker(state) => {
+                return Some(self.picker_modal(state, cx));
+            }
             ResultView::Prompt {
                 invocation, value, ..
             } => {

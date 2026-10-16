@@ -223,6 +223,10 @@ impl Document {
         self.panels.error = None;
     }
     pub(super) fn refresh_panels(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some(plugins) = &self.plugins {
+            self.publish_plugin_workspace(&plugins.client);
+        }
+
         self.panels.watching = None;
         self.panels.refresh_pending = false;
         self.panels.epoch = self.panels.epoch.wrapping_add(1);

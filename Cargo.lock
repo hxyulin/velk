@@ -552,6 +552,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
+dependencies = [
+ "memchr",
+ "serde_core",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -808,6 +818,25 @@ name = "crossbeam-channel"
 version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-deque"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622f3fc73690be383c7214310406f28a90e6edeadc3cea882f9d71e495b9711a"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-epoch"
+version = "0.9.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1326,6 +1355,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "globset"
+version = "0.4.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e47d37d2ae4464254884b60ab7071be2b876a9c35b696bd018ddcc76847309cd"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "gpu-allocator"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1514,6 +1556,22 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "ignore"
+version = "0.4.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b009b6744c1445efd7244084e25e498636412effb6760b55067553baa925cc7"
+dependencies = [
+ "crossbeam-deque",
+ "globset",
+ "log",
+ "memchr",
+ "regex-automata",
+ "same-file",
+ "walkdir",
+ "winapi-util",
 ]
 
 [[package]]
@@ -3975,6 +4033,7 @@ version = "0.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
+ "velk-search",
 ]
 
 [[package]]
@@ -4101,14 +4160,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "velk-plugin-autosave"
+version = "0.0.0-dev"
+dependencies = [
+ "velk-plugin-sdk",
+]
+
+[[package]]
 name = "velk-plugin-builtin"
 version = "0.0.0-dev"
 dependencies = [
  "velk-plugin-autopairs",
+ "velk-plugin-autosave",
  "velk-plugin-files",
  "velk-plugin-indentation",
  "velk-plugin-lsp",
  "velk-plugin-markdown",
+ "velk-plugin-project",
  "velk-plugin-rust-analyzer",
  "velk-plugin-sdk",
  "velk-plugin-search",
@@ -4184,6 +4252,17 @@ version = "0.0.0-dev"
 dependencies = [
  "pulldown-cmark",
  "velk-plugin-sdk",
+]
+
+[[package]]
+name = "velk-plugin-project"
+version = "0.0.0-dev"
+dependencies = [
+ "ignore",
+ "serde_json",
+ "tempfile",
+ "velk-plugin-sdk",
+ "velk-search",
 ]
 
 [[package]]

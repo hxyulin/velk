@@ -8,4 +8,7 @@ velk_plugin_sdk::export_plugin_pack!(
     velk_plugin_terminal::Terminal,
     velk_plugin_indentation::Indentation,
     velk_plugin_autopairs::Autopairs,
+    velk_plugin_autosave::Autosave,
+    velk_plugin_project::QuickOpen,
+    velk_plugin_project::WorkspaceFind,
 );

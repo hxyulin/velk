@@ -40,6 +40,23 @@ impl<P: Plugin> Registrar<P> {
     {
         self.provide(event, handler)
     }
+    /// Receive committed buffer metadata; callbacks should queue work and return promptly.
+    pub fn on_buffer_event<F>(&mut self, mut handler: F) -> Result<(), String>
+    where
+        F: FnMut(&mut P, crate::buffers::Event) -> Result<(), String> + 'static,
+    {
+        self.on(Event(crate::buffers::HOOK), move |plugin, bytes| {
+            let events: Vec<crate::buffers::Event> =
+                serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            if events.len() > 512 {
+                return Err("too many buffer events".into());
+            }
+            for event in events {
+                handler(plugin, event)?;
+            }
+            Ok(())
+        })
+    }
     /// Advanced contract packages can supply new C-compatible tables without
     /// changing Plugin, Registrar, or the root ABI.
     /// # Safety

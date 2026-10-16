@@ -75,6 +75,8 @@ pub enum Request {
     },
     SaveBuffer {
         id: u64,
+        /// Conditional background saves require a file and this exact revision.
+        expected_revision: Option<u64>,
     },
     /// Versioned edits also support untitled buffers. Uses the shared position encoding.
     EditBuffer {

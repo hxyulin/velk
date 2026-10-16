@@ -111,8 +111,22 @@ impl Generation {
                     name: loaded.info.id.clone(),
                     ..Default::default()
                 });
+        if loaded
+            .hooks
+            .iter()
+            .any(|h| h.info.name == velk_plugin_contracts::buffers::HOOK)
+            && !loaded
+                .info
+                .metadata
+                .capabilities
+                .iter()
+                .any(|c| c.id == velk_plugin_contracts::host::BUFFER_READ)
+        {
+            return Err("buffer events require editor.buffer.read".into());
+        }
         for command in &loaded.info.metadata.commands {
-            if let velk_plugin_contracts::commands::Handler::Request { hook } = &command.handler
+            if let velk_plugin_contracts::commands::Handler::Request { hook }
+            | velk_plugin_contracts::commands::Handler::Picker { hook, .. } = &command.handler
                 && !loaded.hooks.iter().any(|h| {
                     h.info.name == *hook
                         && h.info.contract == BYTES_CONTRACT
