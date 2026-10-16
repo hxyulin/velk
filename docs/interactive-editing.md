@@ -50,7 +50,7 @@ inserted by the current provider. Tracking is local to a buffer and not persiste
 ## Keymap providers
 
 `keymap_provider` selects a modal input provider. The default empty string means
-standard editing. Select `velk.vim` to enable the bundled Normal/Insert keymap;
+standard editing. Select `velk.vim` to enable the bundled Normal/Insert/Visual keymap;
 see its [supported keys and limitations](../plugins/vim/README.md).
 
 `Intent::Key` carries committed keyboard text or a named key, modifiers, and
@@ -84,6 +84,30 @@ paths. Normal mode suppresses preedit and IME commits. Native clipboard paste
 remains literal, and application shortcuts retain their existing routing. The
 keymap only participates in document editor input; settings and picker fields
 retain their standard controls.
+
+### Visual selections
+
+Keymaps can start characterwise or linewise selection with `Action::Select`,
+change its kind, swap endpoints, cancel it, delete it, or change it. Subsequent
+motion actions extend the selection. The editor model owns the logical anchor
+and cursor and projects them into Core's directed, exclusive-end selection.
+Characterwise projection includes both endpoint graphemes; linewise projection
+includes complete logical lines. Vertical movement retains the preferred column.
+Delete/change produces one Core transaction, and linewise deletion at EOF removes
+the preceding newline when needed to avoid leaving a spurious empty line.
+
+The renderer receives the logical caret position separately from the selected
+range. This keeps status position, painting, and scroll reveal on the active
+endpoint even when the selected range ends on the next line. Selected newlines
+paint a small cell at the line end, including otherwise empty lines. Selection
+highlighting uses the existing GPU path and remains independent of text shaping.
+Clipboard commands use the projected Core selection, so native Copy includes the
+last selected grapheme. External text or selection changes invalidate modal
+anchors and restore Normal mode; they cannot leave a stale renderer position.
+
+Visual Block is deferred. It requires disjoint ranges, a column policy for tabs
+and short lines, and multiple caret rendering/editing. The current contiguous
+selection projection provides characterwise and linewise behavior only.
 
 ## Bundled indentation
 

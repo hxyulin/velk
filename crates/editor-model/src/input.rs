@@ -1,5 +1,142 @@
 use velk_core::{Buffer, Selection, TextEdit, Transaction};
-use velk_editing::input::{Action, Motion};
+use velk_editing::input::{Action, Motion, SelectionKind};
+
+pub(super) struct VisualSelection {
+    anchor: usize,
+    pub head: usize,
+    kind: SelectionKind,
+    revision: u64,
+    projected: Selection,
+}
+impl VisualSelection {
+    pub fn valid(&self, buffer: &Buffer) -> bool {
+        buffer.revision() == self.revision && buffer.selection() == self.projected
+    }
+    fn project(&mut self, buffer: &mut Buffer) {
+        let forward = self.anchor <= self.head;
+        let (start, end) = match self.kind {
+            SelectionKind::Character => (
+                self.anchor.min(self.head),
+                buffer.next_grapheme_boundary(self.anchor.max(self.head)),
+            ),
+            SelectionKind::Line => {
+                let text = buffer.text();
+                let first = text.char_to_line(self.anchor.min(self.head));
+                let last = text.char_to_line(self.anchor.max(self.head));
+                (
+                    text.line_to_char(first),
+                    if last + 1 < text.len_lines() {
+                        text.line_to_char(last + 1)
+                    } else {
+                        text.len_chars()
+                    },
+                )
+            }
+        };
+        self.projected = if forward {
+            Selection {
+                anchor: start,
+                head: end,
+            }
+        } else {
+            Selection {
+                anchor: end,
+                head: start,
+            }
+        };
+        self.revision = buffer.revision();
+        buffer.set_selection_preserving_column(self.projected);
+    }
+}
+
+pub(super) fn apply_visual(
+    buffer: &mut Buffer,
+    action: Action,
+    visual: &mut Option<VisualSelection>,
+) -> Result<(), String> {
+    match action {
+        Action::Select { mode: Some(kind) } => {
+            if let Some(selection) = visual {
+                selection.kind = kind;
+                selection.project(buffer);
+            } else {
+                let head = buffer.selection().head;
+                let mut selection = VisualSelection {
+                    anchor: head,
+                    head,
+                    kind,
+                    revision: buffer.revision(),
+                    projected: buffer.selection(),
+                };
+                selection.project(buffer);
+                *visual = Some(selection);
+            }
+        }
+        Action::Select { mode: None } => {
+            if let Some(selection) = visual.take() {
+                buffer.set_caret(selection.head, false);
+            }
+        }
+        Action::SwapSelectionEnds => {
+            if let Some(selection) = visual {
+                std::mem::swap(&mut selection.anchor, &mut selection.head);
+                buffer.set_caret(selection.head, false);
+                selection.project(buffer);
+            }
+        }
+        Action::Move { motion, count } if visual.is_some() => {
+            let selection = visual.as_mut().unwrap();
+            buffer.set_selection_preserving_column(Selection {
+                anchor: selection.head,
+                head: selection.head,
+            });
+            move_caret(buffer, motion, count);
+            buffer.clamp_caret_to_line_character();
+            selection.head = buffer.selection().head;
+            selection.project(buffer);
+        }
+        Action::DeleteSelection | Action::ChangeSelection => {
+            if let Some(selection) = visual.take() {
+                let mut range = buffer.selection().range();
+                let linewise = selection.kind == SelectionKind::Line;
+                let change = matches!(action, Action::ChangeSelection);
+                let replacement = if change
+                    && linewise
+                    && range.end > range.start
+                    && buffer.text().char(range.end - 1) == '\n'
+                    && selection.anchor.max(selection.head) < buffer.text().len_chars()
+                {
+                    "\n"
+                } else {
+                    ""
+                };
+                if linewise
+                    && !change
+                    && range.end == buffer.text().len_chars()
+                    && range.start > 0
+                    && (range.end == range.start
+                        || buffer.text().char(range.end - 1) != '\n'
+                        || selection.anchor.max(selection.head) == buffer.text().len_chars())
+                {
+                    range.start -= 1;
+                }
+                let caret = range.start;
+                buffer.set_caret(caret, false);
+                replace(buffer, range, replacement, caret)?;
+                if linewise && !change {
+                    move_caret(buffer, Motion::FirstNonBlank, 1);
+                }
+            }
+        }
+        action => {
+            if let Some(selection) = visual.take() {
+                buffer.set_caret(selection.head, false);
+            }
+            apply(buffer, action)?;
+        }
+    }
+    Ok(())
+}
 
 fn line_range(buffer: &Buffer) -> std::ops::Range<usize> {
     let text = buffer.text();
@@ -149,6 +286,12 @@ fn replace(
 }
 pub(super) fn apply(buffer: &mut Buffer, action: Action) -> Result<(), String> {
     match action {
+        Action::Select { .. }
+        | Action::SwapSelectionEnds
+        | Action::DeleteSelection
+        | Action::ChangeSelection => {
+            return Err("selection action requires a selection session".into());
+        }
         Action::Move { motion, count } => move_caret(buffer, motion, count),
         Action::DeleteCharacters { count } => {
             let start = buffer.selection().head;

@@ -63,6 +63,9 @@ impl Editor {
         self.editing.set_providers(providers);
         self.keymap("", false, false, false, false);
     }
+    pub fn caret_position(&self) -> usize {
+        self.editing.caret_position(&self.buffer)
+    }
     pub fn input_mode(&self) -> Option<&str> {
         let label = &self.editing.input_state().label;
         (!label.is_empty()).then_some(label.as_str())
@@ -292,7 +295,11 @@ impl Editor {
         }
     }
     fn edited(&mut self) {
+        let visual = self.editing.has_visual_selection();
         self.editing.synchronize(&self.buffer);
+        if visual && !self.editing.has_visual_selection() {
+            self.keymap("", false, false, false, false);
+        }
         tracing::debug!(
             revision = self.buffer.revision(),
             bytes = self.buffer.text().len_bytes(),
@@ -561,6 +568,8 @@ impl View for Editor {
             rope: self.buffer.text().clone(),
             revision: self.buffer.revision(),
             selection: self.buffer.selection(),
+            caret: Some(self.caret_position()),
+            selected_line_break: false,
             composition: self.composition.clone(),
             preedit: None,
             geometry: self.geometry.clone(),
@@ -741,6 +750,108 @@ mod responsiveness_tests {
         expected
     }
 
+    #[derive(Debug)]
+    struct Vim;
+    impl velk_editing::Provider for Vim {
+        fn evaluate(
+            &self,
+            request: &velk_editing::Request,
+        ) -> Result<velk_editing::Decision, String> {
+            <velk_plugin_vim::Vim as velk_plugin_sdk::EditingBehavior>::evaluate(request)
+        }
+    }
+    #[test]
+    fn visual_modes_paint_inclusive_ranges_and_empty_lines_with_an_independent_caret() {
+        let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
+        for source in ["abc\n\nthird", "e\u{301}界z\n\nlast"] {
+            let mut editor = Editor::new(source);
+            editor
+                .set_appearance(EditorAppearance {
+                    selection: [1., 0., 0., 1.],
+                    ..Default::default()
+                })
+                .unwrap();
+            editor.set_editing_providers(std::collections::BTreeMap::from([(
+                velk_editing::Role::Keymap,
+                Arc::new(Vim) as Arc<dyn velk_editing::Provider>,
+            )]));
+            let mut test = TestUi::new(&graphics, [640, 240], editor).unwrap();
+            test.painter_mut().fonts_mut().load_system_fonts();
+            let id = test.element("editor-surface").unwrap().unwrap().id;
+            test.parts().1.focus(id);
+            test.render().unwrap();
+            let initial = test.read(|e| e.geometry.borrow().caret.unwrap());
+            test.text_input(TextInputEvent::Insert("v".into())).unwrap();
+            let first = test.render().unwrap();
+            let red = |pixels: &[u8]| {
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40)
+                    .count()
+            };
+            assert!(red(&first) > 0, "Visual selection must paint");
+            test.read(|e| {
+                assert_eq!(e.caret_position(), 0);
+                assert_eq!(
+                    e.buffer.selection().range().end,
+                    e.buffer.next_grapheme_boundary(0)
+                );
+                assert_eq!(e.geometry.borrow().caret.unwrap(), initial);
+            });
+            let entity = test.entity().clone();
+            test.runtime().update(|cx| {
+                entity.update(cx, |editor, _| {
+                    editor.set_semantic_hover(true);
+                    editor.request_hover_at_caret();
+                    assert_eq!(
+                        editor.hover_request().unwrap().position,
+                        editor.caret_position()
+                    );
+                })
+            });
+            test.text_input(TextInputEvent::Insert("l".into())).unwrap();
+            let second = test.render().unwrap();
+            assert!(red(&second) > red(&first));
+            let caret = test.read(|e| e.geometry.borrow().caret.unwrap());
+            test.key(KeyEvent {
+                key: KeyboardKey::Escape,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            })
+            .unwrap();
+            let normal = test.render().unwrap();
+            assert_eq!(red(&normal), 0);
+            test.read(|e| assert_eq!(e.geometry.borrow().caret.unwrap(), caret));
+            for key in ["V", "j"] {
+                test.text_input(TextInputEvent::Insert(key.into())).unwrap();
+            }
+            let lines = test.render().unwrap();
+            let blank = test.read(|e| {
+                assert_eq!(e.input_mode(), Some("V-LINE"));
+                let expected = e.buffer.text().line_to_char(1);
+                assert_eq!(e.caret_position(), expected);
+                assert_eq!(e.buffer.selection().head, e.buffer.text().line_to_char(2));
+                e.geometry.borrow().caret_area()
+            });
+            let row = (blank.y + blank.height / 2.) as usize;
+            assert!(
+                red(&lines[row * 640 * 4..(row + 1) * 640 * 4]) > 0,
+                "selected empty line must paint its line break"
+            );
+            test.text_input(TextInputEvent::Paste("replacement".into()))
+                .unwrap();
+            let pasted = test.render().unwrap();
+            assert_eq!(red(&pasted), 0);
+            test.read(|e| {
+                assert_eq!(e.input_mode(), Some("NORMAL"));
+                assert!(e.buffer.selection().is_empty());
+                assert!(e.caret_position() <= e.buffer.text().len_chars());
+            });
+        }
+    }
     #[test]
     fn hover_remains_painted_during_text_selection() {
         let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();

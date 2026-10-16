@@ -150,7 +150,7 @@ The bundled pack contains:
 - `velk.language-server.rust-analyzer`: the Rust language-server definition.
 - `velk.indentation`: Tab / Shift+Tab indentation and aligned newlines.
 - `velk.autopairs`: matching brackets, selection wrapping, closer skipping, and paired deletion.
-- `velk.vim`: opt-in Normal and Insert modes with [basic Vim motions](plugins/vim/README.md).
+- `velk.vim`: opt-in Normal, Insert, and Visual modes with [basic Vim motions](plugins/vim/README.md).
 - `velk.autosave`: opt-in saves after an idle delay.
 - `velk.quick-open`: fuzzy project file opening with Cmd/Ctrl+P.
 - `velk.workspace-find`: workspace text search with Cmd/Ctrl+Shift+F.

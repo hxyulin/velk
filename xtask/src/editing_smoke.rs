@@ -125,12 +125,25 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     document.insert("hello");
     assert!(modal.evaluate(&mut document, input("Escape"))?);
     assert!(modal.evaluate(&mut document, input("x"))?);
+    for key in ["g", "g", "v", "w"] {
+        assert!(modal.evaluate(&mut document, input(key))?);
+    }
+    assert_eq!(document.selected_text(), "one t");
+    assert_eq!(modal.input_state().label, "VISUAL");
+    assert_eq!(modal.caret_position(&document), 4);
+    assert!(modal.evaluate(&mut document, input("c"))?);
+    assert_eq!(modal.input_state().label, "INSERT");
+    assert!(document.text().to_string().starts_with("wo"));
+    assert!(modal.evaluate(&mut document, input("Escape"))?);
+    assert!(modal.evaluate(&mut document, input("V"))?);
+    assert_eq!(modal.input_state().label, "V-LINE");
+    assert_eq!(document.selected_text(), document.text().to_string());
     manager.unload("velk.vim");
     assert!(!modal.evaluate(&mut document, input("x"))?);
     assert!(modal.input_state().label.is_empty());
     manager.unload_all();
     println!(
-        "Editing provider smoke passed: pack={pack}, native Vim modes/motions/state retirement, indentation/newlines/autopairs, undo, settings and stale lease fallback"
+        "Editing provider smoke passed: pack={pack}, native Vim modes/visual selections/motions/state retirement, indentation/newlines/autopairs, undo, settings and stale lease fallback"
     );
     Ok(())
 }

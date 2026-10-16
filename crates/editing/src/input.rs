@@ -53,9 +53,19 @@ pub enum Motion {
     /// One-based logical line number supplied by the action count.
     Line,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionKind {
+    Character,
+    Line,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    Select { mode: Option<SelectionKind> },
+    SwapSelectionEnds,
+    DeleteSelection,
+    ChangeSelection,
     Move { motion: Motion, count: usize },
     DeleteCharacters { count: usize },
     DeleteLines { count: usize },
@@ -71,7 +81,11 @@ impl Action {
             | Self::DeleteLines { count }
             | Self::Undo { count }
             | Self::Redo { count } => *count,
-            Self::InsertLine { .. } => 1,
+            Self::InsertLine { .. }
+            | Self::Select { .. }
+            | Self::SwapSelectionEnds
+            | Self::DeleteSelection
+            | Self::ChangeSelection => 1,
         };
         if !(1..=10_000).contains(&count) {
             return Err("keymap count must be 1..=10000".into());

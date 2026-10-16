@@ -166,7 +166,7 @@ impl Document {
                 let editor = active.editor.read(cx);
                 let valid = !self.background_buffer
                     && editor.buffer().revision() == request.revision
-                    && editor.buffer().selection().head == request.position;
+                    && editor.caret_position() == request.position;
                 drop(editor);
                 if valid && self.command_owner_loaded(&pending.plugin, pending.generation) {
                     match result {

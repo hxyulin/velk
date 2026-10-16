@@ -85,7 +85,7 @@ impl Document {
                 })
             }),
             revision: active.map(|b| b.editor.read(cx).buffer().revision()),
-            position: active.map(|b| b.editor.read(cx).buffer().selection().head),
+            position: active.map(|b| b.editor.read(cx).caret_position()),
         }
     }
     pub(super) fn command_source_matches(

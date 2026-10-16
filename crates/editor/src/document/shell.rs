@@ -305,7 +305,7 @@ impl Document {
         let (diagnostics, semantic) = self.semantic_status();
         let editor = self.buffer.editor.read(cx);
         let text = editor.buffer().text();
-        let head = editor.buffer().selection().head.min(text.len_chars());
+        let head = editor.caret_position().min(text.len_chars());
         let line = text.char_to_line(head);
         let column = head - text.line_to_char(line) + 1;
         let language = match velk_editor_widget::Language::for_path(&self.buffer.path) {

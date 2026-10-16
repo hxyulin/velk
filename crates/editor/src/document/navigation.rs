@@ -9,7 +9,7 @@ impl Document {
     pub(super) fn navigation_anchor(&self, cx: &impl rxui::ReadContext) -> Option<Anchor> {
         self.buffer.as_ref().map(|b| Anchor {
             buffer: b.id,
-            position: b.editor.read(cx).buffer().selection().head,
+            position: b.editor.read(cx).caret_position(),
         })
     }
     pub(super) fn navigate_history(&mut self, forward: bool, cx: &mut Context<'_, Self>) {

@@ -26,7 +26,7 @@ impl Plugin for Vim {
         ),
     ];
     fn describe(&mut self) -> String {
-        "Normal and Insert modes with basic Vim motions.".into()
+        "Normal, Insert and Visual modes with basic Vim motions.".into()
     }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
         reg.editing::<Self>()
@@ -35,10 +35,32 @@ impl Plugin for Vim {
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
-    insert: bool,
+    mode: Mode,
     count: usize,
     pending: Option<char>,
     operator_count: usize,
+}
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Mode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+    VisualLine,
+}
+impl Mode {
+    fn visual(self) -> bool {
+        matches!(self, Self::Visual | Self::VisualLine)
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Insert => "INSERT",
+            Self::Visual => "VISUAL",
+            Self::VisualLine => "V-LINE",
+        }
+    }
 }
 impl EditingBehavior for Vim {
     const ROLE: Role = Role::Keymap;
@@ -59,18 +81,21 @@ impl EditingBehavior for Vim {
         } else if key.meta || key.alt {
             handled = false;
         } else if !key.text && (key.key == "Escape" || key.control && key.key == "[") {
-            if state.insert {
+            if state.mode == Mode::Insert {
                 actions.push(Action::Move {
                     motion: Motion::Left,
                     count: 1,
                 });
             }
+            if state.mode.visual() {
+                actions.push(Action::Select { mode: None });
+            }
             state = State::default();
-        } else if state.insert {
+        } else if state.mode == Mode::Insert {
             handled = false;
         } else if key.control {
             state.pending = None;
-            if key.key == "r" {
+            if key.key == "r" && !state.mode.visual() {
                 actions.push(Action::Redo {
                     count: state.count.max(1),
                 });
@@ -126,36 +151,65 @@ impl EditingBehavior for Vim {
                     actions.push(Action::Move { motion, count });
                 } else {
                     match key.key.as_str() {
+                        "v" | "V" => {
+                            let target = if key.key == "v" {
+                                Mode::Visual
+                            } else {
+                                Mode::VisualLine
+                            };
+                            state.mode = if state.mode == target {
+                                Mode::Normal
+                            } else {
+                                target
+                            };
+                            actions.push(Action::Select {
+                                mode: match state.mode {
+                                    Mode::Visual => Some(input::SelectionKind::Character),
+                                    Mode::VisualLine => Some(input::SelectionKind::Line),
+                                    _ => None,
+                                },
+                            });
+                        }
+                        "d" | "x" | "Delete" if state.mode.visual() => {
+                            actions.push(Action::DeleteSelection);
+                            state.mode = Mode::Normal;
+                        }
+                        "c" if state.mode.visual() => {
+                            actions.push(Action::ChangeSelection);
+                            state.mode = Mode::Insert;
+                        }
+                        "o" if state.mode.visual() => actions.push(Action::SwapSelectionEnds),
                         "g" => state.pending = Some('g'),
+                        _ if state.mode.visual() => {}
                         "d" => {
                             state.pending = Some('d');
                             state.operator_count = count;
                             state.count = 0;
                         }
-                        "i" => state.insert = true,
+                        "i" => state.mode = Mode::Insert,
                         "a" => {
-                            state.insert = true;
+                            state.mode = Mode::Insert;
                             actions.push(Action::Move {
                                 motion: Motion::Right,
                                 count: 1,
                             });
                         }
                         "I" => {
-                            state.insert = true;
+                            state.mode = Mode::Insert;
                             actions.push(Action::Move {
                                 motion: Motion::FirstNonBlank,
                                 count: 1,
                             });
                         }
                         "A" => {
-                            state.insert = true;
+                            state.mode = Mode::Insert;
                             actions.push(Action::Move {
                                 motion: Motion::LineEnd,
                                 count: 1,
                             });
                         }
                         "o" | "O" => {
-                            state.insert = true;
+                            state.mode = Mode::Insert;
                             actions.push(Action::InsertLine {
                                 below: key.key == "o",
                             });
@@ -201,10 +255,10 @@ impl EditingBehavior for Vim {
         let response = input::Response {
             handled,
             state: input::State {
-                label: format!("{}{prefix}", if state.insert { "INSERT" } else { "NORMAL" }),
+                label: format!("{}{prefix}", state.mode.label()),
                 data: serde_json::to_string(&state).map_err(|e| e.to_string())?,
-                capture_text: !state.insert,
-                clamp_caret: !state.insert,
+                capture_text: state.mode != Mode::Insert,
+                clamp_caret: state.mode != Mode::Insert,
             },
             actions,
         };
@@ -394,6 +448,128 @@ mod tests {
         assert_eq!(buffer.selection().head, 10);
         keys(&mut session, &mut buffer, "b");
         assert_eq!(buffer.selection().head, 6);
+    }
+    #[test]
+    fn visual_selection_is_inclusive_and_preserves_the_logical_cursor() {
+        let mut buffer = Buffer::new("abcde");
+        buffer.set_caret(2, false);
+        let mut session = session(&mut buffer);
+        keys(&mut session, &mut buffer, "v");
+        assert_eq!(session.input_state().label, "VISUAL");
+        assert_eq!(buffer.selected_text(), "c");
+        assert_eq!(session.caret_position(&buffer), 2);
+        keys(&mut session, &mut buffer, "2h");
+        assert_eq!(buffer.selected_text(), "abc");
+        assert_eq!(session.caret_position(&buffer), 0);
+        assert!(buffer.selection().anchor > buffer.selection().head);
+        keys(&mut session, &mut buffer, "4l");
+        assert_eq!(buffer.selected_text(), "cde");
+        assert_eq!(session.caret_position(&buffer), 4);
+        keys(&mut session, &mut buffer, "o");
+        assert_eq!(buffer.selected_text(), "cde");
+        assert_eq!(session.caret_position(&buffer), 2);
+        press(&mut session, &mut buffer, "Escape", false);
+        assert!(buffer.selection().is_empty());
+        assert_eq!(buffer.selection().head, 2);
+        assert_eq!(session.input_state().label, "NORMAL");
+        assert!(!buffer.can_undo());
+    }
+    #[test]
+    fn visual_graphemes_delete_and_change_form_single_undo_steps() {
+        let mut buffer = Buffer::new("e\u{301}界z");
+        let mut session = session(&mut buffer);
+        keys(&mut session, &mut buffer, "v");
+        assert_eq!(buffer.selected_text(), "e\u{301}");
+        keys(&mut session, &mut buffer, "ld");
+        assert_eq!(buffer.text().to_string(), "z");
+        assert_eq!(session.input_state().label, "NORMAL");
+        keys(&mut session, &mut buffer, "u");
+        assert_eq!(buffer.text().to_string(), "e\u{301}界z");
+        assert!(buffer.selection().is_empty());
+        assert!(!buffer.can_undo());
+        keys(&mut session, &mut buffer, "v$c");
+        assert_eq!(buffer.text().to_string(), "");
+        assert_eq!(session.input_state().label, "INSERT");
+        assert!(!press(&mut session, &mut buffer, "replacement", false));
+        buffer.insert("replacement");
+        assert_eq!(buffer.text().to_string(), "replacement");
+    }
+    #[test]
+    fn linewise_visual_switches_kind_extends_and_deletes_eof_without_a_blank_line() {
+        let mut buffer = Buffer::new("one\ntwo\nthree");
+        buffer.set_caret(5, false);
+        let mut session = session(&mut buffer);
+        keys(&mut session, &mut buffer, "V");
+        assert_eq!(buffer.selected_text(), "two\n");
+        assert_eq!(session.input_state().label, "V-LINE");
+        assert_eq!(session.caret_position(&buffer), 5);
+        keys(&mut session, &mut buffer, "j");
+        assert_eq!(buffer.selected_text(), "two\nthree");
+        keys(&mut session, &mut buffer, "v");
+        assert_eq!(buffer.selected_text(), "wo\nth");
+        keys(&mut session, &mut buffer, "Vd");
+        assert_eq!(buffer.text().to_string(), "one");
+        keys(&mut session, &mut buffer, "u");
+        assert_eq!(buffer.text().to_string(), "one\ntwo\nthree");
+        assert!(!buffer.can_undo());
+    }
+    #[test]
+    fn linewise_change_keeps_a_line_and_visual_toggles_do_not_edit() {
+        let mut buffer = Buffer::new("first\nsecond\nthird");
+        buffer.set_caret(8, false);
+        let mut session = session(&mut buffer);
+        keys(&mut session, &mut buffer, "VV");
+        assert!(buffer.selection().is_empty());
+        keys(&mut session, &mut buffer, "vv");
+        assert!(buffer.selection().is_empty());
+        assert!(!buffer.can_undo());
+        keys(&mut session, &mut buffer, "Vc");
+        assert_eq!(buffer.text().to_string(), "first\n\nthird");
+        assert_eq!(buffer.selection().head, 6);
+        assert_eq!(session.input_state().label, "INSERT");
+    }
+    #[test]
+    fn visual_vertical_motions_keep_preferred_column_and_empty_lines_are_safe() {
+        let mut buffer = Buffer::new("abcdef\nx\nabcdef");
+        buffer.set_caret(5, false);
+        let mut session = session(&mut buffer);
+        keys(&mut session, &mut buffer, "vjj");
+        assert_eq!(session.caret_position(&buffer), 14);
+        keys(&mut session, &mut buffer, "kk");
+        assert_eq!(session.caret_position(&buffer), 5);
+        let mut empty = Buffer::new("");
+        let mut se = self::session(&mut empty);
+        keys(&mut se, &mut empty, "vjlkd");
+        assert_eq!(empty.text().to_string(), "");
+        assert_eq!(se.input_state().label, "NORMAL");
+    }
+    #[test]
+    fn linewise_selection_includes_the_final_empty_line_when_requested() {
+        for (keys_to_apply, expected) in [("Vd", "one\n"), ("Vjd", "one"), ("Vjc", "one\n")] {
+            let mut buffer = Buffer::new("one\ntwo\n");
+            buffer.set_caret(4, false);
+            let mut session = session(&mut buffer);
+            keys(&mut session, &mut buffer, keys_to_apply);
+            assert_eq!(buffer.text().to_string(), expected, "{keys_to_apply}");
+            buffer.undo();
+            assert_eq!(buffer.text().to_string(), "one\ntwo\n");
+        }
+    }
+    #[test]
+    fn external_edits_and_selections_invalidate_visual_anchors() {
+        let mut buffer = Buffer::new("abc");
+        let mut session = session(&mut buffer);
+        keys(&mut session, &mut buffer, "vl");
+        buffer.set_caret(2, false);
+        session.synchronize(&buffer);
+        assert!(!session.has_visual_selection());
+        press(&mut session, &mut buffer, "", false);
+        assert_eq!(session.input_state().label, "NORMAL");
+        keys(&mut session, &mut buffer, "v");
+        buffer.insert("X");
+        session.synchronize(&buffer);
+        assert!(!session.has_visual_selection());
+        assert_eq!(session.caret_position(&buffer), buffer.selection().head);
     }
     #[test]
     fn unknown_keys_and_escape_cancel_prefixes_and_large_lines_remain_navigable() {

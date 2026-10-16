@@ -8,6 +8,7 @@ pub struct Session {
     pairs: Vec<Pair>,
     revision: u64,
     input: velk_editing::input::State,
+    visual: Option<crate::input::VisualSelection>,
 }
 impl Session {
     pub fn set_providers(&mut self, providers: BTreeMap<Role, Arc<dyn Provider>>) {
@@ -21,6 +22,7 @@ impl Session {
         };
         if !unchanged {
             self.input = Default::default();
+            self.visual = None;
         }
         self.providers = providers;
         self.pairs.clear();
@@ -28,10 +30,26 @@ impl Session {
     pub fn input_state(&self) -> &velk_editing::input::State {
         &self.input
     }
+    pub fn has_visual_selection(&self) -> bool {
+        self.visual.is_some()
+    }
+    pub fn caret_position(&self, buffer: &Buffer) -> usize {
+        self.visual
+            .as_ref()
+            .map_or(buffer.selection().head, |selection| selection.head)
+    }
     pub fn clear_pairs(&mut self) {
         self.pairs.clear();
     }
     pub fn synchronize(&mut self, buffer: &Buffer) {
+        if self
+            .visual
+            .as_ref()
+            .is_some_and(|selection| !selection.valid(buffer))
+        {
+            self.visual = None;
+            self.input = Default::default();
+        }
         if buffer.revision() == self.revision {
             return;
         }
@@ -110,7 +128,7 @@ impl Session {
         let decision = provider.evaluate(&request)?;
         decision.validate(&request)?;
         if let Decision::Input(response) = decision {
-            if self.input.clamp_caret {
+            if self.input.clamp_caret && self.visual.is_none() {
                 buffer.clamp_caret_to_line_character();
             }
             for action in response.actions {
@@ -121,9 +139,9 @@ impl Session {
                 ) {
                     self.pairs.clear();
                 }
-                crate::input::apply(buffer, action)?;
+                crate::input::apply_visual(buffer, action, &mut self.visual)?;
             }
-            if response.state.clamp_caret {
+            if response.state.clamp_caret && self.visual.is_none() {
                 buffer.clamp_caret_to_line_character();
             }
             self.input = response.state;
@@ -133,6 +151,7 @@ impl Session {
         let Decision::Apply(proposal) = decision else {
             if keymap {
                 self.input = Default::default();
+                self.visual = None;
             }
             return Ok(false);
         };

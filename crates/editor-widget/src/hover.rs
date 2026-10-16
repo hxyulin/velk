@@ -138,7 +138,7 @@ impl Editor {
         if !self.hover.enabled || self.composition.is_some() {
             return;
         }
-        let position = self.buffer.selection().head;
+        let position = self.caret_position();
         let geometry = self.geometry.borrow();
         let caret = geometry.caret_area();
         let anchor = [

@@ -271,6 +271,15 @@ impl Buffer {
         self.goal_column = None;
     }
 
+    /// Project a directed selection without changing the preferred grapheme column.
+    pub fn set_selection_preserving_column(&mut self, selection: Selection) {
+        let length = self.text().len_chars();
+        self.current.selection = Selection {
+            anchor: self.snap(selection.anchor.min(length)),
+            head: self.snap(selection.head.min(length)),
+        };
+    }
+
     pub fn select_all(&mut self) {
         self.current.selection = Selection {
             anchor: 0,

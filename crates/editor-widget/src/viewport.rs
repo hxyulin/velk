@@ -409,6 +409,8 @@ impl ViewportState {
                 rope: Rope::new(),
                 revision: 0,
                 selection: Selection::default(),
+                caret: None,
+                selected_line_break: false,
                 composition: None,
                 preedit: None,
                 geometry: Rc::new(RefCell::new(Geometry::default())),
@@ -625,6 +627,10 @@ impl ViewportState {
             anchor: clamp(selection.anchor),
             head: clamp(selection.head),
         };
+        entry.surface.caret = surface.caret.map(clamp);
+        entry.surface.selected_line_break = columns.end == length
+            && slice.len_chars() > length
+            && selection.range().contains(&(start + length));
         entry.surface.composition = composition;
         entry.surface.preedit = surface.preedit.as_ref().and_then(|preedit| {
             let start = preedit.start.max(entry.source_start + columns.start);
@@ -635,9 +641,9 @@ impl ViewportState {
         });
         entry.surface.selection_color = surface.selection_color;
         entry.surface.caret_visible = surface.caret_visible
-            && surface.rope.char_to_line(selection.head) == line
-            && selection.head >= start + columns.start
-            && selection.head <= start + columns.end;
+            && surface.rope.char_to_line(surface.caret_position()) == line
+            && surface.caret_position() >= start + columns.start
+            && surface.caret_position() <= start + columns.end;
         entry.surface.epoch = surface.epoch;
         entry.used = self.frame;
         let shaped = entry.surface.shape(&mut entry.state, width, fonts)?;
@@ -728,14 +734,14 @@ impl ViewportState {
         }
         // Shape the caret line even when it is offscreen so document-edge and
         // keyboard navigation can reveal exact caret geometry without a scan.
-        let caret_line = surface.rope.char_to_line(surface.selection.head);
+        let caret_line = surface.rope.char_to_line(surface.caret_position());
         self.prepare_line(surface, caret_line, width, geometry.offset[0], fonts)?;
         let reveal =
             surface.reveal_caret && (geometry.epoch != Some(surface.epoch) || viewport_changed);
         if reveal {
             let entry = &self.cache[&caret_line];
             geometry.caret =
-                Some(entry.document_caret(surface.selection.head, self.heights.top(caret_line)));
+                Some(entry.document_caret(surface.caret_position(), self.heights.top(caret_line)));
             geometry.content_size[0] = geometry.content_size[0].max(entry.width());
             geometry.content_size[1] = self.heights.top(self.heights.values.len());
             let old_offset = geometry.offset[0];
@@ -886,7 +892,10 @@ impl CachedLine {
                 LINE_HEIGHT,
             )
         } else {
-            let local = self.surface.rope.char_to_byte(self.surface.selection.head);
+            let local = self
+                .surface
+                .rope
+                .char_to_byte(self.surface.caret_position());
             let caret = self
                 .surface
                 .layout(&self.state)
@@ -966,8 +975,8 @@ impl CustomElement for ViewportSurface {
                 hit.rect.y += top;
                 geometry.hover_regions.push(hit);
             }
-            if line == surface.rope.char_to_line(surface.selection.head) {
-                geometry.caret = Some(entry.document_caret(surface.selection.head, top));
+            if line == surface.rope.char_to_line(surface.caret_position()) {
+                geometry.caret = Some(entry.document_caret(surface.caret_position(), top));
             }
             geometry.lines.push(LineHit {
                 top,
@@ -1153,6 +1162,8 @@ impl CpuViewportProbe {
                 rope,
                 revision: 0,
                 selection: Selection::default(),
+                caret: None,
+                selected_line_break: false,
                 composition: None,
                 preedit: None,
                 geometry: Rc::new(RefCell::new(Geometry::default())),
@@ -1210,6 +1221,8 @@ mod tests {
             rope: Rope::from_str(source),
             revision: 0,
             selection: Selection::default(),
+            caret: None,
+            selected_line_break: false,
             composition: None,
             preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),

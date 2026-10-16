@@ -322,6 +322,8 @@ pub(crate) struct Surface {
     pub rope: Rope,
     pub revision: u64,
     pub selection: Selection,
+    pub caret: Option<usize>,
+    pub selected_line_break: bool,
     pub composition: Option<Composition>,
     /// Already-projected preedit character range; it is not source selection.
     pub preedit: Option<Range<usize>>,
@@ -360,6 +362,7 @@ pub(crate) struct SurfaceState {
     preedit: Option<Range<usize>>,
     shaped_preedit: bool,
     selection: Selection,
+    selected_line_break: bool,
     prepared: Option<PreparedText>,
     layout: Option<Arc<TextLayout>>,
     raster_scale: f32,
@@ -403,6 +406,9 @@ impl SurfaceState {
 }
 
 impl Surface {
+    pub(super) fn caret_position(&self) -> usize {
+        self.caret.unwrap_or(self.selection.head)
+    }
     pub(super) fn candidate_caret(&self, state: &SurfaceState) -> Option<Rect> {
         let byte = match &self.composition {
             Some(composition) => {
@@ -411,7 +417,7 @@ impl Surface {
                         .cursor
                         .map_or(composition.text.len(), |(_, end)| end)
             }
-            None => self.rope.char_to_byte(self.selection.head),
+            None => self.rope.char_to_byte(self.caret_position()),
         };
         let layout = self.layout(state);
         // IME cursor byte offsets need not themselves be grapheme boundaries.
@@ -564,7 +570,8 @@ impl Surface {
         }
         let composition_changed =
             state.composition != self.composition || state.preedit != self.preedit;
-        let selection_changed = state.selection != self.selection;
+        let selection_changed = state.selection != self.selection
+            || state.selected_line_break != self.selected_line_break;
         let annotations_changed = !same_annotations(&state.annotations, &self.annotations)
             || state.annotation_groups.as_deref() != self.annotation_groups.as_deref();
         let mut layout_changed = self.shape(
@@ -578,6 +585,7 @@ impl Surface {
             .as_ref()
             .is_none_or(|old| !Arc::ptr_eq(old, &layout));
         state.selection = self.selection;
+        state.selected_line_break = self.selected_line_break;
         state.preedit = self.preedit.clone();
         let raster_changed = state.raster_scale != cx.raster_scale;
         state.caret = self.candidate_caret(state);
@@ -617,6 +625,21 @@ impl Surface {
                         .selection_rects
                         .extend(layout.selection_rects(projected)?);
                 }
+            }
+        }
+        if (layout_changed || selection_changed || composition_changed || annotations_changed)
+            && self.selected_line_break
+            && self.composition.is_none()
+            && self.preedit.is_none()
+        {
+            let end = state.projection.display_offset(self.rope.len_bytes(), true);
+            if let Some(caret) = layout.caret(TextPosition::new(end)) {
+                state.selection_rects.push(Rect::new(
+                    caret.origin[0],
+                    caret.origin[1],
+                    caret.height * 0.5,
+                    caret.height,
+                ));
             }
         }
         let decorations_changed = layout_changed || annotations_changed || raster_changed;
@@ -894,6 +917,8 @@ mod tests {
             rope: Rope::from_str(&format!("{}\n{}", "a".repeat(300), "line\n".repeat(60))),
             revision: 0,
             selection: Selection::default(),
+            caret: None,
+            selected_line_break: false,
             composition: None,
             preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),
@@ -1006,6 +1031,8 @@ mod tests {
             rope: Rope::from_str(&text),
             revision: 0,
             selection: Selection::default(),
+            caret: None,
+            selected_line_break: false,
             composition: None,
             preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),
