@@ -234,6 +234,7 @@ impl Manager {
     }
     fn quarantine_semantic_provider(&mut self, id: &str) {
         if let Some(plugin) = self.plugins.get_mut(id) {
+            plugin.deactivate();
             plugin.destroyed = true;
             if let Some(library) = plugin.library.take() {
                 std::mem::forget(library);
@@ -292,6 +293,7 @@ mod tests {
     fn failed_session_join_preserves_callback_and_never_destroys_the_plugin_instance() {
         let dir = tempfile::tempdir().unwrap();
         let mut manager = Manager::new(dir.path().into());
+        let endpoint = services::test_endpoint();
         let (_service, session) = velk_semantic::Service::external(|| {});
         let callback = Box::new(Callback {
             active: AtomicBool::new(true),
@@ -344,6 +346,7 @@ mod tests {
                 },
                 instance: NonNull::dangling(),
                 destroyed: false,
+                host: Some(endpoint.clone()),
                 hooks: vec![],
                 markdown: None,
                 language: None,
@@ -364,6 +367,7 @@ mod tests {
             api: transport.api,
             instance: NonNull::dangling(),
             destroyed: false,
+            host: None,
             hooks: vec![],
             markdown: None,
             language: None,
@@ -378,6 +382,7 @@ mod tests {
             Some(Event::Rejected { .. })
         ));
         assert_eq!(INSTANCE_DESTROYS.load(Ordering::SeqCst), 0);
+        assert!(!endpoint.active.load(Ordering::Acquire));
         assert!(manager.blocked.contains("test.stateful"));
         assert!(manager.blocked.contains("test.profile"));
         assert_eq!(manager.plugins().count(), 0);

@@ -1,6 +1,7 @@
 #![allow(unsafe_code)]
 use crate::{Plugin, api::*};
 pub mod editing;
+pub mod host;
 pub mod language_server;
 pub mod registry;
 pub mod semantic;
@@ -97,6 +98,7 @@ unsafe extern "C" fn create<P: Plugin>(output: *mut *mut c_void) -> i32 {
         let mut registry = registry::Registrar::new(&mut *plugin);
         if register_metadata(&mut registry).is_err()
             || register_settings(&mut registry).is_err()
+            || host::register(&mut registry).is_err()
             || P::register(&mut registry).is_err()
             || (registry.entries.len() < MAX_HOOKS && register_diagnostics(&mut registry).is_err())
         {

@@ -1,12 +1,14 @@
 //! Safe author-facing lifecycle. Raw ABI operations are confined to `ffi`.
 //! The optional `markup` feature adds the standard styled-documentation adapter.
 pub use ffi::editing::Behavior as EditingBehavior;
+pub use ffi::host::Host;
 pub use ffi::registry::{Provider, Registrar};
 pub use velk_diagnostics as diagnostics;
 pub use velk_editing as editing;
 #[cfg(feature = "markup")]
 pub use velk_markup as markup;
 pub use velk_plugin_api as api;
+pub use velk_plugin_contracts::host;
 pub use velk_semantic as semantic;
 pub mod hooks {
     #[cfg(feature = "markup")]
@@ -42,6 +44,9 @@ pub trait Plugin: Default + 'static {
     fn configure(&mut self, _settings: &settings::Values) -> Result<(), String> {
         Ok(())
     }
+    /// Called after metadata discovery and before configure/restore. Store this
+    /// per-instance handle to query workspace data or request document operations.
+    fn attach_host(&mut self, _host: Host) {}
     fn register(_reg: &mut Registrar<Self>) -> Result<(), String> {
         Ok(())
     }

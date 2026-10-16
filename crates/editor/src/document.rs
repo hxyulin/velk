@@ -2,6 +2,7 @@ mod buffers;
 mod closing;
 mod diagnostics;
 mod grid;
+mod host_services;
 mod icons;
 mod maintenance;
 mod navigation;
@@ -60,6 +61,7 @@ pub struct Document {
     opening: Option<Task>,
     pending_opens: std::collections::VecDeque<buffers::OpenRequest>,
     command_task: Option<Task>,
+    host_requests: Option<Task>,
     workspace_edit: Option<Task>,
     navigation: velk_editor_model::navigation::History,
     command_result: Option<plugin_commands::ResultView>,
@@ -176,6 +178,7 @@ impl Document {
             opening: None,
             pending_opens: Default::default(),
             command_task: None,
+            host_requests: None,
             workspace_edit: None,
             navigation: Default::default(),
             command_result: None,

@@ -10,3 +10,6 @@ pub const SETTINGS_HOOK: &str = "velk.plugin.settings.v1";
 pub const MARKUP_HOOK: &str = "velk.markup.render";
 pub const LANGUAGE_HOOK: &str = "velk.language-server.definition";
 pub const SEMANTIC_HOOK: &str = "velk.semantic.session";
+
+/// Per-instance host workspace/document service attachment.
+pub const HOST_HOOK: &str = "velk.host.attach.v1";

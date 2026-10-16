@@ -350,7 +350,7 @@ impl Document {
                     .font_weight(FontWeight::SEMIBOLD)
                     .padding_y(10.),
             );
-            detail = detail.child(label("Declared access. Native plugins run with the editor’s permissions; these declarations are not enforced.")
+            detail = detail.child(label("Host services require declared access. Native plugins still run with the editor’s permissions.")
                 .font_size(12.).color(ThemeColor::TextMuted));
             if info.metadata.capabilities.is_empty() {
                 detail = detail.child(label("No access capabilities declared.").font_size(12.5));

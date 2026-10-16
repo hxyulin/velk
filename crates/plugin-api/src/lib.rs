@@ -115,3 +115,22 @@ pub use velk_plugin_contracts::hooks::*;
 
 #[allow(unsafe_code)]
 pub mod wire;
+
+/// Thread-safe host callbacks. Attach borrows the table; retaining the opaque
+/// context keeps it allocated after retirement, when calls return an error.
+/// Requests copy JSON and invoke the sink exactly once before returning. They
+/// may block on the UI: never call from UI/interactive editing callbacks.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostServices {
+    pub context: *mut c_void,
+    pub retain: unsafe extern "C" fn(*mut c_void),
+    pub release: unsafe extern "C" fn(*mut c_void),
+    pub request: unsafe extern "C" fn(*mut c_void, Bytes, ByteSink, *mut c_void) -> i32,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostApi {
+    pub context: *mut c_void,
+    pub attach: unsafe extern "C" fn(*mut c_void, *const HostServices) -> i32,
+}

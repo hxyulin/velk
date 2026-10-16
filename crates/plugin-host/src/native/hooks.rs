@@ -25,7 +25,7 @@ impl HookHandle {
     }
 }
 impl Generation {
-    unsafe fn table<T: Copy>(
+    pub(super) unsafe fn table<T: Copy>(
         &self,
         index: usize,
         contract: &str,
@@ -102,6 +102,9 @@ impl Generation {
                 }};
             }
             match contract.as_str() {
+                HOST_HOOK if name == HOST_HOOK => {
+                    let _ = typed!(HostApi, SERVICE);
+                }
                 DIAGNOSTICS_HOOK if name == DIAGNOSTICS_HOOK => {
                     let api = typed!(DiagnosticsApi, SERVICE);
                     if let Some(sink) = velk_diagnostics::host_sink() {

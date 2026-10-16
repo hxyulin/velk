@@ -6,6 +6,7 @@ use velk_plugin_sdk::{
 #[derive(Default)]
 struct Probe {
     last: Vec<u8>,
+    host: Option<velk_plugin_sdk::Host>,
 }
 impl Plugin for Probe {
     const ID: &'static str = "test.hooks";
@@ -20,7 +21,22 @@ impl Plugin for Probe {
             "network.http",
             "Fetch optional test docs.",
         ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "workspace.read",
+            "Read test workspace context.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "filesystem.project.read",
+            "Read project test files.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "editor.buffer.manage",
+            "Exercise host buffer lifecycle.",
+        ),
     ];
+    fn attach_host(&mut self, host: velk_plugin_sdk::Host) {
+        self.host = Some(host);
+    }
     const VERSION: &'static str = "1";
     fn commands() -> Vec<velk_plugin_sdk::commands::Declaration> {
         vec![velk_plugin_sdk::commands::Declaration {
@@ -55,6 +71,12 @@ impl Plugin for Probe {
         "Named registry probe".into()
     }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+        reg.provide(Request("test.host"), |p: &mut Self, input: &[u8]| {
+            let request = serde_json::from_slice(input).map_err(|e| e.to_string())?;
+            let host = p.host.as_ref().ok_or("host services not attached")?.clone();
+            let response = host.request(request)?;
+            serde_json::to_vec(&response).map_err(|e| e.to_string())
+        })?;
         reg.editing::<EditingProbe>()?;
         reg.provide(
             velk_plugin_sdk::hooks::CommandHandler {

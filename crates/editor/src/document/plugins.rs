@@ -52,6 +52,7 @@ impl Document {
         states: Vec<(String, Vec<u8>)>,
         cx: &mut Context<'_, Self>,
     ) {
+        self.listen_host_requests(client.host_requests(), cx);
         self.plugins = Some(State::new(
             client,
             self.shell.store.preferences.markdown_provider.clone(),

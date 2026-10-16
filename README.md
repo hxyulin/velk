@@ -158,7 +158,9 @@ this metadata alongside plugin state and controls. Plugins can also declare
 definition/type/implementation navigation, references, formatting, rename, code
 actions, explicit completion, Rust parent modules, and macro expansion. Plugins
 propose [workspace text edits](docs/workspace-edits.md); the host validates targets
-and applies changes through document transactions.
+and applies changes through document transactions. Per-instance
+[host services](docs/host-services.md) expose workspace context, project file
+reads, current buffer text, and normal buffer lifecycle operations.
 
 [Interactive editing providers](docs/interactive-editing.md) supply indentation
 and pairing through a separate synchronous decision interface. Settings select
@@ -166,8 +168,9 @@ one provider per role; the host owns transactions, undo, caret placement, IME,
 and pair tracking. Both bundled providers can be disabled or replaced.
 
 **Native plugins are trusted code running inside the editor process.** Capability
-declarations describe what a plugin needs; they are not currently a sandbox or
-an enforced permission system. A plugin can crash or block the process. The
+declarations describe what a plugin needs. Host services check these declarations,
+but native plugins retain ambient OS access and are not sandboxed. A plugin can
+crash or block the process. The
 native ABI and extension contracts are experimental: rebuild the editor and
 plugins together when those contracts change.
 
@@ -217,6 +220,7 @@ Current limitations include:
 - [Plugin API and shared contracts](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
   [plugin settings](docs/plugin-settings.md)
 - [Interactive editing, indentation, and autopairs](docs/interactive-editing.md)
+- [Workspace and buffer host services](docs/host-services.md)
 - [Plugin commands](docs/plugin-commands.md), [workspace edits](docs/workspace-edits.md),
   and [semantic services and Rust LSP](docs/semantic-services.md)
 - [Core and component boundaries](docs/core.md)

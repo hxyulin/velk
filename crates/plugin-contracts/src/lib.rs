@@ -1,5 +1,6 @@
 //! Shared plugin definitions without a native ABI, loader, or authoring runtime.
 pub mod hooks;
+pub mod host;
 mod id;
 mod language_server;
 mod metadata;

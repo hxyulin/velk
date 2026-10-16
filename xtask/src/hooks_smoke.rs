@@ -57,7 +57,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     assert!(manager.plugins().next().unwrap().settings_error.is_none());
     assert_eq!(manager.plugins().next().unwrap().settings_values.len(), 1);
     assert!(metadata.readme.contains("**Markdown**"));
-    assert_eq!(metadata.capabilities.len(), 2);
+    assert_eq!(metadata.capabilities.len(), 5);
     assert!(!metadata.capabilities[0].optional);
     assert!(metadata.capabilities[1].optional);
     let metadata_hook = manager.bind_hook("test.hooks", "velk.plugin.metadata.v1")?;
@@ -76,7 +76,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
             .iter()
             .filter(|hook| hook.name.starts_with("test."))
             .count(),
-        6
+        7
     );
     assert!(
         registered
@@ -177,6 +177,32 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     manager.unload_all();
     let runtime = unsafe { velk_plugin_host::Runtime::start(temp.path().into())? };
     let client = runtime.client();
+    let project = tempfile::tempdir().map_err(|e| e.to_string())?;
+    std::fs::write(project.path().join("hello.txt"), "native host 世界")
+        .map_err(|e| e.to_string())?;
+    let project_root = project.path().to_path_buf();
+    let requests = client.host_requests();
+    let responder = std::thread::spawn(move || {
+        use velk_plugin_host::host::{Request, Response, Workspace};
+        while let Ok(request) = requests.recv_blocking() {
+            assert!(request.is_active());
+            let response = match request.request {
+                Request::Workspace => Ok(Response::Workspace {
+                    workspace: Workspace {
+                        current_directory: project_root.clone(),
+                        project_root: Some(project_root.clone()),
+                    },
+                }),
+                Request::Buffers => Ok(Response::Buffers { buffers: vec![] }),
+                Request::NewBuffer { ref text } if text == "created by native plugin" => {
+                    Ok(Response::Created { id: 42 })
+                }
+                Request::CloseBuffer { id: 42 } => Ok(Response::Accepted),
+                _ => Err("unexpected host request".into()),
+            };
+            request.respond(response);
+        }
+    });
     pollster::block_on(async {
         client.set_settings(std::collections::BTreeMap::from([(
             "test.hooks".into(),
@@ -191,6 +217,59 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .loaded,
             1
         );
+        use velk_plugin_host::host::{Request as HostRequest, Response as HostResponse};
+        let host = client
+            .bind_hook("test.hooks".into(), "test.host".into())?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        for (request, expected) in [
+            (
+                HostRequest::Buffers,
+                HostResponse::Buffers { buffers: vec![] },
+            ),
+            (
+                HostRequest::ReadFile {
+                    path: "hello.txt".into(),
+                },
+                HostResponse::File {
+                    bytes: "native host 世界".as_bytes().to_vec(),
+                },
+            ),
+            (
+                HostRequest::NewBuffer {
+                    text: "created by native plugin".into(),
+                },
+                HostResponse::Created { id: 42 },
+            ),
+            (HostRequest::CloseBuffer { id: 42 }, HostResponse::Accepted),
+        ] {
+            let bytes = client
+                .call_hook(host.clone(), serde_json::to_vec(&request).unwrap())
+                .await?;
+            let response: HostResponse =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            assert_eq!(response, expected);
+        }
+        let denied = client
+            .call_hook(
+                host.clone(),
+                serde_json::to_vec(&HostRequest::ApplyEdit {
+                    edit: Default::default(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(denied.contains("editor.buffer.write"));
+        let escaped = client
+            .call_hook(
+                host,
+                serde_json::to_vec(&HostRequest::ReadFile { path: "..".into() }).unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(escaped.contains("outside"));
         assert!(
             client
                 .call_hook(foreign_handle, vec![])
@@ -245,8 +324,38 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         assert!(client.call_hook(state, vec![]).await.is_err());
         Ok::<_, String>(())
     })?;
+    drop(runtime);
+    responder
+        .join()
+        .map_err(|_| "host service responder panicked")?;
+    let runtime = unsafe { velk_plugin_host::Runtime::start(temp.path().into())? };
+    let client = runtime.client();
+    let requests = client.host_requests();
+    pollster::block_on(client.load()?.recv()).map_err(|e| e.to_string())??;
+    let hook = pollster::block_on(
+        client
+            .bind_hook("test.hooks".into(), "test.host".into())?
+            .recv(),
+    )
+    .map_err(|e| e.to_string())??;
+    let waiter = std::thread::spawn(move || {
+        pollster::block_on(client.call_hook(
+            hook,
+            serde_json::to_vec(&velk_plugin_host::host::Request::Buffers).unwrap(),
+        ))
+    });
+    let pending = requests.recv_blocking().map_err(|e| e.to_string())?;
+    drop(runtime);
+    assert!(!pending.is_active());
+    assert!(
+        waiter
+            .join()
+            .map_err(|_| "native host waiter panicked")?
+            .unwrap_err()
+            .contains("retired")
+    );
     println!(
-        "Named hook smoke passed: settings defaults, overrides, validation and restart, discovery, custom opaque-byte requests, ordered event delivery, errors/panic containment, owned replies, cleanup and stale generation rejection; no feature-specific root ABI fields."
+        "Named hook smoke passed: host service C callbacks, project reads, capability checks, buffer lifecycle dispatch, settings defaults, overrides, validation and restart, discovery, custom opaque-byte requests, ordered event delivery, errors/panic containment, owned replies, cleanup and stale generation rejection; no feature-specific root ABI fields."
     );
     Ok(())
 }

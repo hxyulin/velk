@@ -6,6 +6,7 @@ mod hooks;
 use code::Code;
 mod language_server;
 mod semantic;
+mod services;
 pub use hooks::{HookDescriptor, HookHandle};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -40,6 +41,7 @@ struct Generation {
     api: PluginApi,
     instance: NonNull<c_void>,
     destroyed: bool,
+    host: Option<Arc<services::Endpoint>>,
     hooks: Vec<hooks::Hook>,
     markdown: Option<MarkupApi>,
     language: Option<LanguageApi>,
@@ -57,6 +59,7 @@ impl Generation {
         generation: u64,
         code: Arc<Code>,
         settings: &velk_plugin_contracts::settings::Values,
+        host: Option<Arc<crate::services::Bridge>>,
     ) -> Result<Self, String> {
         let api = *code
             .apis
@@ -89,6 +92,7 @@ impl Generation {
             api,
             instance,
             destroyed: false,
+            host: None,
             hooks: vec![],
             markdown: None,
             language: None,
@@ -121,6 +125,9 @@ impl Generation {
                     command.id
                 ));
             }
+        }
+        if let Some(host) = host {
+            loaded.attach_host(host)?;
         }
         loaded.configure_settings(settings)?;
         Ok(loaded)
@@ -245,13 +252,20 @@ impl Generation {
     }
 }
 impl Generation {
-    #[tracing::instrument(level = "debug", skip_all, fields(plugin = %self.info.id, generation = self.info.generation))]
-    fn retire(&mut self) -> bool {
-        if self.destroyed {
-            return self.library.is_some();
-        }
+    fn deactivate(&self) {
         if let Ok(mut active) = self.editing_active.write() {
             *active = false;
+        }
+        if let Some(host) = &self.host {
+            host.active
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    #[tracing::instrument(level = "debug", skip_all, fields(plugin = %self.info.id, generation = self.info.generation))]
+    fn retire(&mut self) -> bool {
+        self.deactivate();
+        if self.destroyed {
+            return self.library.is_some();
         }
         self.destroyed = true;
         // SAFETY: serial owner destroys exactly once, with library still loaded.
@@ -292,6 +306,7 @@ fn metadata(bytes: &[u8]) -> Result<String, String> {
 /// plugin-owned values. Session producers are joined before instance destruction.
 static NEXT_MANAGER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 pub struct Manager {
+    pub(crate) host: Option<Arc<crate::services::Bridge>>,
     owner: u64,
     directory: PathBuf,
     plugins: BTreeMap<String, Generation>,
@@ -305,6 +320,7 @@ pub struct Manager {
 impl Manager {
     pub fn new(directory: PathBuf) -> Self {
         Self {
+            host: None,
             owner: NEXT_MANAGER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             directory,
             plugins: BTreeMap::new(),
@@ -456,6 +472,7 @@ impl Manager {
                         generation,
                         code,
                         self.settings.get(&id).unwrap_or(&Default::default()),
+                        self.host.clone(),
                     )
                 }
             });
@@ -548,6 +565,7 @@ impl Manager {
     }
     #[tracing::instrument(level = "debug", skip_all, fields(plugin = id))]
     pub fn unload(&mut self, id: &str) -> Option<Event> {
+        self.plugins.get(id)?.deactivate();
         let sessions_retired = self.retire_semantics(id);
         let mut plugin = self.plugins.remove(id)?;
         if sessions_retired && plugin.retire() {
@@ -611,6 +629,7 @@ mod tests {
                 // This local test destructor never dereferences the opaque instance.
                 instance: NonNull::dangling(),
                 destroyed: false,
+                host: None,
                 hooks: vec![],
                 markdown: None,
                 language: None,
@@ -768,6 +787,7 @@ pub(super) mod test_provider {
                 },
                 instance: NonNull::new(Box::into_raw(Box::new(control)).cast()).unwrap(),
                 destroyed: false,
+                host: None,
                 hooks: vec![],
                 markdown: None,
                 language: None,

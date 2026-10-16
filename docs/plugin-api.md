@@ -38,6 +38,15 @@ editor; typing does not queue behind lifecycle work or LSP requests. See
 [interactive editing](interactive-editing.md) for roles, limits, input routing,
 provider settings, and the bundled indentation and autopairs implementations.
 
+## Workspace and buffer host services
+
+`Plugin::attach_host` receives a per-instance `Host` handle. The host exposes
+workspace context, project-scoped disk reads, buffer enumeration and text,
+versioned edits, and normal open/create/select/save/close operations through C
+callbacks. These service calls require the corresponding capability declaration;
+native code still has ambient process access. See [host services](host-services.md)
+for request semantics, limits, scheduling, and unload behavior.
+
 ## Host diagnostics service
 
 The host attaches a process-lifetime `DiagnosticsSink` through the optional
@@ -106,16 +115,21 @@ such as `velk.panels.v1` is a contribution contract, not an access permission.
   or a local fallback. A future permission-enforcing host should communicate which
   optional capabilities were granted before the plugin uses them.
 
-These are declarations today. Native plugins run in the editor process and have
-its ambient permissions. This API does not implement consent, grant negotiation,
-feature switches, or a sandbox. Omitting a capability does not restrict a native
-library's access. Optional capabilities are not plugin dependencies or optional
-hook registrations.
+Host-service calls check these declarations. Native plugins run in the editor
+process and have its ambient permissions. This API does not implement consent,
+grant negotiation, feature switches, or a sandbox. The endpoint rejects calls
+whose capability was not declared; that does not restrict direct native OS
+access. Optional capabilities are not plugin dependencies or optional hook
+registrations.
 
 Capability IDs use dot-separated lowercase ASCII segments containing letters,
 digits, hyphens or underscores. Use existing IDs consistently:
 
-- `editor.buffer.read`: inspect document text supplied by the host.
+- `workspace.read`: query the working directory and selected project root.
+- `filesystem.project.read`: read files and directories within the selected project.
+- `editor.buffer.read`: enumerate buffers and inspect their current text.
+- `editor.buffer.write`: request validated, undoable document edits.
+- `editor.buffer.manage`: open, create, select, save, and close buffers.
 - `filesystem.read`: read files, directories or metadata.
 - `filesystem.watch`: observe filesystem changes.
 - `environment.read`: inspect process environment variables.
@@ -125,7 +139,8 @@ digits, hyphens or underscores. Use existing IDs consistently:
 Custom dotted IDs are supported; the host does not interpret unknown declarations
 as grants. Each ID may appear only once, with a nonempty purpose and an explicit
 required/optional choice. Declare the access your plugin and its subprocesses use;
-these IDs do not confer resource or path restrictions.
+these IDs do not impose OS-level resource or path restrictions. The project-read
+host service validates paths within the selected root.
 
 ## Markdown rendering
 

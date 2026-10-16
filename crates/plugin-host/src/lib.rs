@@ -8,11 +8,13 @@ use std::{
     thread,
 };
 mod native;
+mod services;
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
+pub use services::HostRequest;
 
 /// The bundled default; callers may select any compatible loaded provider.
 pub const DEFAULT_MARKDOWN_PROVIDER: &str = "velk.markdown";
-pub use velk_plugin_contracts::{Capability, PluginMetadata, settings};
+pub use velk_plugin_contracts::{Capability, PluginMetadata, host, settings};
 
 pub mod hook_kind {
     pub use velk_plugin_api::{CONTRIBUTION, EVENT, REQUEST, SERVICE};
@@ -20,8 +22,8 @@ pub mod hook_kind {
 /// Host-defined hook names, for describing what a plugin provides.
 pub mod hook_name {
     pub use velk_plugin_api::{
-        DIAGNOSTICS_HOOK, LANGUAGE_HOOK, LIFECYCLE_RESTORE_HOOK, LIFECYCLE_SNAPSHOT_HOOK,
-        MARKUP_HOOK, METADATA_HOOK, SEMANTIC_HOOK, SETTINGS_HOOK,
+        DIAGNOSTICS_HOOK, HOST_HOOK, LANGUAGE_HOOK, LIFECYCLE_RESTORE_HOOK,
+        LIFECYCLE_SNAPSHOT_HOOK, MARKUP_HOOK, METADATA_HOOK, SEMANTIC_HOOK, SETTINGS_HOOK,
     };
 }
 pub type PluginStates = Vec<(String, Vec<u8>)>;
@@ -185,10 +187,16 @@ impl Sender {
 /// Safe command endpoint. Lifecycle work is serialized on a sleeping worker.
 #[derive(Clone)]
 pub struct Client {
+    host: std::sync::Arc<services::Bridge>,
     sender: Sender,
     next_session: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Client {
+    /// One editor receiver should consume requests for this runtime.
+    pub fn host_requests(&self) -> async_channel::Receiver<HostRequest> {
+        self.host.receiver.clone()
+    }
+
     /// Store overrides for the next load/restart; running instances are unchanged.
     pub fn set_settings(&self, settings: settings::PluginValues) -> Result<(), String> {
         if serde_json::to_vec(&settings)
@@ -389,10 +397,13 @@ impl Runtime {
     #[allow(unsafe_code)]
     fn spawn(make_manager: impl FnOnce() -> Manager + Send + 'static) -> Result<Self, String> {
         let (sender, receive) = mpsc::sync_channel::<Queued>(16);
+        let host = services::Bridge::new();
+        let worker_host = host.clone();
         let worker = thread::Builder::new()
             .name("velk-plugins".into())
             .spawn(move || {
                 let mut manager = make_manager();
+                manager.host = Some(worker_host);
                 while let Ok(queued) = receive.recv() {
                     let _entered = queued.span.enter();
                     if let Some(start) = queued.queued {
@@ -492,6 +503,7 @@ impl Runtime {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             client: Client {
+                host,
                 sender: Sender(sender),
                 next_session: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             },
@@ -504,6 +516,7 @@ impl Runtime {
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
+        self.client.host.close();
         let _ = self.client.sender.send(Request::Stop);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

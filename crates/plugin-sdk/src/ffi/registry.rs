@@ -101,7 +101,7 @@ impl<P: Plugin> Registrar<P> {
     pub unsafe fn plugin_context(&self) -> *mut P {
         self.plugin
     }
-    fn binding<F: 'static>(&self, handler: F) -> Box<Binding<P, F>> {
+    pub(super) fn binding<F: 'static>(&self, handler: F) -> Box<Binding<P, F>> {
         Box::new(Binding {
             plugin: self.plugin,
             handler,

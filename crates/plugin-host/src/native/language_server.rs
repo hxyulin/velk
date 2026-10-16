@@ -167,6 +167,7 @@ mod tests {
             },
             instance: NonNull::dangling(),
             destroyed: false,
+            host: None,
             hooks: vec![],
             markdown: None,
             language: Some(LanguageApi {

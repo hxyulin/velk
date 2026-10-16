@@ -604,7 +604,7 @@ impl Document {
         self.schedule_recovery(cx);
         self.restore_focus_pending = true;
     }
-    fn close_buffer(&mut self, id: u64, cx: &mut Context<'_, Self>) {
+    pub(super) fn close_buffer(&mut self, id: u64, cx: &mut Context<'_, Self>) {
         self.select_buffer(id, cx);
         if !self.has_buffers() {
             return;
