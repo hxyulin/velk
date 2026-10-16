@@ -20,12 +20,13 @@ and any checks that could not run.
 
 ## Structure and boundaries
 
-- `crates/editor` owns documents, saves, recovery, workspace state, and the shell.
-- `crates/editor-widget` owns reusable editing and text rendering.
+- `crates/core` owns UI-independent text, transactions, history, and snapshots.
+- `crates/editor` coordinates document lifecycle, saves, recovery, workspace state,
+  and the shell. `crates/editor-widget` adapts Core to RXUI input and rendering.
 - Shared contracts and services live in `crates/`; feature plugins live in
   `plugins/`. Build and staging commands live in `xtask/`.
-- Keep document ownership and a consistent interface in the host. Extend existing
-  contracts before introducing parallel plugin-specific mechanisms. Update the
+- Keep one authoritative document model and a consistent service interface.
+  Extend existing contracts before introducing parallel plugin-specific mechanisms. Update the
   host, SDK, bundled plugins, and relevant docs together when a contract changes.
 - Native plugins are trusted in-process code. Capability declarations currently
   describe requirements; they do not enforce permissions or provide isolation.

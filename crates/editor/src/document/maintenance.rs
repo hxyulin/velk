@@ -8,7 +8,7 @@ use std::time::Duration;
 struct DocumentKey {
     id: u64,
     revision: u64,
-    selection: velk_editor_widget::Selection,
+    selection: velk_core::Selection,
     scroll: [f32; 2],
     file: Option<FileState>,
     path: std::path::PathBuf,
@@ -305,7 +305,7 @@ impl Document {
         match cx.try_spawn_blocking(
             move || {
                 let (_, buffer) = FileState::read(file.path())?;
-                let mut detached = velk_editor_widget::Buffer::new("");
+                let mut detached = velk_core::Buffer::new("");
                 detached.insert(&buffer.text().to_string());
                 Ok::<_, std::io::Error>(detached)
             },

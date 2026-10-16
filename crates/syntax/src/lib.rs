@@ -22,53 +22,17 @@ impl Language {
     }
 }
 
-/// Coordinates refer to the document immediately before and after an edit.
-#[derive(Clone, Debug)]
-pub struct Edit {
-    pub revision: u64,
-    pub input: InputEdit,
-    pub replaced: Range<usize>,
-    pub inserted: usize,
-}
-impl Edit {
-    pub fn between(
-        revision: u64,
-        before: &Rope,
-        after: &Rope,
-        range: Range<usize>,
-        inserted: usize,
-    ) -> Self {
-        let point = |rope: &Rope, c| {
-            let row = rope.char_to_line(c);
-            Point::new(row, rope.char_to_byte(c) - rope.line_to_byte(row))
-        };
-        Self {
-            revision,
-            input: InputEdit {
-                start_byte: before.char_to_byte(range.start),
-                old_end_byte: before.char_to_byte(range.end),
-                new_end_byte: after.char_to_byte(range.start + inserted),
-                start_position: point(before, range.start),
-                old_end_position: point(before, range.end),
-                new_end_position: point(after, range.start + inserted),
-            },
-            replaced: range,
-            inserted,
-        }
-    }
-    pub fn inverse(&self, revision: u64) -> Self {
-        Self {
-            revision,
-            input: InputEdit {
-                old_end_byte: self.input.new_end_byte,
-                new_end_byte: self.input.old_end_byte,
-                old_end_position: self.input.new_end_position,
-                new_end_position: self.input.old_end_position,
-                ..self.input
-            },
-            replaced: self.replaced.start..self.replaced.start + self.inserted,
-            inserted: self.replaced.len(),
-        }
+pub use velk_core::Change as Edit;
+
+fn input_edit(change: &Edit) -> InputEdit {
+    let point = |position: velk_core::TextPoint| Point::new(position.line, position.column);
+    InputEdit {
+        start_byte: change.start.byte,
+        old_end_byte: change.old_end.byte,
+        new_end_byte: change.new_end.byte,
+        start_position: point(change.start),
+        old_end_position: point(change.old_end),
+        new_end_position: point(change.new_end),
     }
 }
 
@@ -292,7 +256,7 @@ impl Engine {
                 old = None;
             } else if let Some(tree) = &mut old {
                 for change in changes {
-                    tree.edit(&change.input);
+                    tree.edit(&input_edit(change));
                 }
             }
         }

@@ -10,7 +10,8 @@ use std::{
     thread,
     time::Duration,
 };
-use velk_editor_widget::{BufferSnapshot, Editor};
+use velk_core::BufferSnapshot;
+use velk_editor_widget::Editor;
 
 pub struct PendingDocument {
     pub id: u64,
@@ -474,7 +475,7 @@ mod tests {
                 .save(restored.documents[0].editor.buffer().text().clone())
                 .is_err()
         );
-        let mut history = velk_editor_widget::Buffer::restore(
+        let mut history = velk_core::Buffer::restore(
             &restored.documents[0]
                 .editor
                 .buffer()

@@ -5,7 +5,8 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Seek, Write},
     path::{Path, PathBuf},
 };
-use velk_editor_widget::{Buffer, Editor};
+use velk_core::Buffer;
+use velk_editor_widget::Editor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LineEnding {

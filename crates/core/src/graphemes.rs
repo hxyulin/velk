@@ -2,15 +2,15 @@
 use ropey::Rope;
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
-pub(crate) fn is_boundary(text: &Rope, character: usize) -> bool {
+pub fn is_boundary(text: &Rope, character: usize) -> bool {
     query(text, character, GraphemeCursor::is_boundary)
 }
 
-pub(crate) fn previous(text: &Rope, character: usize) -> usize {
+pub fn previous(text: &Rope, character: usize) -> usize {
     query(text, character, GraphemeCursor::prev_boundary).map_or(0, |byte| text.byte_to_char(byte))
 }
 
-pub(crate) fn next(text: &Rope, character: usize) -> usize {
+pub fn next(text: &Rope, character: usize) -> usize {
     query(text, character, GraphemeCursor::next_boundary)
         .map_or_else(|| text.len_chars(), |byte| text.byte_to_char(byte))
 }

@@ -3970,6 +3970,17 @@ name = "velk"
 version = "0.0.0-dev"
 
 [[package]]
+name = "velk-core"
+version = "0.0.0-dev"
+dependencies = [
+ "ropey",
+ "serde",
+ "serde_json",
+ "tracing",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "velk-diagnostics"
 version = "0.0.0-dev"
 dependencies = [
@@ -3996,6 +4007,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "velk-core",
  "velk-diagnostics",
  "velk-editor-widget",
  "velk-markup",
@@ -4012,12 +4024,11 @@ dependencies = [
  "pollster",
  "ropey",
  "rxui",
- "serde",
- "serde_json",
  "tracing",
  "unicode-bidi",
  "unicode-ident",
  "unicode-segmentation",
+ "velk-core",
  "velk-markup",
  "velk-syntax",
 ]
@@ -4175,6 +4186,7 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "tree-sitter-rust",
+ "velk-core",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ use velk_editor_widget::{Editor, Language};
 
 enum Opened {
     Existing(u64),
-    Loaded(Box<(FileState, velk_editor_widget::Buffer, PathBuf)>),
+    Loaded(Box<(FileState, velk_core::Buffer, PathBuf)>),
 }
 
 /// Optional active document. Window-scoped operations inspect the option;

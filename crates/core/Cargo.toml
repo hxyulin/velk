@@ -1,0 +1,17 @@
+[package]
+name = "velk-core"
+description = "UI-independent Velk document state and editing operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+tracing.workspace = true
+ropey.workspace = true
+unicode-segmentation.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

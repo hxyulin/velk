@@ -1,0 +1,440 @@
+use unicode_segmentation::UnicodeSegmentation;
+use velk_core::{Buffer, Selection};
+
+#[test]
+fn empty_document_edits_and_boundary_deletes_are_safe() {
+    let mut b = Buffer::default();
+    b.backspace();
+    b.delete();
+    b.undo();
+    b.redo();
+    assert_eq!(b.revision(), 0);
+    b.insert("hello\r\n世界\r!");
+    assert_eq!(b.text().to_string(), "hello\n世界\n!");
+    assert_eq!(b.selection().head, 10);
+    b.document_edge(false, false);
+    b.delete();
+    assert_eq!(b.text().to_string(), "ello\n世界\n!");
+}
+
+#[test]
+fn reader_loads_unicode_and_normalizes_line_endings_across_small_reads() {
+    use std::io::{self, Read};
+    struct SmallReads<'a> {
+        bytes: &'a [u8],
+        maximum: usize,
+    }
+    impl Read for SmallReads<'_> {
+        fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
+            let length = target.len().min(self.maximum);
+            self.bytes.read(&mut target[..length])
+        }
+    }
+    for source in [
+        String::new(),
+        "Hello 世界\né 👩‍💻".into(),
+        "\r\n\r\r\n\nend\r".into(),
+        format!(
+            "{}\r\n{}\r{}",
+            "x".repeat(1100),
+            "👩‍💻".repeat(800),
+            "\r\n".repeat(1000)
+        ),
+    ] {
+        for maximum in [1, 2, 7, 1024] {
+            let buffer = Buffer::from_reader(SmallReads {
+                bytes: source.as_bytes(),
+                maximum,
+            })
+            .unwrap();
+            assert_eq!(
+                buffer.text().to_string(),
+                source.replace("\r\n", "\n").replace('\r', "\n")
+            );
+            assert_eq!(buffer.selection(), Selection::default());
+            assert_eq!(buffer.revision(), 0);
+            assert!(!buffer.can_undo());
+        }
+    }
+}
+
+#[test]
+fn reader_propagates_invalid_utf8_and_io_errors() {
+    use std::io::{self, Read};
+    assert!(
+        matches!(Buffer::from_reader(&b"bad\xff"[..]), Err(error) if error.kind()==io::ErrorKind::InvalidData)
+    );
+    struct Failed;
+    impl Read for Failed {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "test read failure",
+            ))
+        }
+    }
+    assert!(
+        matches!(Buffer::from_reader(Failed), Err(error) if error.kind()==io::ErrorKind::PermissionDenied)
+    );
+}
+
+#[test]
+fn movement_and_deletion_preserve_combining_marks_and_emoji() {
+    let mut b = Buffer::new("a\u{301}👩‍💻🇭🇰z");
+    let end = b.text().len_chars();
+    b.document_edge(true, false);
+    b.horizontal(false, false);
+    assert_eq!(b.selection().head, end - 1);
+    b.backspace();
+    assert_eq!(b.text().to_string(), "a\u{301}👩‍💻z");
+    b.backspace();
+    assert_eq!(b.text().to_string(), "a\u{301}z");
+    b.backspace();
+    assert_eq!(b.text().to_string(), "z");
+    b.delete();
+    assert_eq!(b.text().len_chars(), 0);
+}
+
+#[test]
+fn graphemes_spanning_rope_chunks_are_indivisible() {
+    let grapheme = format!("a{}", "\u{301}".repeat(3000));
+    let mut b = Buffer::new(&format!("{grapheme}z"));
+    assert!(b.text().chunks().count() > 1);
+    b.horizontal(true, false);
+    assert_eq!(b.selection().head, 3001);
+    b.backspace();
+    assert_eq!(b.text().to_string(), "z");
+}
+
+#[test]
+fn external_carets_are_clamped_and_snapped() {
+    let mut b = Buffer::new("e\u{301}x");
+    b.set_caret(1, false);
+    assert_eq!(b.selection().head, 0);
+    b.set_caret(usize::MAX, false);
+    assert_eq!(b.selection().head, 3);
+}
+
+#[test]
+fn replacing_a_backward_selection_and_undo_restore_direction() {
+    let mut b = Buffer::new("abc世界");
+    b.document_edge(true, false);
+    b.set_caret(2, true);
+    assert_eq!(b.selected_text(), "c世界");
+    let selection = b.selection();
+    b.insert("🐱");
+    assert_eq!(b.text().to_string(), "ab🐱");
+    b.undo();
+    assert_eq!(b.text().to_string(), "abc世界");
+    assert_eq!(b.selection(), selection);
+    b.redo();
+    assert_eq!(b.text().to_string(), "ab🐱");
+    assert_eq!(b.selection(), Selection { anchor: 3, head: 3 });
+}
+
+#[test]
+fn editing_after_undo_discards_the_redo_branch() {
+    let mut b = Buffer::default();
+    b.insert("a");
+    b.insert("b");
+    b.undo();
+    b.insert("c");
+    assert!(!b.can_redo());
+    b.redo();
+    assert_eq!(b.text().to_string(), "ac");
+}
+
+#[test]
+fn line_navigation_retains_grapheme_column_through_short_lines() {
+    let mut b = Buffer::new("abcde\nx\ne\u{301}12345\n");
+    b.set_caret(4, false);
+    b.vertical(true, false);
+    assert_eq!(b.selection().head, 7);
+    b.vertical(true, true);
+    assert_eq!(b.selection().head, 13);
+    assert_eq!(b.selection().anchor, 7);
+    b.vertical(false, false);
+    b.vertical(false, false);
+    assert_eq!(b.selection().head, 4);
+    b.line_edge(true, false);
+    assert_eq!(b.selection().head, 5);
+}
+
+#[test]
+fn newline_navigation_and_joining_lines() {
+    let mut b = Buffer::new("a\n\nb\n");
+    b.set_caret(2, false);
+    b.backspace();
+    assert_eq!(b.text().to_string(), "a\nb\n");
+    b.horizontal(true, false);
+    assert_eq!(b.selection().head, 2);
+    b.line_edge(true, false);
+    assert_eq!(b.selection().head, 3);
+    b.delete();
+    assert_eq!(b.text().to_string(), "a\nb");
+}
+
+#[test]
+fn insertions_and_deletions_that_join_graphemes_keep_valid_carets() {
+    let mut b = Buffer::new("\u{301}x");
+    b.insert("e");
+    assert_eq!(b.selection().head, 2);
+    b.backspace();
+    assert_eq!(b.text().to_string(), "x");
+    let mut b = Buffer::new("e\n\u{301}");
+    b.set_caret(1, false);
+    b.delete();
+    assert_eq!(b.text().to_string(), "e\u{301}");
+    assert_eq!(b.selection().head, 2);
+}
+
+#[test]
+fn collapsing_a_selection_does_not_skip_an_extra_grapheme() {
+    let mut b = Buffer::new("abcd");
+    b.set_caret(1, false);
+    b.set_caret(3, true);
+    b.horizontal(false, false);
+    assert_eq!(b.selection().head, 1);
+    b.set_caret(3, true);
+    b.horizontal(true, false);
+    assert_eq!(b.selection().head, 3);
+}
+
+#[test]
+fn history_is_bounded_and_rope_snapshots_remain_unchanged() {
+    let mut b = Buffer::new("original");
+    let snapshot = b.text().clone();
+    b.document_edge(true, false);
+    for _ in 0..150 {
+        b.insert("x");
+    }
+    for _ in 0..150 {
+        b.undo();
+    }
+    assert_eq!(b.text().len_chars(), 8 + 22);
+    assert_eq!(snapshot.to_string(), "original");
+}
+
+#[test]
+fn edits_at_scalar_offsets_match_contiguous_grapheme_reference() {
+    fn boundaries(text: &str) -> Vec<usize> {
+        let mut result = vec![0];
+        for grapheme in text.graphemes(true) {
+            result.push(result.last().unwrap() + grapheme.chars().count());
+        }
+        result
+    }
+    fn replace(source: &str, range: std::ops::Range<usize>, insert: &str) -> (String, usize) {
+        let mut characters = source.chars().collect::<Vec<_>>();
+        characters.splice(range.clone(), insert.chars());
+        let text = characters.iter().collect::<String>();
+        let end = range.start + insert.chars().count();
+        let boundaries = boundaries(&text);
+        let head = boundaries[boundaries.partition_point(|&p| p < end)];
+        (text, head)
+    }
+
+    for core in ["é👩🏽‍💻🇭🇰🇯क्‍क", "\u{600}a\n\u{301}b", "각\n\n"]
+    {
+        let source = format!("{}{core}{}", "x".repeat(1009), "y".repeat(1700));
+        let original_boundaries = boundaries(&source);
+        for position in 1007..1011 + core.chars().count() {
+            let start = original_boundaries[original_boundaries
+                .partition_point(|&p| p <= position)
+                .saturating_sub(1)];
+            for insert in ["é", "\u{301}", "\u{200d}💻", "क्‍क", "\n"] {
+                let mut buffer = Buffer::new(&source);
+                buffer.set_caret(position, false);
+                assert_eq!(buffer.selection().head, start);
+                let (inserted, head) = replace(&source, start..start, insert);
+                buffer.insert(insert);
+                assert_eq!(buffer.text().to_string(), inserted);
+                assert_eq!(buffer.selection(), Selection { anchor: head, head });
+                let edges = boundaries(&inserted);
+                let previous = edges[edges.partition_point(|&p| p < head).saturating_sub(1)];
+                let (deleted, new_head) = replace(&inserted, previous..head, "");
+                buffer.backspace();
+                assert_eq!(buffer.text().to_string(), deleted);
+                assert_eq!(buffer.selection().head, new_head);
+                buffer.undo();
+                assert_eq!(buffer.text().to_string(), inserted);
+                assert_eq!(buffer.selection().head, head);
+                buffer.undo();
+                assert_eq!(buffer.text().to_string(), source);
+                assert_eq!(buffer.selection().head, start);
+                buffer.redo();
+                assert_eq!(buffer.text().to_string(), inserted);
+                assert_eq!(buffer.selection().head, head);
+            }
+        }
+    }
+}
+
+#[test]
+fn transaction_is_atomic_grouped_and_restores_directed_selection() {
+    use velk_core::{TextEdit, Transaction};
+    let mut b = Buffer::new("ab\n世界\ncd");
+    b.set_caret(7, false);
+    b.set_caret(1, true);
+    let selection = b.selection();
+    b.apply_transaction(Transaction {
+        revision: 0,
+        edits: vec![
+            TextEdit {
+                range: 0..0,
+                text: "  ".into(),
+            },
+            TextEdit {
+                range: 6..8,
+                text: "ef\r\ng".into(),
+            },
+            TextEdit {
+                range: 3..3,
+                text: "  ".into(),
+            },
+        ],
+        selection: None,
+    })
+    .unwrap();
+    assert_eq!(b.text().to_string(), "  ab\n  世界\nef\ng");
+    assert_eq!(b.revision(), 3);
+    let after = b.selection();
+    b.undo();
+    assert_eq!(b.text().to_string(), "ab\n世界\ncd");
+    assert_eq!(b.selection(), selection);
+    assert_eq!(b.revision(), 6);
+    assert!(!b.can_undo());
+    b.redo();
+    assert_eq!(b.text().to_string(), "  ab\n  世界\nef\ng");
+    assert_eq!(b.selection(), after);
+    assert_eq!(b.revision(), 9);
+}
+
+#[test]
+fn invalid_and_stale_transactions_leave_text_history_and_selection_untouched() {
+    use velk_core::{TextEdit, Transaction, TransactionError};
+    let mut b = Buffer::new("abc");
+    b.insert("x");
+    b.undo();
+    let before = b.selection();
+    for (revision, edits, selection, expected) in [
+        (0, vec![], None, TransactionError::StaleRevision),
+        (
+            2,
+            vec![TextEdit {
+                range: 2..4,
+                text: "".into(),
+            }],
+            None,
+            TransactionError::InvalidRange,
+        ),
+        (
+            2,
+            vec![
+                TextEdit {
+                    range: 0..2,
+                    text: "x".into(),
+                },
+                TextEdit {
+                    range: 1..3,
+                    text: "y".into(),
+                },
+            ],
+            None,
+            TransactionError::OverlappingEdits,
+        ),
+        (
+            2,
+            vec![
+                TextEdit {
+                    range: 1..1,
+                    text: "x".into(),
+                },
+                TextEdit {
+                    range: 1..1,
+                    text: "y".into(),
+                },
+            ],
+            None,
+            TransactionError::OverlappingEdits,
+        ),
+        (
+            2,
+            vec![TextEdit {
+                range: 0..1,
+                text: "".into(),
+            }],
+            Some(Selection { anchor: 0, head: 3 }),
+            TransactionError::InvalidSelection,
+        ),
+    ] {
+        assert_eq!(
+            b.apply_transaction(Transaction {
+                revision,
+                edits,
+                selection
+            }),
+            Err(expected)
+        );
+        assert_eq!(b.text().to_string(), "abc");
+        assert_eq!(b.selection(), before);
+        assert_eq!(b.revision(), 2);
+        assert!(b.can_redo());
+        assert!(!b.can_undo());
+        assert!(!b.is_dirty());
+    }
+}
+
+#[test]
+fn no_op_edits_preserve_history_and_checkpoints_and_final_caret_snaps() {
+    use velk_core::{TextEdit, Transaction};
+    let mut b = Buffer::new("éx");
+    assert!(
+        !b.apply_transaction(Transaction {
+            revision: 0,
+            edits: vec![TextEdit {
+                range: 0..2,
+                text: "é".into()
+            }],
+            selection: Some(Selection { anchor: 1, head: 1 }),
+        })
+        .unwrap()
+    );
+    assert_eq!(b.selection().head, 2);
+    assert_eq!(b.revision(), 0);
+    assert!(!b.can_undo());
+    assert!(!b.is_dirty());
+    b.apply_transaction(Transaction {
+        revision: 0,
+        edits: vec![TextEdit {
+            range: 1..2,
+            text: "".into(),
+        }],
+        selection: None,
+    })
+    .unwrap();
+    assert_eq!(b.text().to_string(), "ex");
+}
+
+#[test]
+fn saved_checkpoints_follow_history_and_async_saves_without_revision_confusion() {
+    let mut b = Buffer::new("abc");
+    let loaded = b.checkpoint();
+    b.insert("x");
+    let saving = b.checkpoint();
+    b.insert("y");
+    assert!(b.mark_saved(saving));
+    assert!(b.is_dirty());
+    b.undo();
+    assert!(!b.is_dirty());
+    b.undo();
+    assert!(b.is_dirty());
+    b.redo();
+    assert!(!b.is_dirty());
+    b.insert("z");
+    assert!(b.is_dirty());
+    assert!(!b.can_redo());
+    assert!(b.mark_saved(loaded));
+    assert!(b.is_dirty());
+    assert!(!b.mark_saved(Buffer::new("").checkpoint()));
+}

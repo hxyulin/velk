@@ -115,7 +115,7 @@ fn history(
         text.insert(step.start, &step.text);
         let selected = selection(&text, step.selection)?;
         let edit = if undo {
-            velk_syntax::Edit::between(
+            Change::between(
                 0,
                 &text,
                 &from,
@@ -123,7 +123,7 @@ fn history(
                 step.removed,
             )
         } else {
-            velk_syntax::Edit::between(0, &from, &text, step.start..end, step.text.chars().count())
+            Change::between(0, &from, &text, step.start..end, step.text.chars().count())
         };
         result.push(History {
             snapshot: Snapshot {

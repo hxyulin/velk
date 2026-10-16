@@ -11,7 +11,7 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::graphemes;
+use crate::{Change, graphemes};
 
 const HISTORY_LIMIT: usize = 128;
 
@@ -90,7 +90,7 @@ struct Snapshot {
 #[derive(Clone)]
 struct History {
     snapshot: Snapshot,
-    edits: Vec<velk_syntax::Edit>,
+    edits: Vec<Change>,
 }
 
 /// Rope document and editing state, independent of RXUI and the graphics host.
@@ -103,7 +103,7 @@ pub struct Buffer {
     document: u64,
     next_state: u64,
     saved: Checkpoint,
-    edits: VecDeque<velk_syntax::Edit>,
+    edits: VecDeque<Change>,
     goal_column: Option<usize>,
     boundaries: RefCell<VecDeque<(usize, Arc<Vec<usize>>)>>,
 }
@@ -174,7 +174,7 @@ impl Buffer {
         &self.current.text
     }
 
-    pub(crate) fn is_grapheme_boundary(&self, position: usize) -> bool {
+    pub fn is_grapheme_boundary(&self, position: usize) -> bool {
         position <= self.text().len_chars() && graphemes::is_boundary(self.text(), position)
     }
 
@@ -328,7 +328,9 @@ impl Buffer {
         self.set_caret(if end { self.text().len_chars() } else { 0 }, extend);
     }
 
-    pub(crate) fn edits_since(&self, revision: u64) -> Option<Vec<velk_syntax::Edit>> {
+    /// Changes after a revision, or None if the bounded change log has expired.
+    /// Each change uses coordinates in the immediately preceding document state.
+    pub fn edits_since(&self, revision: u64) -> Option<Vec<Change>> {
         let edits: Vec<_> = self
             .edits
             .iter()
@@ -368,7 +370,7 @@ impl Buffer {
         }
     }
 
-    fn record(&mut self, edit: velk_syntax::Edit) {
+    fn record(&mut self, edit: Change) {
         self.edits.push_back(edit);
         if self.edits.len() > HISTORY_LIMIT {
             self.edits.pop_front();
@@ -377,7 +379,7 @@ impl Buffer {
 
     /// Apply atomically. Ranges are scalar offsets, so protocol edits may split
     /// an existing grapheme; only the final caret/selection is snapped to edges.
-    /// Each effective replacement advances the monotonic syntax revision; the
+    /// Each effective replacement advances the monotonic document revision; the
     /// entire transaction occupies one history entry. Errors leave state intact.
     #[tracing::instrument(level = "debug", skip_all, fields(revision = self.revision, edits = transaction.edits.len()))]
     pub fn apply_transaction(
@@ -429,7 +431,7 @@ impl Buffer {
                 anchor: map(next.selection.anchor),
                 head: map(next.selection.head),
             };
-            edits.push(velk_syntax::Edit::between(
+            edits.push(Change::between(
                 self.revision + edits.len() as u64 + 1,
                 &before,
                 &next.text,

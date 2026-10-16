@@ -163,7 +163,7 @@ mod tests {
                     std::fs::canonicalize(&destination).unwrap()
                 );
                 assert!(d.buffer.editor.read(cx).buffer().is_dirty());
-                let mut history = velk_editor_widget::Buffer::restore(
+                let mut history = velk_core::Buffer::restore(
                     &d.buffer
                         .editor
                         .read(cx)

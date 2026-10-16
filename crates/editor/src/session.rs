@@ -7,7 +7,8 @@ use std::{
     process::{Child, Command},
     time::{Duration, Instant},
 };
-use velk_editor_widget::{BufferSnapshot, Editor};
+use velk_core::BufferSnapshot;
+use velk_editor_widget::Editor;
 pub const SNAPSHOT_ENV: &str = "VELK_RELOAD_SESSION";
 pub const READY_ENV: &str = "VELK_RELOAD_READY";
 

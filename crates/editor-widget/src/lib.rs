@@ -1,9 +1,7 @@
-//! Reusable rope-backed text editing state and an RXUI editor view.
+//! RXUI editor view over the UI-independent Velk Core buffer.
 mod annotations;
 mod blink;
-mod buffer;
 mod composition;
-mod graphemes;
 mod horizontal;
 mod hover;
 mod inline;
@@ -21,9 +19,6 @@ pub use annotations::{
     AnnotationError, Annotations, Color, EditorAppearance, HoverCard, LinePattern, OverlayKind,
     OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
 };
-pub use buffer::{
-    Buffer, BufferSnapshot, Checkpoint, Selection, TextEdit, Transaction, TransactionError,
-};
 pub use hover::{HoverSource, HoverTarget};
 use rxui::{prelude::*, standard_commands as commands};
 use std::sync::Arc;
@@ -32,6 +27,10 @@ use std::time::Instant;
 use std::{cell::RefCell, rc::Rc};
 pub use surface::MONOSPACE_FAMILY;
 use surface::{Composition, Geometry, Surface};
+use velk_core::graphemes;
+pub use velk_core::{
+    Buffer, BufferSnapshot, Checkpoint, Selection, TextEdit, Transaction, TransactionError,
+};
 pub use velk_syntax::Language;
 
 /// An editor view. Create a separate entity per open buffer; document state can be

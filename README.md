@@ -167,15 +167,16 @@ Current limitations include:
 - [Plugin API](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
   [plugin settings](docs/plugin-settings.md)
 - [Semantic services and Rust LSP](docs/semantic-services.md)
+- [Core and component boundaries](docs/core.md)
 - [Files](docs/files.md), [search](docs/search.md), and [terminal](docs/terminal.md)
 - [Profiling and performance tooling](docs/profiling.md)
 
 ## Contributing
 
 Build and try the editor before making a change. The workspace separates the
-application shell (`crates/editor`), reusable editor widget
-(`crates/editor-widget`), syntax and semantic services, markup contracts, and
-the native plugin API, SDK, and host. Bundled feature implementations live under
+application shell (`crates/editor`), UI-independent document state (`crates/core`),
+RXUI editor widget (`crates/editor-widget`), syntax and semantic services, markup
+contracts, and the native plugin API, SDK, and host. Bundled feature implementations live under
 `plugins/`; development commands live in `xtask/`.
 
 Install [prek](https://prek.j178.dev/) and enable the repository hooks:
