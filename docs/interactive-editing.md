@@ -74,3 +74,23 @@ Typing a closing delimiter skips only a matching tracked close at the caret.
 Backspace removes both delimiters only between an empty tracked pair. Skipping
 changes only the caret; paired deletion is one undo step. The most recent 256
 pairs per buffer are tracked; older pairs fall back to literal editing.
+
+## Configuration example
+
+The same values are available in Settings. Provider selection applies immediately;
+restart a plugin after changing its own options.
+
+```json
+{
+  "indentation_provider": "velk.indentation",
+  "pairing_provider": "velk.autopairs",
+  "plugins": {
+    "velk.indentation": { "tab_width": 4, "use_tabs": false },
+    "velk.autopairs": { "pair_quotes": false }
+  }
+}
+```
+
+Disable either plugin in the plugin manager to use plain editing for that role,
+or select another loaded plugin implementing the same role. Settings and plugin
+manager surfaces retain ordinary Tab focus navigation.

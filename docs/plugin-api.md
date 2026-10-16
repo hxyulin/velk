@@ -20,7 +20,7 @@
   depending on the authoring SDK. Its existing metadata/settings re-exports remain.
 
 Feature models remain in their domain crates, including `velk-markup`,
-`velk-semantic`, `velk-panels`, and `velk-search`. A future adapter should reuse
+`velk-semantic`, `velk-panels`, `velk-search`, and `velk-editing`. A future adapter should reuse
 their service semantics and common definitions instead of depending on native
 function tables. No Wasm runtime or new feature API is introduced by this split.
 
@@ -28,6 +28,15 @@ The root ABI and named contract versions stay at 1 during internal development;
 callback layouts may change. Rebuild the host, SDK, and bundled plugins together.
 Standard hook names and plugin-ID helpers are available from `velk-plugin-api`
 through re-exports.
+
+## Interactive editing service
+
+`velk-editing` carries bounded editing context and transaction proposals. A native
+provider implements the SDK's stateless `EditingBehavior` and registers through
+`Registrar::editing`. The host supplies a direct retirement-aware lease to the
+editor; typing does not queue behind lifecycle work or LSP requests. See
+[interactive editing](interactive-editing.md) for roles, limits, input routing,
+provider settings, and the bundled indentation and autopairs implementations.
 
 ## Host diagnostics service
 

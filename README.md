@@ -119,6 +119,8 @@ The bundled pack contains:
 - `velk.markdown`: bundled, replaceable CommonMark provider for documentation surfaces.
 - `velk.lsp`: generic language-server transport and session management.
 - `velk.language-server.rust-analyzer`: the Rust language-server definition.
+- `velk.indentation`: Tab / Shift+Tab indentation and aligned newlines.
+- `velk.autopairs`: matching brackets, selection wrapping, closer skipping, and paired deletion.
 
 Plugins declare a display name, a short description, a Markdown README, and
 required or optional capabilities with explanations. The plugin manager exposes
@@ -128,6 +130,11 @@ definition/type/implementation navigation, references, formatting, rename, code
 actions, explicit completion, Rust parent modules, and macro expansion. Plugins
 propose [workspace text edits](docs/workspace-edits.md); the host validates targets
 and applies changes through document transactions.
+
+[Interactive editing providers](docs/interactive-editing.md) supply indentation
+and pairing through a separate synchronous decision interface. Settings select
+one provider per role; the host owns transactions, undo, caret placement, IME,
+and pair tracking. Both bundled providers can be disabled or replaced.
 
 **Native plugins are trusted code running inside the editor process.** Capability
 declarations describe what a plugin needs; they are not currently a sandbox or
@@ -180,6 +187,7 @@ Current limitations include:
   [window reloading](docs/reloading.md)
 - [Plugin API and shared contracts](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
   [plugin settings](docs/plugin-settings.md)
+- [Interactive editing, indentation, and autopairs](docs/interactive-editing.md)
 - [Plugin commands](docs/plugin-commands.md), [workspace edits](docs/workspace-edits.md),
   and [semantic services and Rust LSP](docs/semantic-services.md)
 - [Core and component boundaries](docs/core.md)
