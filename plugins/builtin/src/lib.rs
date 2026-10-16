@@ -6,4 +6,5 @@ velk_plugin_sdk::export_plugin_pack!(
     velk_plugin_search::Search,
     velk_plugin_files::Files,
     velk_plugin_terminal::Terminal,
+    velk_plugin_indentation::Indentation,
 );

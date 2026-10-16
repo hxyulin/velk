@@ -14,7 +14,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .iter()
                 .all(|e| matches!(e, Event::Loaded(_)))
         );
-        assert_eq!(manager.plugins().count(), 6);
+        assert_eq!(manager.plugins().count(), specs.len());
         let image = manager.plugins().next().unwrap().loaded_path.clone();
         assert!(
             manager
@@ -212,10 +212,10 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         let markdown = manager.plugins().find(|p| p.id == ID).unwrap();
         assert_eq!(markdown.loaded_path, image);
         assert!(markdown.generation > old);
-        assert_eq!(manager.unload_all().len(), 6);
+        assert_eq!(manager.unload_all().len(), specs.len());
         assert!(image.exists(), "LSP's image lease applies to all members");
         assert!(manager.call_hook(&search, b"{}").is_err());
-        assert_eq!(manager.load()?.len(), 6);
+        assert_eq!(manager.load()?.len(), specs.len());
         assert!(manager.plugins().all(|p| p.loaded_path == image));
         manager.unload_all();
         // Even selecting only a nonresident member must discover pack residency.
@@ -235,7 +235,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     probe(root, output, release)?;
     crate::lsp_smoke::run_pack(root, output)?;
     println!(
-        "Plugin pack smoke passed: one image, six identities, independent unload/reload, resident subsets, artifact revalidation, nonresident cleanup, initialization failures, stale handles, packed LSP sessions, packed PTY terminal input/output"
+        "Plugin pack smoke passed: one image, independent identities, independent unload/reload, resident subsets, artifact revalidation, nonresident cleanup, initialization failures, stale handles, packed LSP sessions, packed PTY terminal input/output"
     );
     Ok(())
 }

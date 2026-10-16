@@ -205,3 +205,60 @@ fn pointer_focus_accepts_text_after_key_dispatch() {
     input(&mut runtime, &mut ui, TextInputEvent::Insert("x".into()));
     assert_eq!(text(&mut runtime, &editor), "x");
 }
+
+#[derive(Debug)]
+struct IndentationProvider;
+impl velk_editing::Provider for IndentationProvider {
+    fn evaluate(&self, request: &velk_editing::Request) -> Result<velk_editing::Decision, String> {
+        <velk_plugin_indentation::Indentation as velk_plugin_sdk::EditingBehavior>::evaluate(
+            request,
+        )
+    }
+}
+#[test]
+fn tab_and_shift_tab_use_the_indentation_plugin_inside_the_editor() {
+    let (mut runtime, editor, mut ui) = setup();
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_editing_providers(std::collections::BTreeMap::from([(
+                velk_editing::Role::Indentation,
+                std::sync::Arc::new(IndentationProvider)
+                    as std::sync::Arc<dyn velk_editing::Provider>,
+            )]))
+        })
+    });
+    input(
+        &mut runtime,
+        &mut ui,
+        TextInputEvent::Insert("one\ntwo\nthree".into()),
+    );
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.execute(velk_editor_widget::EditCommand::SelectRange(0..8))
+        })
+    });
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Tab,
+        Modifiers::default(),
+    );
+    assert_eq!(text(&mut runtime, &editor), "    one\n    two\nthree");
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Tab,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(text(&mut runtime, &editor), "one\ntwo\nthree");
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Character("z".into()),
+        primary(),
+    );
+    assert_eq!(text(&mut runtime, &editor), "    one\n    two\nthree");
+}

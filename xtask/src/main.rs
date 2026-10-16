@@ -5,6 +5,7 @@ use std::{
 };
 use velk_plugin_host::{MANIFEST, Manifest, PluginSpec};
 mod diagnostics_smoke;
+mod editing_smoke;
 mod hooks_smoke;
 mod lsp_smoke;
 mod pack_smoke;
@@ -90,6 +91,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         velk_search::DEFAULT_BACKEND,
         "velk.files",
         "velk.terminal",
+        "velk.indentation",
     ]
     .into_iter()
     .map(|id| PluginSpec {
@@ -113,6 +115,8 @@ fn build_standalone(root: &Path, release: bool) -> Result<(), String> {
         "velk-plugin-rust-analyzer",
         "-p",
         "velk-plugin-search",
+        "-p",
+        "velk-plugin-indentation",
     ]);
     if release {
         command.arg("--release");
@@ -266,6 +270,8 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     build(root, release, false)?;
     pack_smoke::run(root, output, release)?;
     build_standalone(root, release)?;
+    editing_smoke::run(output, false)?;
+    editing_smoke::run(output, true)?;
     let profile_output = output;
     let standalone = output.join("examples");
     let output = standalone.as_path();

@@ -43,3 +43,15 @@ The host transforms tracked pair endpoints through text edits and invalidates
 pairs when either delimiter is replaced. Undo, redo, and provider changes clear
 pair tracking rather than claiming that restored or pre-existing brackets were
 inserted by the current provider. Tracking is local to a buffer and not persisted.
+
+## Bundled indentation
+
+`velk.indentation` handles Tab and Shift+Tab. Tab at a caret inserts to the next
+configured tab stop; a selection indents each affected line. Shift+Tab removes
+up to one indentation unit, including existing tabs and partial space prefixes.
+A selection ending at a line's beginning excludes that line. Edits retain the
+selection direction and form one undo step.
+
+Plugin settings `tab_width` (1–16, default 4) and `use_tabs` (default false) control
+inserted text. Columns are logical Unicode scalar columns with tabs expanded to
+configured stops; they are not font- or glyph-width measurements.

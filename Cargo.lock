@@ -4062,6 +4062,8 @@ dependencies = [
  "velk-editing",
  "velk-editor-model",
  "velk-markup",
+ "velk-plugin-indentation",
+ "velk-plugin-sdk",
  "velk-syntax",
 ]
 
@@ -4094,6 +4096,7 @@ name = "velk-plugin-builtin"
 version = "0.0.0-dev"
 dependencies = [
  "velk-plugin-files",
+ "velk-plugin-indentation",
  "velk-plugin-lsp",
  "velk-plugin-markdown",
  "velk-plugin-rust-analyzer",
@@ -4139,6 +4142,14 @@ dependencies = [
  "velk-plugin-api",
  "velk-plugin-contracts",
  "velk-semantic",
+]
+
+[[package]]
+name = "velk-plugin-indentation"
+version = "0.0.0-dev"
+dependencies = [
+ "velk-core",
+ "velk-plugin-sdk",
 ]
 
 [[package]]
@@ -5108,8 +5119,10 @@ dependencies = [
  "tempfile",
  "tokio",
  "velk-commands",
+ "velk-core",
  "velk-diagnostics",
  "velk-editing",
+ "velk-editor-model",
  "velk-markup",
  "velk-panels",
  "velk-plugin-host",
