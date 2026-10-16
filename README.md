@@ -180,8 +180,10 @@ prek install
 prek run --all-files
 ```
 
-Hooks normalize text files and format Rust and TOML. Review and stage any fixes
-before committing again.
+`prek install` installs both the pre-commit and commit-message hooks. File checks
+normalize text and format Rust and TOML; the commit-message hook checks
+Conventional Commits. Review and stage any formatting fixes before committing
+again. See [AGENTS.md](AGENTS.md) for coding conventions and project boundaries.
 
 After setting up the terminal build inputs, run the workspace checks:
 
