@@ -2,7 +2,7 @@
 
 # Velk
 
-**A native desktop editor with a small core and a plugin-driven future.**
+**Solving a problem nobody has: their editor is too complete.**
 
 Built with Rust and [RXUI](https://github.com/hxyulin/rxui).
 
@@ -10,18 +10,47 @@ Built with Rust and [RXUI](https://github.com/hxyulin/rxui).
 [![Rust: 1.99.0](https://img.shields.io/badge/Rust-1.99.0-000000?logo=rust)](rust-toolchain.toml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-[Quickstart](#quickstart) · [Plugins](#plugins) · [Documentation](#documentation) · [Contributing](#contributing)
+[Previews](#previews) · [Quickstart](#quickstart) · [Plugins](#plugins) · [Documentation](#documentation) · [Contributing](#contributing)
 
 </div>
 
-Velk is an editor built around a reliable document foundation and extensible
-features. The host owns documents, editing, saving, recovery, and a consistent
-application shell. Plugins provide features through shared contracts, so they
-can work with the same documents and interface conventions.
+Your editor opens files, searches text, indents lines, and even closes brackets
+for you. Clearly, things have gone too far.
+
+Velk's response is to make those features plugins. File browsing? Plugin.
+Search? Plugin. Markdown, language services, a terminal, indentation, and the
+other half of your parentheses? Plugins. We bundle defaults so you can actually
+use the editor before deciding how much of it to replace.
+
+Under the joke is a native Rust editor built as a configurable platform. The
+host owns the shared document model, edit transactions, undo history, saving,
+recovery, and application shell. Feature plugins use shared contracts and UI
+conventions, so replacing a behavior does not mean giving it a separate copy of
+your document. The core, editor model, and rendering adapter are separate crates;
+making every layer a loadable plugin is still a direction, not today's feature
+list.
 
 Today, Velk opens UTF-8 files in a GPU-rendered, rope-backed editor with multiple
 buffers, Rust syntax highlighting, and bundled plugins for files, search,
 language services, Markdown, indentation, autopairs, and a terminal.
+
+## Previews
+
+Same editor, different amounts of furniture. Choose a preset in
+**Settings → Layout**, then adjust the icon rail and status line to taste.
+
+| Quiet | Rail |
+| --- | --- |
+| [![Quiet layout with a Rust source buffer and no sidebar](docs/images/layout-quiet.jpg)](docs/images/layout-quiet.jpg) | [![Rail layout with an icon bar and the Files sidebar](docs/images/layout-rail.jpg)](docs/images/layout-rail.jpg) |
+| The document gets the room. Panels stay hidden until opened. | An icon rail keeps tools close, with panels in a sidebar. |
+
+| Tiled | Plugins |
+| --- | --- |
+| [![Tiled layout with the Files panel beside a Rust source buffer](docs/images/layout-tiled.jpg)](docs/images/layout-tiled.jpg) | [![Plugin manager showing bundled plugins and the Autopairs README](docs/images/plugins.jpg)](docs/images/plugins.jpg) |
+| Plugin panels share the workspace as splits. | Inspect plugin READMEs, manage enabled features, open settings, and restart providers. |
+
+Click a preview for the full image. These are captures of the running macOS app;
+the terminal plugin is disabled in this example workspace.
 
 ## What works today
 
