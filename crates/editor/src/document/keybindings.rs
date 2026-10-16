@@ -334,6 +334,7 @@ impl Document {
             .as_ref()
             .map(|b| b.editor.read(cx).input_mode_id().to_owned());
         let mut keys = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for compiled in &self.keybindings.bindings.0 {
             if window_only && compiled.binding.when.scope != Scope::Window {
                 continue;
@@ -343,15 +344,13 @@ impl Document {
                 language: language.as_deref(),
                 mode: mode.as_deref(),
             };
-            if self
-                .keybindings
-                .bindings
-                .resolve(&compiled.strokes[..1], &context)
-                == Match::None
-            {
+            if !compiled.binding.when.matches(&context) {
                 continue;
             }
             let stroke = &compiled.strokes[0];
+            if !seen.insert(stroke) {
+                continue;
+            }
             let key = match stroke.key.as_str() {
                 "space" => KeyboardKey::Space,
                 "enter" => KeyboardKey::Enter,
@@ -381,9 +380,7 @@ impl Document {
                     shift: stroke.shift,
                 },
             );
-            if !keys.contains(&shortcut) {
-                keys.push(shortcut);
-            }
+            keys.push(shortcut);
         }
         keys
     }
@@ -1107,6 +1104,34 @@ mod tests {
             let d = document.read(cx);
             assert!(d.keybindings.error.is_none());
             assert!(d.keybindings.bindings.0.is_empty());
+        });
+    }
+
+    #[test]
+    fn native_reservations_filter_contexts_and_deduplicate_shared_chord_prefixes() {
+        let (mut runtime, document, _ui) = setup(
+            r#"{"bindings":[
+            {"keys":"Primary+j","command":null},
+            {"keys":"Primary+j","command":null,"when":{"scope":"window"}},
+            {"keys":"F6 F7","command":null},
+            {"keys":"F6 F8","command":null},
+            {"keys":"Primary+k","command":null,"when":{"mode":"normal"}},
+            {"keys":"Primary+l","command":null,"when":{"language":"rust"}}
+        ]}"#,
+        );
+        runtime.update(|cx| {
+            let d = document.read(cx);
+            let all = d.reserved_keybindings(false, cx);
+            assert_eq!(all.len(), 2);
+            assert!(all.contains(&Shortcut::primary("j")));
+            assert!(all.contains(&Shortcut::new(
+                KeyboardKey::Other("F6".into()),
+                Default::default()
+            )));
+            assert_eq!(
+                d.reserved_keybindings(true, cx),
+                vec![Shortcut::primary("j")]
+            );
         });
     }
 }

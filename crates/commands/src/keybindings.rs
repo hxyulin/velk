@@ -16,6 +16,14 @@ pub struct When {
     pub language: Option<String>,
     pub mode: Option<String>,
 }
+impl When {
+    /// Whether all scope, language, and mode predicates apply to this context.
+    pub fn matches(&self, context: &Context<'_>) -> bool {
+        self.scope == context.scope
+            && matches_context(&self.language, context.language)
+            && matches_context(&self.mode, context.mode)
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
@@ -34,7 +42,7 @@ pub struct Binding {
 pub struct File {
     pub bindings: Vec<Binding>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Stroke {
     pub key: String,
     pub control: bool,
@@ -186,11 +194,7 @@ impl Bindings {
     }
     pub fn resolve(&self, strokes: &[Stroke], context: &Context<'_>) -> Match {
         for item in self.0.iter().rev() {
-            let when = &item.binding.when;
-            if when.scope != context.scope
-                || !matches_context(&when.language, context.language)
-                || !matches_context(&when.mode, context.mode)
-            {
+            if !item.binding.when.matches(context) {
                 continue;
             }
             if item.strokes.starts_with(strokes) {
