@@ -35,8 +35,11 @@ changes take effect when that plugin is restarted, matching other plugin setting
 Tab/Shift+Tab, Enter, and Backspace are editing intents only inside the focused
 editor. Ordinary committed keyboard text can use pairing; paste and IME commits
 remain literal and preedit is never rewritten. Missing, declining, or failing
-providers use the editor's original behavior (four-space Tab, literal newline,
+providers generally use the editor's original behavior (four-space Tab, literal newline,
 normal deletion; Shift+Tab retains focus navigation without an indenter).
+If an active provider fails or exceeds a limit while indenting a selection, the
+selection remains untouched and the failure is logged. Tab must not replace the
+selected document text with spaces in that case.
 
 Every accepted proposal is one Core transaction with optional final selection.
 The host transforms tracked pair endpoints through text edits and invalidates

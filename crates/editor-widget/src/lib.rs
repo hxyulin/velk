@@ -63,6 +63,10 @@ impl Editor {
         self.editing.set_providers(providers);
     }
     fn interactive(&mut self, intent: velk_editing::Intent) -> bool {
+        let preserve_selection = matches!(
+            intent,
+            velk_editing::Intent::Indent | velk_editing::Intent::Outdent
+        ) && !self.buffer.selection().is_empty();
         match self.editing.evaluate(&mut self.buffer, intent) {
             Ok(true) => {
                 self.composition = None;
@@ -72,7 +76,9 @@ impl Editor {
             Ok(false) => false,
             Err(error) => {
                 tracing::warn!(%error, "interactive editing provider failed");
-                false
+                // A failed indentation request must not replace selected text
+                // with the plain Tab fallback.
+                preserve_selection
             }
         }
     }
@@ -877,6 +883,28 @@ mod interactive_tests {
                 selection: Some(Selection::caret(request.selection.range().start + 1)),
                 pairs: vec![],
             }))
+        }
+    }
+    #[derive(Debug)]
+    struct Failing;
+    impl velk_editing::Provider for Failing {
+        fn evaluate(&self, _: &velk_editing::Request) -> Result<velk_editing::Decision, String> {
+            Err("provider failure".into())
+        }
+    }
+    #[test]
+    fn failed_or_oversized_indentation_never_replaces_selected_text() {
+        for text in ["selected".into(), "x".repeat(velk_editing::MAX_TEXT + 1)] {
+            let mut editor = Editor::new(&text);
+            editor.execute(EditCommand::SelectAll);
+            editor.set_editing_providers(std::collections::BTreeMap::from([(
+                velk_editing::Role::Indentation,
+                Arc::new(Failing) as Arc<dyn velk_editing::Provider>,
+            )]));
+            assert!(editor.interactive(velk_editing::Intent::Indent));
+            assert!(editor.interactive(velk_editing::Intent::Outdent));
+            assert_eq!(editor.buffer().text().to_string(), text);
+            assert!(!editor.buffer().can_undo());
         }
     }
     #[test]

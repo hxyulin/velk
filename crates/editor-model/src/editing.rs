@@ -68,7 +68,7 @@ impl Session {
         };
         let context = text.slice(offset..end);
         if context.len_bytes() > velk_editing::MAX_TEXT {
-            return Ok(false);
+            return Err("interactive editing context exceeds 64 KiB".into());
         }
         let request = Request {
             revision: buffer.revision(),
