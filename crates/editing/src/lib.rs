@@ -1,4 +1,5 @@
 //! Interactive editing decisions. Offsets are absolute Unicode scalar offsets.
+pub mod input;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt::Debug};
 pub const MAX_TEXT: usize = 64 * 1024;
@@ -6,24 +7,28 @@ pub const MAX_EDITS: usize = 4096;
 pub const MAX_WIRE: usize = 4 * 1024 * 1024;
 pub const INDENT_HOOK: &str = "velk.editing.indentation";
 pub const PAIRS_HOOK: &str = "velk.editing.pairing";
+pub const KEYMAP_HOOK: &str = "velk.editing.keymap";
 pub const CONTRACT: &str = "velk.editing.provider";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Indentation,
     Pairing,
+    Keymap,
 }
 impl Role {
     pub fn hook(self) -> &'static str {
         match self {
             Self::Indentation => INDENT_HOOK,
             Self::Pairing => PAIRS_HOOK,
+            Self::Keymap => KEYMAP_HOOK,
         }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "text", rename_all = "snake_case")]
 pub enum Intent {
+    Key(input::Key),
     Indent,
     Outdent,
     Newline,
@@ -33,6 +38,7 @@ pub enum Intent {
 impl Intent {
     pub fn role(&self) -> Role {
         match self {
+            Self::Key(_) => Role::Keymap,
             Self::Indent | Self::Outdent | Self::Newline => Role::Indentation,
             _ => Role::Pairing,
         }
@@ -78,6 +84,18 @@ pub struct Request {
 }
 impl Request {
     pub fn validate(&self) -> Result<(), String> {
+        if let Intent::Key(key) = &self.intent {
+            key.state.validate()?;
+            if key.key.len() > MAX_TEXT
+                || self.selection.anchor > self.document_length
+                || self.selection.head > self.document_length
+                || !self.text.is_empty()
+                || !self.pairs.is_empty()
+            {
+                return Err("invalid keymap context".into());
+            }
+            return Ok(());
+        }
         let end = self
             .offset
             .checked_add(self.text.chars().count())
@@ -122,11 +140,28 @@ pub struct Proposal {
 #[serde(tag = "kind", content = "proposal", rename_all = "snake_case")]
 pub enum Decision {
     Decline,
+    Input(input::Response),
     Apply(Proposal),
 }
 impl Decision {
     pub fn validate(&self, request: &Request) -> Result<(), String> {
         request.validate()?;
+        if let Self::Input(response) = self {
+            if !matches!(request.intent, Intent::Key(_))
+                || response.actions.len() > 16
+                || !response.handled && !response.actions.is_empty()
+            {
+                return Err("invalid keymap response".into());
+            }
+            response.state.validate()?;
+            for action in &response.actions {
+                action.validate()?;
+            }
+            return Ok(());
+        }
+        if matches!(request.intent, Intent::Key(_)) && !matches!(self, Self::Decline) {
+            return Err("keymaps must return input actions".into());
+        }
         let Self::Apply(proposal) = self else {
             return Ok(());
         };

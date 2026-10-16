@@ -41,6 +41,30 @@ impl State {
         }
     }
 }
+fn retain_editing_generations(
+    previous: &velk_editing::Providers,
+    current: velk_editing::Providers,
+    before: &[velk_plugin_host::PluginInfo],
+    after: &[velk_plugin_host::PluginInfo],
+) -> velk_editing::Providers {
+    current
+        .into_iter()
+        .map(|(key, provider)| {
+            let unchanged = before.iter().any(|old| {
+                old.id == key.0
+                    && after
+                        .iter()
+                        .any(|new| new.id == old.id && new.generation == old.generation)
+            });
+            let provider = if unchanged {
+                previous.get(&key).cloned().unwrap_or(provider)
+            } else {
+                provider
+            };
+            (key, provider)
+        })
+        .collect()
+}
 impl Document {
     pub fn enable_plugins(&mut self, client: Client, cx: &mut Context<'_, Self>) {
         self.enable_selected_plugins(client, None, Vec::new(), cx);
@@ -77,6 +101,7 @@ impl Document {
                 &preferences.indentation_provider,
             ),
             (velk_editing::Role::Pairing, &preferences.pairing_provider),
+            (velk_editing::Role::Keymap, &preferences.keymap_provider),
         ]
         .into_iter()
         .filter_map(|(role, id)| {
@@ -209,7 +234,12 @@ impl Document {
                             }
                             state.known.insert(plugin.id.clone(), plugin.clone());
                         }
-                        state.editing = report.editing;
+                        state.editing = retain_editing_generations(
+                            &state.editing,
+                            report.editing,
+                            &state.loaded,
+                            &report.plugins,
+                        );
                         state.available = report.available;
                         state.loaded = report.plugins;
                         let errors: Vec<_> = report
@@ -284,6 +314,47 @@ mod tests {
     use crate::document::ClosePlugins;
     use rxui::{KeyEvent, Runtime, Ui};
 
+    #[test]
+    fn unchanged_provider_generations_keep_session_identity_across_plugin_reports() {
+        #[derive(Debug)]
+        struct Provider;
+        impl velk_editing::Provider for Provider {
+            fn evaluate(
+                &self,
+                _: &velk_editing::Request,
+            ) -> Result<velk_editing::Decision, String> {
+                Ok(velk_editing::Decision::Decline)
+            }
+        }
+        let info = velk_plugin_host::PluginInfo {
+            id: "velk.vim".into(),
+            version: "0.0.0-dev".into(),
+            generation: 1,
+            loaded_path: Default::default(),
+            description: String::new(),
+            metadata: Default::default(),
+            settings_values: Default::default(),
+            settings_error: None,
+            resident_code: false,
+            hooks: vec![],
+        };
+        let key = (info.id.clone(), velk_editing::Role::Keymap);
+        let old = std::sync::Arc::new(Provider) as std::sync::Arc<dyn velk_editing::Provider>;
+        let fresh = std::sync::Arc::new(Provider) as std::sync::Arc<dyn velk_editing::Provider>;
+        let previous = std::collections::BTreeMap::from([(key.clone(), old.clone())]);
+        let current = std::collections::BTreeMap::from([(key.clone(), fresh.clone())]);
+        let same = retain_editing_generations(
+            &previous,
+            current.clone(),
+            std::slice::from_ref(&info),
+            std::slice::from_ref(&info),
+        );
+        assert!(std::sync::Arc::ptr_eq(&same[&key], &old));
+        let mut replaced = info.clone();
+        replaced.generation += 1;
+        let changed = retain_editing_generations(&previous, current, &[info], &[replaced]);
+        assert!(std::sync::Arc::ptr_eq(&changed[&key], &fresh));
+    }
     #[test]
     fn plugin_modal_preserves_editor_layout_contains_focus_and_restores_editing() {
         struct Measure;

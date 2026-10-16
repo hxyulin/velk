@@ -7,11 +7,26 @@ pub struct Session {
     providers: BTreeMap<Role, Arc<dyn Provider>>,
     pairs: Vec<Pair>,
     revision: u64,
+    input: velk_editing::input::State,
 }
 impl Session {
     pub fn set_providers(&mut self, providers: BTreeMap<Role, Arc<dyn Provider>>) {
+        let unchanged = match (
+            self.providers.get(&Role::Keymap),
+            providers.get(&Role::Keymap),
+        ) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            self.input = Default::default();
+        }
         self.providers = providers;
         self.pairs.clear();
+    }
+    pub fn input_state(&self) -> &velk_editing::input::State {
+        &self.input
     }
     pub fn clear_pairs(&mut self) {
         self.pairs.clear();
@@ -50,7 +65,7 @@ impl Session {
         });
         self.revision = buffer.revision();
     }
-    pub fn evaluate(&mut self, buffer: &mut Buffer, intent: Intent) -> Result<bool, String> {
+    pub fn evaluate(&mut self, buffer: &mut Buffer, mut intent: Intent) -> Result<bool, String> {
         self.synchronize(buffer);
         let Some(provider) = self.providers.get(&intent.role()) else {
             return Ok(false);
@@ -66,14 +81,23 @@ impl Session {
         } else {
             text.len_chars()
         };
-        let context = text.slice(offset..end);
-        if context.len_bytes() > velk_editing::MAX_TEXT {
-            return Err("interactive editing context exceeds 64 KiB".into());
+        let keymap = matches!(intent, Intent::Key(_));
+        if let Intent::Key(key) = &mut intent {
+            key.state = self.input.clone();
         }
+        let context = if keymap {
+            String::new()
+        } else {
+            let context = text.slice(offset..end);
+            if context.len_bytes() > velk_editing::MAX_TEXT {
+                return Err("interactive editing context exceeds 64 KiB".into());
+            }
+            context.to_string()
+        };
         let request = Request {
             revision: buffer.revision(),
-            text: context.to_string(),
-            offset,
+            text: context,
+            offset: if keymap { 0 } else { offset },
             document_length: text.len_chars(),
             selection: Selection {
                 anchor: selection.anchor,
@@ -81,11 +105,35 @@ impl Session {
             },
             intent,
             settings: Default::default(),
-            pairs: self.pairs.clone(),
+            pairs: if keymap { vec![] } else { self.pairs.clone() },
         };
         let decision = provider.evaluate(&request)?;
         decision.validate(&request)?;
+        if let Decision::Input(response) = decision {
+            if self.input.clamp_caret {
+                buffer.clamp_caret_to_line_character();
+            }
+            for action in response.actions {
+                if matches!(
+                    action,
+                    velk_editing::input::Action::Undo { .. }
+                        | velk_editing::input::Action::Redo { .. }
+                ) {
+                    self.pairs.clear();
+                }
+                crate::input::apply(buffer, action)?;
+            }
+            if response.state.clamp_caret {
+                buffer.clamp_caret_to_line_character();
+            }
+            self.input = response.state;
+            self.synchronize(buffer);
+            return Ok(response.handled);
+        }
         let Decision::Apply(proposal) = decision else {
+            if keymap {
+                self.input = Default::default();
+            }
             return Ok(false);
         };
         if !proposal.pairs.is_empty() {

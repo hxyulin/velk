@@ -6,13 +6,13 @@ its own metadata through the ordinary named request contract.
 
 The default built-in artifact is now `velk_plugin_builtin`, a single native
 library containing Markdown, generic LSP, the Rust-analyzer definition, buffer
-search, Files, Terminal, Indentation, Autopairs, Autosave, Quick Open, and Find in
+search, Files, Terminal, Indentation, Autopairs, Vim, Autosave, Quick Open, and Find in
 Workspace. Each keeps its own plugin ID, named registrations, instance state,
 generation, dependency resolution, and load/unload controls.
 
 Run `cargo xtask setup-terminal` once to cache the pinned terminal build inputs.
 `cargo xtask build [--release]`, `plugins`, and `run` build/stage this pack.
-The manifest has eleven entries selecting IDs from one content-addressed artifact:
+The manifest has twelve entries selecting IDs from one content-addressed artifact:
 
 ```json
 {
@@ -25,7 +25,7 @@ The manifest has eleven entries selecting IDs from one content-addressed artifac
 
 The other entries select `velk.lsp`, `velk.language-server.rust-analyzer`, and
 `velk.search.literal`, `velk.files`, `velk.terminal`, `velk.indentation`,
-`velk.autopairs`, `velk.autosave`, `velk.quick-open`, and `velk.workspace-find` using
+`velk.autopairs`, `velk.vim`, `velk.autosave`, `velk.quick-open`, and `velk.workspace-find` using
 the same library and digest. A manifest selects which
 members to instantiate; discovery never automatically enables unlisted members.
 Absent/false `pack` retains the standalone v1 format. Conflicting digests/formats

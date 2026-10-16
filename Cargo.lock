@@ -4111,6 +4111,7 @@ name = "velk-editor-model"
 version = "0.0.0-dev"
 dependencies = [
  "ropey",
+ "unicode-ident",
  "velk-commands",
  "velk-core",
  "velk-editing",
@@ -4134,6 +4135,7 @@ dependencies = [
  "velk-plugin-autopairs",
  "velk-plugin-indentation",
  "velk-plugin-sdk",
+ "velk-plugin-vim",
  "velk-syntax",
 ]
 
@@ -4191,6 +4193,7 @@ dependencies = [
  "velk-plugin-sdk",
  "velk-plugin-search",
  "velk-plugin-terminal",
+ "velk-plugin-vim",
 ]
 
 [[package]]
@@ -4319,6 +4322,17 @@ dependencies = [
  "portable-pty",
  "tempfile",
  "velk-panels",
+ "velk-plugin-sdk",
+]
+
+[[package]]
+name = "velk-plugin-vim"
+version = "0.0.0-dev"
+dependencies = [
+ "serde",
+ "serde_json",
+ "velk-core",
+ "velk-editor-model",
  "velk-plugin-sdk",
 ]
 

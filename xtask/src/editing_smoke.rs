@@ -6,10 +6,21 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     let specs = if pack {
         stage_builtins(output, temp.path())?
             .into_iter()
-            .filter(|s| matches!(s.id.as_str(), "velk.indentation" | "velk.autopairs"))
+            .filter(|s| {
+                matches!(
+                    s.id.as_str(),
+                    "velk.indentation" | "velk.autopairs" | "velk.vim"
+                )
+            })
             .collect()
     } else {
         vec![
+            stage_plugin(
+                &output.join("examples"),
+                temp.path(),
+                "velk.vim",
+                "velk_plugin_vim",
+            )?,
             stage_plugin(
                 &output.join("examples"),
                 temp.path(),
@@ -87,9 +98,39 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     assert_eq!(paired.text().to_string(), "界");
     manager.unload("velk.autopairs");
     assert!(!pairs.evaluate(&mut paired, Intent::Type("(".into()))?);
+    let mut modal = velk_editor_model::editing::Session::default();
+    modal.set_providers(std::collections::BTreeMap::from([(
+        Role::Keymap,
+        manager.editing_provider("velk.vim", Role::Keymap)?,
+    )]));
+    let mut document = velk_core::Buffer::new("one two three");
+    let input = |key: &str| {
+        Intent::Key(velk_editing::input::Key {
+            key: key.into(),
+            text: !key.is_empty() && key != "Escape",
+            control: false,
+            alt: false,
+            meta: false,
+            state: Default::default(),
+        })
+    };
+    for key in ["", "2", "w"] {
+        assert!(modal.evaluate(&mut document, input(key))?);
+    }
+    assert_eq!(document.selection().head, 8);
+    assert_eq!(modal.input_state().label, "NORMAL");
+    assert!(modal.evaluate(&mut document, input("i"))?);
+    assert!(!modal.evaluate(&mut document, input("hello"))?);
+    assert_eq!(modal.input_state().label, "INSERT");
+    document.insert("hello");
+    assert!(modal.evaluate(&mut document, input("Escape"))?);
+    assert!(modal.evaluate(&mut document, input("x"))?);
+    manager.unload("velk.vim");
+    assert!(!modal.evaluate(&mut document, input("x"))?);
+    assert!(modal.input_state().label.is_empty());
     manager.unload_all();
     println!(
-        "Editing provider smoke passed: pack={pack}, native indentation/newlines/autopairs, undo, settings and stale lease fallback"
+        "Editing provider smoke passed: pack={pack}, native Vim modes/motions/state retirement, indentation/newlines/autopairs, undo, settings and stale lease fallback"
     );
     Ok(())
 }

@@ -101,7 +101,10 @@ impl Document {
         self.shell.store.error = None;
         match self.shell.store.preferences.set(key, value) {
             Ok(()) => {
-                if matches!(key, "indentation_provider" | "pairing_provider") {
+                if matches!(
+                    key,
+                    "indentation_provider" | "pairing_provider" | "keymap_provider"
+                ) {
                     self.refresh_editing(cx);
                 }
                 self.persist_shell(cx);

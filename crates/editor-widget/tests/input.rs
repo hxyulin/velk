@@ -381,3 +381,141 @@ fn tracked_closers_skip_and_empty_pairs_delete_but_undo_and_existing_brackets_ar
     input(&mut runtime, &mut ui, TextInputEvent::Insert(")".into()));
     assert_eq!(text(&mut runtime, &editor), "))");
 }
+
+#[derive(Debug)]
+struct VimProvider;
+impl velk_plugin_sdk::editing::Provider for VimProvider {
+    fn evaluate(
+        &self,
+        request: &velk_plugin_sdk::editing::Request,
+    ) -> Result<velk_plugin_sdk::editing::Decision, String> {
+        <velk_plugin_vim::Vim as velk_plugin_sdk::EditingBehavior>::evaluate(request)
+    }
+}
+#[test]
+fn vim_keyboard_modes_compose_with_text_ime_pairs_and_native_paste() {
+    use std::{collections::BTreeMap, sync::Arc};
+    use velk_plugin_sdk::editing::{Provider, Role};
+    let (mut runtime, editor, mut ui) = setup();
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.insert("one two\nnext");
+            editor.execute(velk_editor_widget::EditCommand::SetCaret {
+                position: 0,
+                extend: false,
+            });
+            editor.set_editing_providers(BTreeMap::from([
+                (Role::Keymap, Arc::new(VimProvider) as Arc<dyn Provider>),
+                (
+                    Role::Pairing,
+                    Arc::new(PairingProvider) as Arc<dyn Provider>,
+                ),
+                (
+                    Role::Indentation,
+                    Arc::new(IndentationProvider) as Arc<dyn Provider>,
+                ),
+            ]));
+        })
+    });
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("w".into()));
+    runtime.update(|cx| {
+        assert_eq!(editor.read(cx).buffer().selection().head, 4);
+        assert_eq!(editor.read(cx).input_mode(), Some("NORMAL"));
+    });
+    input(
+        &mut runtime,
+        &mut ui,
+        TextInputEvent::Preedit {
+            text: "漢".into(),
+            cursor: None,
+        },
+    );
+    input(&mut runtime, &mut ui, TextInputEvent::Commit("漢".into()));
+    assert_eq!(text(&mut runtime, &editor), "one two\nnext");
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("$".into()));
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("a".into()));
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("(".into()));
+    assert_eq!(text(&mut runtime, &editor), "one two()\nnext");
+    input(
+        &mut runtime,
+        &mut ui,
+        TextInputEvent::Preedit {
+            text: "漢".into(),
+            cursor: None,
+        },
+    );
+    input(&mut runtime, &mut ui, TextInputEvent::Commit("漢".into()));
+    assert_eq!(text(&mut runtime, &editor), "one two(漢)\nnext");
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Escape,
+        Modifiers::default(),
+    );
+    runtime.update(|cx| assert_eq!(editor.read(cx).input_mode(), Some("NORMAL")));
+    input(&mut runtime, &mut ui, TextInputEvent::Paste("hello".into()));
+    assert!(text(&mut runtime, &editor).contains("hello"));
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Character("z".into()),
+        primary(),
+    );
+    assert!(!text(&mut runtime, &editor).contains("hello"));
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_editing_providers(BTreeMap::new())
+        })
+    });
+    input(
+        &mut runtime,
+        &mut ui,
+        TextInputEvent::Insert("plain".into()),
+    );
+    assert!(text(&mut runtime, &editor).contains("plain"));
+}
+
+#[derive(Debug)]
+struct FailingKeymap(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl velk_plugin_sdk::editing::Provider for FailingKeymap {
+    fn evaluate(
+        &self,
+        request: &velk_plugin_sdk::editing::Request,
+    ) -> Result<velk_plugin_sdk::editing::Decision, String> {
+        if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("test keymap failure".into());
+        }
+        <velk_plugin_vim::Vim as velk_plugin_sdk::EditingBehavior>::evaluate(request)
+    }
+}
+#[test]
+fn capturing_keymap_failure_does_not_insert_commands_and_deselection_restores_typing() {
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+    let (mut runtime, editor, mut ui) = setup();
+    let fail = Arc::new(AtomicBool::new(false));
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_editing_providers(BTreeMap::from([(
+                velk_plugin_sdk::editing::Role::Keymap,
+                Arc::new(FailingKeymap(fail.clone()))
+                    as Arc<dyn velk_plugin_sdk::editing::Provider>,
+            )]))
+        })
+    });
+    fail.store(true, Ordering::Relaxed);
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("x".into()));
+    assert_eq!(text(&mut runtime, &editor), "");
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_editing_providers(BTreeMap::new())
+        })
+    });
+    input(&mut runtime, &mut ui, TextInputEvent::Insert("x".into()));
+    assert_eq!(text(&mut runtime, &editor), "x");
+}

@@ -38,7 +38,8 @@ interactive pickers with cancellable worker queries and host-rendered results; s
 
 ## Interactive editing service
 
-`velk-editing` carries bounded editing context and transaction proposals. A native
+`velk-editing` carries bounded editing context, transaction proposals, and optional
+per-buffer keymap state with host-applied motion/edit actions. A native
 provider implements the SDK's stateless `EditingBehavior` and registers through
 `Registrar::editing`. The host supplies a direct retirement-aware lease to the
 editor; typing does not queue behind lifecycle work or LSP requests. See

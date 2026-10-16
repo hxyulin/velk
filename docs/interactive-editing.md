@@ -2,11 +2,11 @@
 
 `velk-editing` defines renderer-independent editing intents, bounded logical-line
 context, absolute Unicode scalar selections, tracked pairs, and edit decisions.
-One provider is selected per role: indentation or pairing. Providers can decline;
-the editor retains normal text input when a provider is absent or fails.
+One provider is selected per role: indentation, pairing, or optional keymap.
+Providers can decline; an absent provider leaves ordinary editing available.
 
 The native `velk.editing.provider` contract exposes a pure synchronous C callback
-at `velk.editing.indentation` or `velk.editing.pairing`. Register a stateless
+at `velk.editing.indentation`, `velk.editing.pairing`, or `velk.editing.keymap`. Register a stateless
 `EditingBehavior` with `Registrar::editing`. Resolved plugin settings arrive in
 requests. Callbacks must be reentrant and fast, perform no I/O, acquire no plugin
 instance locks, and retain no input pointers. This trusted native interface does
@@ -47,6 +47,44 @@ pairs when either delimiter is replaced. Undo, redo, and provider changes clear
 pair tracking rather than claiming that restored or pre-existing brackets were
 inserted by the current provider. Tracking is local to a buffer and not persisted.
 
+## Keymap providers
+
+`keymap_provider` selects a modal input provider. The default empty string means
+standard editing. Select `velk.vim` to enable the bundled Normal/Insert keymap;
+see its [supported keys and limitations](../plugins/vim/README.md).
+
+`Intent::Key` carries committed keyboard text or a named key, modifiers, and
+host-owned per-buffer `input::State`. An empty key initializes a buffer. Keymap
+requests carry selection and document length but no document text or pair list,
+so their evaluation is independent of the size of selected lines.
+`Decision::Input` returns a bounded state and list of editor actions. A response
+with `handled: false` retains state while allowing ordinary input to continue.
+Only keymap requests may return input responses; they cannot return text proposals.
+
+State contains a status label, at most 4 KiB of opaque provider data, and flags to
+capture text and clamp the caret to line characters. A response contains at most
+16 actions, with counts limited to 1–10,000. The editor model applies motions,
+line/character deletion, line insertion, undo, and redo to the authoritative Core
+buffer. Character movement and deletion preserve extended grapheme boundaries.
+Whole-line or counted-character deletions form one undo step. Undo and redo clear
+pair tracking. Key interpretation, counts, prefixes, and mode transitions stay in
+the plugin. The status label is visible in the normal status bar, or in the notice
+area when that bar is hidden.
+
+State is local to each buffer, reset when its provider is replaced or deselected,
+and is not serialized into recovery data. Unloaded provider leases decline and
+release modal capture. If an active capturing provider fails validation or
+execution, the editor consumes input and logs the error to avoid inserting
+command text. Selecting Standard editing restores ordinary input.
+
+Committed keyboard text is interpreted once, after native keyboard layout and
+dead-key processing. Named keys are handled before default navigation. Insert
+mode passes ordinary text, indentation, pairing, and IME through to their existing
+paths. Normal mode suppresses preedit and IME commits. Native clipboard paste
+remains literal, and application shortcuts retain their existing routing. The
+keymap only participates in document editor input; settings and picker fields
+retain their standard controls.
+
 ## Bundled indentation
 
 `velk.indentation` handles Tab and Shift+Tab. Tab at a caret inserts to the next
@@ -85,6 +123,7 @@ restart a plugin after changing its own options.
 
 ```json
 {
+  "keymap_provider": "velk.vim",
   "indentation_provider": "velk.indentation",
   "pairing_provider": "velk.autopairs",
   "plugins": {

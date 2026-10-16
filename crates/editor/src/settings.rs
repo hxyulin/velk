@@ -21,6 +21,7 @@ pub struct Preferences {
     pub markdown_provider: String,
     pub indentation_provider: String,
     pub pairing_provider: String,
+    pub keymap_provider: String,
     /// Plugin IDs the user turned off; every other manifest plugin loads.
     pub disabled_plugins: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -40,6 +41,7 @@ impl Default for Preferences {
             markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
             indentation_provider: "velk.indentation".into(),
             pairing_provider: "velk.autopairs".into(),
+            keymap_provider: String::new(),
             disabled_plugins: Vec::new(),
             plugins: Default::default(),
             extra: Default::default(),
@@ -204,10 +206,12 @@ impl Preferences {
     pub fn set(&mut self, key: &str, value: Option<Value>) -> Result<(), String> {
         if matches!(
             key,
-            "markdown_provider" | "indentation_provider" | "pairing_provider"
+            "markdown_provider" | "indentation_provider" | "pairing_provider" | "keymap_provider"
         ) && value.as_ref().is_some_and(|v| {
-            v.as_str()
-                .is_none_or(|id| velk_plugin_contracts::parse_plugin_id(id).is_none())
+            v.as_str().is_none_or(|id| {
+                !(key == "keymap_provider" && id.is_empty())
+                    && velk_plugin_contracts::parse_plugin_id(id).is_none()
+            })
         }) {
             return Err("Provider must be a valid plugin ID".into());
         }
@@ -379,7 +383,14 @@ fn editing_providers(
     role: velk_editing::Role,
     default: &str,
 ) -> Vec<(String, String)> {
-    let mut choices = vec![(default.into(), format!("{default} (bundled default)"))];
+    let mut choices = vec![(
+        default.into(),
+        if default.is_empty() {
+            "Standard editing".into()
+        } else {
+            format!("{default} (bundled default)")
+        },
+    )];
     for plugin in plugins {
         if plugin.hooks.iter().any(|hook| hook == role.hook())
             && !choices.iter().any(|(id, _)| id == &plugin.id)
@@ -394,6 +405,9 @@ fn indentation_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(Strin
 }
 fn pairing_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
     editing_providers(plugins, velk_editing::Role::Pairing, "velk.autopairs")
+}
+fn keymap_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    editing_providers(plugins, velk_editing::Role::Keymap, "")
 }
 pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::new(|| {
     vec![
@@ -446,6 +460,12 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         description: "Plugin for README and hover documentation. Reload Window to apply. If unavailable, show source text.".into(),
         category: Category::Plugins,
         control: Control::Choice(markdown_providers),
+    },
+    Setting {
+        plugin: None, keywords: "vim normal insert modal motions".into(), default: Value::Null,
+        key: "keymap_provider".into(), title: "Keymap provider".into(),
+        description: "Optional modal keymap. Standard editing disables modal input. Changing providers resets modes in every buffer.".into(), category: Category::Plugins,
+        control: Control::Choice(keymap_providers),
     },
     Setting {
         plugin: None, keywords: "tab shift-tab newline indent".into(), default: Value::Null,
@@ -675,6 +695,24 @@ mod tests {
             assert!(!preferences.is_modified(key));
         }
         assert_eq!(preferences.resolve_layout().0, Layout::QUIET);
+    }
+    #[test]
+    fn keymap_selection_is_opt_in_and_can_return_to_standard_editing() {
+        let mut preferences = Preferences::default();
+        assert_eq!(preferences.keymap_provider, "");
+        preferences
+            .set("keymap_provider", Some("velk.vim".into()))
+            .unwrap();
+        assert_eq!(preferences.keymap_provider, "velk.vim");
+        assert!(
+            preferences
+                .set("keymap_provider", Some("invalid id".into()))
+                .is_err()
+        );
+        preferences.set("keymap_provider", Some("".into())).unwrap();
+        assert_eq!(preferences.keymap_provider, "");
+        let choices = keymap_providers(&[]);
+        assert_eq!(choices, vec![(String::new(), "Standard editing".into())]);
     }
     #[test]
     fn markdown_provider_validates_roundtrips_and_resets() {

@@ -4,7 +4,8 @@ use std::ffi::c_void;
 use velk_editing::{Decision, Request, Role};
 
 /// Stateless, reentrant editing policy. Settings arrive in each request; no
-/// plugin instance or UI object is shared with interactive evaluation.
+/// plugin instance or UI object is shared with interactive evaluation. Keymaps
+/// return their next per-buffer state in the decision rather than retaining it.
 pub trait Behavior: 'static {
     const ROLE: Role;
     fn evaluate(request: &Request) -> Result<Decision, String>;

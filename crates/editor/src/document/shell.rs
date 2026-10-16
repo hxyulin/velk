@@ -271,8 +271,12 @@ impl Document {
             .or_else(|| self.window_status.clone())
             .or(layout_error)
             .or_else(|| self.shell.store.error.clone());
+        let mode = self
+            .buffer
+            .as_ref()
+            .and_then(|buffer| buffer.editor.read(cx).input_mode().map(str::to_owned));
         if !layout.status_line {
-            return message.map(|message| {
+            return message.or(mode).map(|message| {
                 label(message)
                     .key("document-notice")
                     .font_size(12.)
@@ -321,6 +325,7 @@ impl Document {
             );
         }
         right = right
+            .children(mode.map(|mode| label(mode).key("status-input-mode")))
             .children(semantic.map(|s| label(s).key("status-semantic")))
             .child(label(language).key("status-language"))
             .child(label(format!("{}:{column}", line + 1)).key("status-position"));

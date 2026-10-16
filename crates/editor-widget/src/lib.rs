@@ -61,12 +61,29 @@ impl Editor {
         providers: std::collections::BTreeMap<velk_editing::Role, Arc<dyn velk_editing::Provider>>,
     ) {
         self.editing.set_providers(providers);
+        self.keymap("", false, false, false, false);
+    }
+    pub fn input_mode(&self) -> Option<&str> {
+        let label = &self.editing.input_state().label;
+        (!label.is_empty()).then_some(label.as_str())
+    }
+    fn keymap(&mut self, key: &str, control: bool, alt: bool, meta: bool, text: bool) -> bool {
+        self.interactive(velk_editing::Intent::Key(velk_editing::input::Key {
+            key: key.into(),
+            text,
+            control,
+            alt,
+            meta,
+            state: Default::default(),
+        }))
     }
     fn interactive(&mut self, intent: velk_editing::Intent) -> bool {
         let preserve_selection = matches!(
             intent,
             velk_editing::Intent::Indent | velk_editing::Intent::Outdent
         ) && !self.buffer.selection().is_empty();
+        let capture_key = matches!(intent, velk_editing::Intent::Key(_))
+            && self.editing.input_state().capture_text;
         match self.editing.evaluate(&mut self.buffer, intent) {
             Ok(true) => {
                 self.composition = None;
@@ -78,11 +95,20 @@ impl Editor {
                 tracing::warn!(%error, "interactive editing provider failed");
                 // A failed indentation request must not replace selected text
                 // with the plain Tab fallback.
-                preserve_selection
+                preserve_selection || capture_key
             }
         }
     }
     fn committed_text(&mut self, text: &str, source: rxui::TextInsertSource) {
+        if source == rxui::TextInsertSource::Ime && self.editing.input_state().capture_text {
+            return;
+        }
+        if source == rxui::TextInsertSource::Keyboard
+            && self.composition.is_none()
+            && self.keymap(text, false, false, false, true)
+        {
+            return;
+        }
         if source == rxui::TextInsertSource::Keyboard
             && self.composition.is_none()
             && self.interactive(velk_editing::Intent::Type(text.into()))
@@ -309,6 +335,37 @@ impl Editor {
         let had_hover = self.has_hover();
         self.hide_hover();
         use velk_editor_model::commands::{Key, Modifiers, Platform, key_command};
+        let input_key = match &key.key {
+            KeyboardKey::Escape => Some("Escape"),
+            KeyboardKey::ArrowLeft => Some("ArrowLeft"),
+            KeyboardKey::ArrowRight => Some("ArrowRight"),
+            KeyboardKey::ArrowUp => Some("ArrowUp"),
+            KeyboardKey::ArrowDown => Some("ArrowDown"),
+            KeyboardKey::Home => Some("Home"),
+            KeyboardKey::End => Some("End"),
+            KeyboardKey::Backspace => Some("Backspace"),
+            KeyboardKey::Delete => Some("Delete"),
+            KeyboardKey::Enter => Some("Enter"),
+            KeyboardKey::Tab => Some("Tab"),
+            KeyboardKey::Character(text)
+                if key.modifiers.control || key.modifiers.meta || key.modifiers.alt =>
+            {
+                Some(text.as_str())
+            }
+            _ => None,
+        };
+        if input_key.is_some_and(|input| {
+            self.keymap(
+                input,
+                key.modifiers.control,
+                key.modifiers.alt,
+                key.modifiers.meta,
+                false,
+            )
+        }) {
+            event.prevent_default();
+            return;
+        }
         let key_name = match key.key {
             KeyboardKey::Home => Key::Home,
             KeyboardKey::End => Key::End,
@@ -554,6 +611,9 @@ impl View for Editor {
             this.committed_text(&event.text, event.source)
         }))
         .on_ime(cx.listener(|this, event: &ImeInput, _| {
+            if this.editing.input_state().capture_text {
+                return;
+            }
             #[cfg(any(test, feature = "performance"))]
             {
                 this.input_started = Some(Instant::now());

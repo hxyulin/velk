@@ -4,6 +4,7 @@ mod annotations;
 pub mod commands;
 mod hover;
 pub mod inline;
+mod input;
 pub mod navigation;
 mod position;
 pub mod projection;

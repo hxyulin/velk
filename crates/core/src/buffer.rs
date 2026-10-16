@@ -213,7 +213,7 @@ impl Buffer {
         let end = if self.is_grapheme_boundary(range.end) {
             range.end
         } else {
-            self.next(range.end)
+            self.next_grapheme_boundary(range.end)
         };
         Some(start..end)
     }
@@ -286,7 +286,7 @@ impl Buffer {
     pub fn backspace(&mut self) {
         let range = self.selection().range();
         let range = if range.is_empty() {
-            self.previous(range.start)..range.end
+            self.previous_grapheme_boundary(range.start)..range.end
         } else {
             range
         };
@@ -296,11 +296,38 @@ impl Buffer {
     pub fn delete(&mut self) {
         let range = self.selection().range();
         let range = if range.is_empty() {
-            range.start..self.next(range.end)
+            range.start..self.next_grapheme_boundary(range.end)
         } else {
             range
         };
         self.replace(range, "");
+    }
+
+    /// Restrict the caret to line characters, retaining the preferred
+    /// grapheme column for subsequent vertical movement. Empty lines keep column zero.
+    pub fn clamp_caret_to_line_character(&mut self) {
+        let head = self.selection().head;
+        let text = self.text();
+        let line = text.char_to_line(head);
+        let start = text.line_to_char(line);
+        let mut end = start + text.line(line).len_chars();
+        if end > start && text.char(end - 1) == '\n' {
+            end -= 1;
+        }
+        if head < end {
+            return;
+        }
+        let last = if end > start {
+            self.previous_grapheme_boundary(end)
+        } else {
+            start
+        };
+        if head > last {
+            self.current.selection = Selection {
+                anchor: last,
+                head: last,
+            };
+        }
     }
 
     pub fn horizontal(&mut self, right: bool, extend: bool) {
@@ -312,9 +339,9 @@ impl Buffer {
                 selection.range().start
             }
         } else if right {
-            self.next(selection.head)
+            self.next_grapheme_boundary(selection.head)
         } else {
-            self.previous(selection.head)
+            self.previous_grapheme_boundary(selection.head)
         };
         self.set_caret(position, extend);
     }
@@ -547,16 +574,18 @@ impl Buffer {
         if graphemes::is_boundary(self.text(), position) {
             position
         } else {
-            self.previous(position)
+            self.previous_grapheme_boundary(position)
         }
     }
 
-    fn previous(&self, position: usize) -> usize {
-        graphemes::previous(self.text(), position)
+    /// Previous extended grapheme boundary, clamped at the document edges.
+    pub fn previous_grapheme_boundary(&self, position: usize) -> usize {
+        graphemes::previous(self.text(), position.min(self.text().len_chars()))
     }
 
-    fn next(&self, position: usize) -> usize {
-        graphemes::next(self.text(), position)
+    /// Next extended grapheme boundary, clamped at the document edges.
+    pub fn next_grapheme_boundary(&self, position: usize) -> usize {
+        graphemes::next(self.text(), position.min(self.text().len_chars()))
     }
 }
 

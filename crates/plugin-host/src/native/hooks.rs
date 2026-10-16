@@ -125,12 +125,19 @@ impl Generation {
                     self.semantic = Some(typed!(SemanticApi, SERVICE, 1))
                 }
                 velk_editing::CONTRACT
-                    if name == velk_editing::INDENT_HOOK || name == velk_editing::PAIRS_HOOK =>
+                    if [
+                        velk_editing::INDENT_HOOK,
+                        velk_editing::PAIRS_HOOK,
+                        velk_editing::KEYMAP_HOOK,
+                    ]
+                    .contains(&name.as_str()) =>
                 {
                     let role = if name == velk_editing::INDENT_HOOK {
                         velk_editing::Role::Indentation
-                    } else {
+                    } else if name == velk_editing::PAIRS_HOOK {
                         velk_editing::Role::Pairing
+                    } else {
+                        velk_editing::Role::Keymap
                     };
                     self.editing.insert(role, typed!(EditingApi, SERVICE));
                 }
