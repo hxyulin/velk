@@ -14,6 +14,8 @@ pub(super) struct State {
     items: Vec<Choice>,
     selected: usize,
     id: u64,
+    session: u64,
+    ready: bool,
     notice: String,
     task: Option<Task>,
 }
@@ -57,6 +59,8 @@ impl Document {
             items: Vec::new(),
             selected: 0,
             id: 0,
+            session: self.next_picker,
+            ready: false,
             notice: String::new(),
             task: None,
         }));
@@ -68,11 +72,11 @@ impl Document {
             return;
         };
         state.task = None;
-        state.items.clear();
-        state.selected = 0;
+        state.ready = false;
         state.id = self.next_picker;
         self.next_picker += 1;
         let id = state.id;
+        let session = state.session;
         let invocation = state.invocation.clone();
         let Handler::Picker { hook, .. } = invocation.command.handler.clone() else {
             return;
@@ -95,7 +99,6 @@ impl Document {
         match cx.try_spawn(
             async move {
                 let _cancel = cancel;
-                rxui::sleep(std::time::Duration::from_millis(100)).await;
                 let handle = client
                     .bind_hook(invocation.plugin.clone(), hook)?
                     .recv()
@@ -104,7 +107,12 @@ impl Document {
                 if handle.generation() != invocation.generation {
                     return Err("picker provider was replaced".into());
                 }
-                let mut request = PickerRequest::Begin { id, context, query };
+                let mut request = PickerRequest::Begin {
+                    id,
+                    session,
+                    context,
+                    query,
+                };
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
                 loop {
                     let bytes = client
@@ -147,6 +155,8 @@ impl Document {
                 match result {
                     Ok(Ok((items, notice))) => {
                         state.items = items;
+                        state.selected = 0;
+                        state.ready = true;
                         state.notice = notice;
                     }
                     Ok(Err(error)) => state.notice = error,
@@ -159,6 +169,9 @@ impl Document {
         }
     }
     pub(super) fn accept_picker(&mut self, state: State, cx: &mut Context<'_, Self>) {
+        if !state.ready {
+            return;
+        }
         if !self.guard_valid(&state.guard, cx) || self.workspace.root() != state.root.as_deref() {
             self.notice(Some("Picker source changed; reopen the picker".into()));
             return;
@@ -180,11 +193,14 @@ impl Document {
             .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
         let accept = cx
             .command(Accept, |this, _, cx| {
+                if !matches!(&this.command_result, Some(ResultView::Picker(state)) if state.ready) {
+                    return;
+                }
                 if let Some(ResultView::Picker(state)) = this.command_result.take() {
                     this.accept_picker(state, cx);
                 }
             })
-            .enabled(!state.items.is_empty())
+            .enabled(state.ready && !state.items.is_empty())
             .shortcut(Shortcut::new(KeyboardKey::Enter, Default::default()));
         let count = state.items.len();
         let next = cx
@@ -212,6 +228,9 @@ impl Document {
         let mut content = column()
             .gap(8.)
             .padding(12.)
+            .height(500.)
+            .fill_width()
+            .clip()
             .on_command(close)
             .on_command(next)
             .on_command(previous)
@@ -219,6 +238,9 @@ impl Document {
             .child(
                 text_input(state.query.text.clone())
                     .key("plugin-picker-query")
+                    .fill_width()
+                    .height(32.)
+                    .flex_shrink(0.)
                     .placeholder("Type to search the project")
                     .on_command(accept)
                     .on_change(cx.listener(|this, event: &TextChangeEvent, cx| {
@@ -266,11 +288,18 @@ impl Document {
                     ),
             );
         }
-        content = content.child(label(format!(
-            "{} results · {}",
-            state.items.len(),
-            state.notice
-        )));
+        content = content.child(
+            label(state.notice.clone())
+                .height(24.)
+                .flex_shrink(0.)
+                .clip(),
+        );
+        let mut results = column()
+            .gap(4.)
+            .fill_width()
+            .flex_grow(1.)
+            .min_height(0.)
+            .clip();
         for (index, item) in state
             .items
             .iter()
@@ -282,8 +311,12 @@ impl Document {
                 || item.title.clone(),
                 |detail| format!("{} · {detail}", item.title),
             );
-            content = content.child(
+            results = results.child(
                 button(caption)
+                    .fill_width()
+                    .height(34.)
+                    .flex_shrink(0.)
+                    .clip()
                     .key(format!("picker-result-{index}"))
                     .background(if state.selected == index {
                         ThemeColor::Selection
@@ -291,6 +324,7 @@ impl Document {
                         ThemeColor::Control
                     })
                     .on_click(cx.listener(move |this, _, cx| {
+                        if !matches!(&this.command_result, Some(ResultView::Picker(state)) if state.ready) { return; }
                         if let Some(ResultView::Picker(mut state)) = this.command_result.take() {
                             state.selected = index;
                             this.accept_picker(state, cx);
@@ -298,7 +332,7 @@ impl Document {
                     })),
             );
         }
-        modal(content.scroll_y().max_height(520.))
+        modal(content.child(results))
             .key("plugin-picker")
             .width(840.)
             .on_dismiss(cx.listener(|this, _: &DismissEvent, _| this.command_result = None))
@@ -364,8 +398,52 @@ mod tests {
                 .collect(),
             selected: 0,
             id: 1,
+            session: 1,
+            ready: true,
             notice: "Ready".into(),
             task: None,
+        }
+    }
+    #[test]
+    fn picker_geometry_stays_fixed_across_loading_empty_and_long_results() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("a.txt");
+        std::fs::write(&path, "text").unwrap();
+        let mut runtime = Runtime::new();
+        let document = runtime.update(|cx| {
+            let (file, editor) = crate::file::FileState::open(&path).unwrap();
+            let editor = cx.new(|_| editor);
+            cx.new(|cx| Document::new(editor, file, path.clone(), cx))
+        });
+        let mut ui = Ui::new(&mut runtime, document.clone()).unwrap();
+        let mut expected = None;
+        for count in [0, 1, 9, 1000, 0] {
+            runtime.update(|cx| {
+                document.update(cx, |d, cx| {
+                    let mut state = state(d, cx, &vec![path.clone(); count]);
+                    state.notice = "A long status message ".repeat(count.min(30));
+                    for item in &mut state.items {
+                        item.title = "long/path/".repeat(100);
+                    }
+                    state.ready = count != 0;
+                    d.command_result = Some(ResultView::Picker(state));
+                })
+            });
+            ui.prepare(&mut runtime, [1000., 700.], &mut Measure)
+                .unwrap();
+            let bounds = ["plugin-picker", "plugin-picker-query"].map(|key| {
+                let bounds = ui
+                    .elements()
+                    .find(|e| e.key == Some(&rxui::Key::from(key)))
+                    .unwrap()
+                    .bounds;
+                [bounds.x, bounds.y, bounds.width, bounds.height]
+            });
+            if let Some(expected) = expected {
+                assert_eq!(bounds, expected);
+            } else {
+                expected = Some(bounds);
+            }
         }
     }
     #[test]
@@ -401,6 +479,38 @@ mod tests {
             .unwrap()
             .id;
         ui.focus(query);
+        runtime.update(|cx| {
+            document.update(cx, |d, cx| {
+                d.query_picker(cx);
+                let Some(ResultView::Picker(state)) = &d.command_result else {
+                    panic!()
+                };
+                assert_eq!(state.items.len(), 2);
+                assert!(!state.ready);
+            })
+        });
+        ui.prepare(&mut runtime, [900., 600.], &mut Measure)
+            .unwrap();
+        ui.key(
+            &mut runtime,
+            KeyEvent {
+                key: KeyboardKey::Enter,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            },
+        )
+        .unwrap();
+        runtime.update(|cx| {
+            document.update(cx, |d, _| {
+                let Some(ResultView::Picker(state)) = &mut d.command_result else {
+                    panic!("pending results must not close the picker")
+                };
+                state.ready = true;
+            })
+        });
+        ui.prepare(&mut runtime, [900., 600.], &mut Measure)
+            .unwrap();
         for key in [KeyboardKey::ArrowDown, KeyboardKey::Enter] {
             ui.key(
                 &mut runtime,

@@ -53,8 +53,11 @@ pub enum Request {
     ReadFile {
         path: PathBuf,
     },
+    /// Sorted pages of at most MAX_DIRECTORY_ENTRIES. An empty page ends enumeration.
     ReadDirectory {
         path: PathBuf,
+        /// Project-relative path from the last entry of the preceding page.
+        after: Option<PathBuf>,
     },
     Buffers,
     ReadBuffer {

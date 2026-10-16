@@ -75,11 +75,26 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())??;
         assert!(report.plugins.iter().any(|p| p.id == "velk.autosave"));
-        for (id, hook, text) in [
-            (1, "velk.quick-open.query", "smr"),
-            (2, "velk.workspace-find.query", "needle"),
+        for (id, session, hook, text, expected) in [
+            (1, 1, "velk.quick-open.query", "smr", Some(path.clone())),
+            (3, 1, "velk.quick-open.query", "new-file", None),
+            (
+                4,
+                4,
+                "velk.quick-open.query",
+                "new-file",
+                Some(project.path().join("new-file.rs")),
+            ),
+            (5, 4, "velk.quick-open.query", "smr", Some(path.clone())),
+            (
+                2,
+                1,
+                "velk.workspace-find.query",
+                "needle",
+                Some(path.clone()),
+            ),
         ] {
-            let plugin = if id == 1 {
+            let plugin = if hook == "velk.quick-open.query" {
                 "velk.quick-open"
             } else {
                 "velk.workspace-find"
@@ -97,6 +112,7 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
                 position: None,
             };
             let begin = PickerRequest::Begin {
+                session,
                 id,
                 context,
                 query: velk_search::Query {
@@ -119,14 +135,20 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
                 )
                 .map_err(|e| e.to_string())?;
                 if let PickerReply::Ready { items, .. } = reply {
-                    assert_eq!(items.len(), 1);
-                    let velk_commands::ChoiceAction::Location { location } = &items[0].action
-                    else {
-                        panic!()
-                    };
-                    assert_eq!(location.path, path);
-                    if id == 2 {
-                        assert_eq!(location.position.column, 8);
+                    assert_eq!(items.len(), usize::from(expected.is_some()));
+                    if let Some(expected) = &expected {
+                        let velk_commands::ChoiceAction::Location { location } = &items[0].action
+                        else {
+                            panic!()
+                        };
+                        assert_eq!(&location.path, expected);
+                        if id == 2 {
+                            assert_eq!(location.position.column, 8);
+                        }
+                    }
+                    if id == 1 {
+                        std::fs::write(project.path().join("new-file.rs"), "new file")
+                            .map_err(|e| e.to_string())?;
                     }
                     break;
                 }
@@ -171,7 +193,7 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
         .join()
         .map_err(|_| "project smoke responder panicked")?;
     println!(
-        "Project feature smoke passed: packed native Quick Open, ignored paths, unsaved workspace search, cancellation, buffer events, opt-in autosave deadline and revision-bound host saves, unload."
+        "Project feature smoke passed: packed native Quick Open session caching and refresh, ignored paths, unsaved workspace search, cancellation, buffer events, opt-in autosave deadline and revision-bound host saves, unload."
     );
     Ok(())
 }

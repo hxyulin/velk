@@ -321,6 +321,8 @@ pub enum PickerMode {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PickerRequest {
     Begin {
+        /// Stable across queries in one picker; a new session refreshes its file index.
+        session: u64,
         id: u64,
         context: Context,
         query: velk_search::Query,

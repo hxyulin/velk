@@ -1,7 +1,8 @@
+mod index;
 mod scan;
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use velk_plugin_sdk::{
     CapabilityDeclaration, Host, Plugin, Registrar,
@@ -16,6 +17,7 @@ enum Mode {
 struct Job {
     id: u64,
     ticket: u64,
+    session: u64,
     query: velk_search::Query,
 }
 struct State {
@@ -29,6 +31,8 @@ struct Worker {
     shared: Arc<(Mutex<State>, Condvar)>,
     ticket: Arc<AtomicU64>,
     thread: Option<std::thread::JoinHandle<()>>,
+    stopping: Arc<AtomicBool>,
+    session: Arc<AtomicU64>,
 }
 impl Worker {
     fn new(mode: Mode) -> Self {
@@ -43,11 +47,16 @@ impl Worker {
             Condvar::new(),
         ));
         let ticket = Arc::new(AtomicU64::new(0));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let session = Arc::new(AtomicU64::new(0));
+        let stopped = stopping.clone();
+        let current_session = session.clone();
         let state = shared.clone();
         let current = ticket.clone();
         let thread = std::thread::Builder::new()
             .name("velk-project-picker".into())
             .spawn(move || {
+                let mut index = None::<(u64, index::Index)>;
                 loop {
                     let (job, host) = {
                         let mut queue = state.0.lock().unwrap();
@@ -62,9 +71,23 @@ impl Worker {
                     let result = host
                         .ok_or_else(|| "host services not attached".to_string())
                         .and_then(|host| {
-                            scan::run(&host, mode, &job.query, || {
-                                current.load(Ordering::Acquire) != job.ticket
-                            })
+                            let cancelled = || current.load(Ordering::Acquire) != job.ticket;
+                            if matches!(mode, Mode::Files) {
+                                if index
+                                    .as_ref()
+                                    .is_none_or(|(session, _)| *session != job.session)
+                                {
+                                    let built = index::Index::build(&host, || {
+                                        stopped.load(Ordering::Acquire)
+                                            || current_session.load(Ordering::Acquire)
+                                                != job.session
+                                    })?;
+                                    index = Some((job.session, built));
+                                }
+                                index.as_mut().unwrap().1.filter(&job.query.text, cancelled)
+                            } else {
+                                scan::run(&host, mode, &job.query, cancelled)
+                            }
                         });
                     let mut state = state.0.lock().unwrap();
                     if !state.stop && current.load(Ordering::Acquire) == job.ticket {
@@ -77,6 +100,8 @@ impl Worker {
             shared,
             ticket,
             thread,
+            stopping,
+            session,
         }
     }
     fn request(&mut self, request: PickerRequest) -> Result<PickerReply, String> {
@@ -89,14 +114,22 @@ impl Worker {
         }
         let mut state = self.shared.0.lock().unwrap();
         match request {
-            PickerRequest::Begin { id, query, .. } => {
+            PickerRequest::Begin {
+                id, session, query, ..
+            } => {
                 if query.text.len() > 1024 {
                     return Err("query exceeds 1024 bytes".into());
                 }
                 let ticket = self.ticket.fetch_add(1, Ordering::AcqRel) + 1;
+                self.session.store(session, Ordering::Release);
                 state.result = None;
                 state.active = Some(id);
-                state.job = Some(Job { id, ticket, query });
+                state.job = Some(Job {
+                    id,
+                    ticket,
+                    session,
+                    query,
+                });
                 self.shared.1.notify_one();
                 Ok(PickerReply::Pending)
             }
@@ -130,6 +163,7 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
         self.ticket.fetch_add(1, Ordering::AcqRel);
         self.shared.0.lock().unwrap().stop = true;
         self.shared.1.notify_one();
@@ -227,7 +261,7 @@ plugin!(
     "p",
     false,
     PickerMode::Files,
-    "# Quick Open\n\nFind project files with fuzzy path matching. Cmd/Ctrl+P opens the live picker. Respects project ignore files and skips symlinks. Select a result with Enter or click to open it."
+    "# Quick Open\n\nFind project files with Nucleo fuzzy path matching. Cmd/Ctrl+P indexes all eligible files, then filters them in memory. Reopen to refresh the index. Respects project ignore files and skips symlinks. Select a result with Enter or click to open it."
 );
 plugin!(
     WorkspaceFind,

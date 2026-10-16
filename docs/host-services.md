@@ -42,8 +42,10 @@ Directory results use project-relative paths, are sorted, and report symlinks
 without traversing them. Reads require a regular file and return disk bytes,
 not unsaved editor contents. Use `ReadBuffer` for the latter.
 
-File reads and buffer text replies are limited to 1 MiB. A directory listing is
-limited to 4,096 entries and fails rather than silently truncating. Native request
+File reads and buffer text replies are limited to 1 MiB. Directory reads return sorted pages of at most 4,096 entries. Pass `after: None`
+for the first page, then the last entry's project-relative path for the next page.
+Continue until an empty page; there is no total directory-entry limit. Listings
+are not atomic snapshots, so concurrent filesystem changes can affect traversal. Native request
 JSON is limited to 1 MiB and response JSON to 4 MiB, including encoding overhead.
 An oversized buffer or encoded response returns an explicit error. Paths in this
 JSON contract must be representable as UTF-8.

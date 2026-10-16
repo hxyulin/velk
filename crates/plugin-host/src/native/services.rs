@@ -22,17 +22,21 @@ impl Endpoint {
         if !self.capabilities.contains(request.capability()) {
             return Err(format!("plugin did not declare {}", request.capability()));
         }
+        let after = match &request {
+            Request::ReadDirectory { after, .. } => after.clone(),
+            _ => None,
+        };
         let directory = matches!(request, Request::ReadDirectory { .. });
         match request {
             Request::Workspace => self
                 .workspace()
                 .map(|workspace| Response::Workspace { workspace }),
-            Request::ReadFile { path } | Request::ReadDirectory { path } => {
+            Request::ReadFile { path } | Request::ReadDirectory { path, .. } => {
                 let workspace = self.workspace()?;
                 let root = workspace
                     .project_root
                     .ok_or("no project folder is selected")?;
-                read_project(&root, &path, directory)
+                read_project_page(&root, &path, directory, after.as_deref())
             }
             _ => self.dispatch(request),
         }
@@ -133,10 +137,19 @@ impl Generation {
         Ok(())
     }
 }
+#[cfg(test)]
 fn read_project(
     root: &std::path::Path,
     path: &std::path::Path,
     directory: bool,
+) -> Result<Response, String> {
+    read_project_page(root, path, directory, None)
+}
+fn read_project_page(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    directory: bool,
+    after: Option<&std::path::Path>,
 ) -> Result<Response, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let target = root.join(path).canonicalize().map_err(|e| e.to_string())?;
@@ -144,31 +157,38 @@ fn read_project(
         return Err("path is outside the project root".into());
     }
     if directory {
-        let mut entries = Vec::new();
-        for entry in std::fs::read_dir(&target).map_err(|e| e.to_string())? {
-            if entries.len() == host::MAX_DIRECTORY_ENTRIES {
-                return Err("directory exceeds 4096 entries".into());
-            }
-            let entry = entry.map_err(|e| e.to_string())?;
-            let ty = entry.file_type().map_err(|e| e.to_string())?;
-            entries.push(host::DirectoryEntry {
-                path: entry
-                    .path()
-                    .strip_prefix(&root)
+        let mut paths = std::fs::read_dir(&target)
+            .map_err(|e| e.to_string())?
+            .map(|entry| entry.map(|entry| entry.path()).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        paths.sort();
+        let entries = paths
+            .into_iter()
+            .filter(|path| {
+                after.is_none_or(|after| path.strip_prefix(&root).is_ok_and(|path| path > after))
+            })
+            .take(host::MAX_DIRECTORY_ENTRIES)
+            .map(|path| {
+                let ty = std::fs::symlink_metadata(&path)
                     .map_err(|e| e.to_string())?
-                    .to_path_buf(),
-                kind: if ty.is_symlink() {
-                    host::FileKind::Symlink
-                } else if ty.is_dir() {
-                    host::FileKind::Directory
-                } else if ty.is_file() {
-                    host::FileKind::File
-                } else {
-                    host::FileKind::Other
-                },
-            });
-        }
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
+                    .file_type();
+                Ok(host::DirectoryEntry {
+                    path: path
+                        .strip_prefix(&root)
+                        .map_err(|e| e.to_string())?
+                        .to_path_buf(),
+                    kind: if ty.is_symlink() {
+                        host::FileKind::Symlink
+                    } else if ty.is_dir() {
+                        host::FileKind::Directory
+                    } else if ty.is_file() {
+                        host::FileKind::File
+                    } else {
+                        host::FileKind::Other
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(Response::Directory { entries })
     } else {
         if !std::fs::metadata(&target)
@@ -242,6 +262,30 @@ mod tests {
                 .unwrap();
             assert!(read_project(root.path(), std::path::Path::new("internal"), false).is_ok());
         }
+    }
+    #[test]
+    fn directory_pages_cover_every_entry_without_duplicates() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..host::MAX_DIRECTORY_ENTRIES + 3 {
+            std::fs::write(root.path().join(format!("{index:05}")), "").unwrap();
+        }
+        let mut after = None;
+        let mut paths = Vec::new();
+        loop {
+            let Response::Directory { entries } =
+                read_project_page(root.path(), root.path(), true, after.as_deref()).unwrap()
+            else {
+                panic!()
+            };
+            if entries.is_empty() {
+                break;
+            }
+            assert!(entries.len() <= host::MAX_DIRECTORY_ENTRIES);
+            after = entries.last().map(|entry| entry.path.clone());
+            paths.extend(entries.into_iter().map(|entry| entry.path));
+        }
+        assert_eq!(paths.len(), host::MAX_DIRECTORY_ENTRIES + 3);
+        assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));
     }
     #[test]
     fn missing_capabilities_and_retired_endpoints_fail_without_ui_dispatch() {
