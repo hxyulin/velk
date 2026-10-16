@@ -1,6 +1,6 @@
 //! Semantic services independent of UI widgets, rendering, and wire protocols.
-//! One service currently owns one open document. Backends run on a dedicated
-//! thread/reactor or an external provider; queues are bounded and UI methods never wait.
+//! A service is a document attachment. Backends may multiplex attachments over
+//! workspace clients; queues are bounded and UI methods never wait.
 
 use async_channel::{Receiver, Sender};
 use ropey::Rope;
@@ -98,6 +98,7 @@ pub trait Backend: Send + 'static {
 }
 
 pub struct Session {
+    provider_retired: Arc<std::sync::atomic::AtomicBool>,
     documents: Receiver<DocumentSnapshot>,
     hovers: Receiver<Option<PositionRequest>>,
     commands: Receiver<Input>,
@@ -107,6 +108,12 @@ pub struct Session {
     events: EventSink,
 }
 impl Session {
+    /// Provider replacement retires shared backend resources; closing a document
+    /// only detaches that document from a workspace client.
+    pub fn provider_retired(&self) -> bool {
+        self.provider_retired
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
     /// Whether the frontend has closed or requested shutdown.
     pub fn is_cancelled(&self) -> bool {
         self.stop.is_closed()
@@ -250,6 +257,7 @@ impl Events {
 }
 
 pub struct Service {
+    provider_retired: Arc<std::sync::atomic::AtomicBool>,
     command_busy: Arc<std::sync::atomic::AtomicBool>,
     commands: Sender<Input>,
     documents: Sender<DocumentSnapshot>,
@@ -320,6 +328,7 @@ impl Service {
         notify: Option<Arc<dyn Fn() + Send + Sync>>,
         observer: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     ) -> (Arc<Self>, Session) {
+        let provider_retired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let command_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (commands, command_pending) = async_channel::bounded(1);
         let (command, command_results) = async_channel::bounded(1);
@@ -354,6 +363,7 @@ impl Service {
             wake: event_wake,
         };
         let session = Session {
+            provider_retired: provider_retired.clone(),
             commands: command_pending,
             documents: documents_pending.clone(),
             hovers: hovers_pending.clone(),
@@ -363,6 +373,7 @@ impl Service {
             events: sink.clone(),
         };
         let service = Arc::new(Self {
+            provider_retired,
             command_busy,
             commands,
             documents,
@@ -379,8 +390,13 @@ impl Service {
         });
         (service, session)
     }
-    /// Must run away from the UI. Cancels the backend and joins its reactor,
-    /// including runtime teardown, before observer storage or code can be freed.
+    /// Retire the provider's shared resources as well as this document attachment.
+    pub fn retire_provider(&self) {
+        self.provider_retired
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.shutdown();
+    }
+    /// Must run away from the UI. Join before observer storage or code is freed.
     pub fn shutdown_and_join(&self) -> Result<(), String> {
         self.shutdown();
         if let Some(worker) = self

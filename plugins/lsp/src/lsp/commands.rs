@@ -80,11 +80,12 @@ impl Request {
         &self,
         value: Value,
         encoding: Encoding,
-        source: &DocumentSnapshot,
-        version: i32,
+        source: (&DocumentSnapshot, i32),
         request: PositionRequest,
         capabilities: &Value,
+        documents: &[(DocumentSnapshot, i32)],
     ) -> Result<Outcome, String> {
+        let (source, version) = source;
         if value.is_null() {
             return Ok(Outcome::Message {
                 text: "No result at the caret".into(),
@@ -106,12 +107,14 @@ impl Request {
                 }
             }
             ResultKind::WorkspaceEdit => Outcome::Edit {
-                edit: super::edits::workspace(value, source, version, encoding)?,
+                edit: super::edits::workspace(value, source, version, encoding, documents)?,
             },
             ResultKind::CodeActions => {
-                code_actions(value, encoding, source, version, capabilities)?
+                code_actions(value, encoding, source, version, capabilities, documents)?
             }
-            ResultKind::ResolvedAction => resolved_action(value, encoding, source, version)?,
+            ResultKind::ResolvedAction => {
+                resolved_action(value, encoding, source, version, documents)?
+            }
             ResultKind::Completion => completion(value, encoding, source, request, capabilities)?,
             ResultKind::ResolvedCompletion => {
                 let item = serde_json::from_value(value).map_err(|e| e.to_string())?;
@@ -185,6 +188,7 @@ fn resolved_action(
     encoding: Encoding,
     source: &DocumentSnapshot,
     version: i32,
+    documents: &[(DocumentSnapshot, i32)],
 ) -> Result<Outcome, String> {
     let action: lsp_types::CodeAction = serde_json::from_value(value).map_err(|e| e.to_string())?;
     if let Some(disabled) = action.disabled {
@@ -200,6 +204,7 @@ fn resolved_action(
             source,
             version,
             encoding,
+            documents,
         )?,
     })
 }
@@ -209,6 +214,7 @@ fn code_actions(
     source: &DocumentSnapshot,
     version: i32,
     capabilities: &Value,
+    documents: &[(DocumentSnapshot, i32)],
 ) -> Result<Outcome, String> {
     use velk_plugin_sdk::commands::{Choice, ChoiceAction};
     let actions: Vec<lsp_types::CodeActionOrCommand> =
@@ -228,6 +234,7 @@ fn code_actions(
                 encoding,
                 source,
                 version,
+                documents,
             )?
             else {
                 unreachable!()

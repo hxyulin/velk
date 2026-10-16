@@ -28,7 +28,21 @@ revision. Completion is explicitly invoked and plain-text only. See the
 
 ## Lifecycle
 
-Server sessions are stopped on unload. The native library stays resident because process-wide signal handlers may outlive a session.
+The client shares one server process per canonical workspace root and effective
+server configuration. Buffers attach to that client with independent document
+versions, requests and cancellation. Closing a buffer sends didClose; closing the
+last buffer keeps the client available for reuse. Provider unload/restart and
+application shutdown stop and reap its clients, including idle ones.
+
+Cargo workspace members share their workspace root, while nested independent
+Cargo projects remain separate. Compilation databases, compile flags and repository
+markers support other project roots; an explicitly configured root takes
+precedence. The client is language-neutral, but Velk currently bundles only a Rust
+language definition and editor routing.
+
+The native library stays resident because process-wide signal handlers may
+outlive a client. Problems currently lists open-document diagnostics; workspace
+connection sharing does not yet retain diagnostics for unopened files.
 
 Language-server stderr is drained into the host diagnostics service. The host owns
 filtering, colors, and output; external stderr text is recorded at INFO with source

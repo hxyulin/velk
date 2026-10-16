@@ -558,3 +558,207 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
         false
     );
 }
+
+struct SharedBackend {
+    client: std::sync::Arc<velk_plugin_lsp::lsp::Client>,
+    backend: LspBackend,
+}
+impl velk_semantic::Backend for SharedBackend {
+    fn run(self: Box<Self>, session: velk_semantic::Session) -> velk_semantic::BackendFuture {
+        Box::pin(async move { self.client.run(self.backend, session).await })
+    }
+}
+fn shared(
+    client: &std::sync::Arc<velk_plugin_lsp::lsp::Client>,
+    logfile: &Path,
+    path: &Path,
+    revision: u64,
+) -> std::sync::Arc<Service> {
+    let service = Service::start(SharedBackend {
+        client: client.clone(),
+        backend: backend(logfile, "normal"),
+    })
+    .unwrap();
+    service.update(document(path, revision, "fn hello() {}\n"));
+    service
+}
+async fn ready(service: &Service) {
+    until(&service.events, |e| {
+        matches!(e, Event::Status(Status::Ready(_)))
+    })
+    .await;
+}
+async fn definition(service: &Service, revision: u64) -> std::path::PathBuf {
+    service.command(PositionRequest { id: 1, revision, position: 4 }, serde_json::json!({"method":"textDocument/definition","result":"locations","capability":"/definitionProvider"}), None).unwrap();
+    let Event::Command {
+        result: Ok(velk_plugin_sdk::commands::Outcome::Locations { locations }),
+        ..
+    } = until(&service.events, |e| matches!(e, Event::Command { .. })).await
+    else {
+        panic!("definition failed")
+    };
+    locations[0].path.clone()
+}
+#[tokio::test(flavor = "current_thread")]
+async fn workspace_client_multiplexes_documents_reuses_idle_servers_and_retires_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.rs");
+    let b = dir.path().join("b.rs");
+    let logfile = dir.path().join("workspace.jsonl");
+    let client = std::sync::Arc::new(velk_plugin_lsp::lsp::Client::default());
+    let first = shared(&client, &logfile, &a, 0);
+    let second = shared(&client, &logfile, &b, 0);
+    ready(&first).await;
+    ready(&second).await;
+    until(&first.events, |e| matches!(e, Event::Diagnostics { .. })).await;
+    until(&second.events, |e| matches!(e, Event::Diagnostics { .. })).await;
+    let messages = log(&logfile);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|v| v["method"] == "initialize")
+            .count(),
+        1
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|v| v["method"] == "textDocument/didOpen")
+            .count(),
+        2
+    );
+    let (target_a, target_b) = tokio::join!(definition(&first, 0), definition(&second, 0));
+    assert_eq!(target_a, a);
+    assert_eq!(target_b, b);
+    first.update(document(&a, 2, "fn changed() {}\n"));
+    until(&first.events, |e| {
+        matches!(e, Event::Diagnostics { revision: 2, .. })
+    })
+    .await;
+    assert_eq!(definition(&second, 0).await, b);
+    first.shutdown_and_join().unwrap();
+    assert_eq!(definition(&second, 0).await, b);
+    second.shutdown_and_join().unwrap();
+    assert!(!log(&logfile).iter().any(|v| v["method"] == "shutdown"));
+    let reopened = shared(&client, &logfile, &a, 7);
+    ready(&reopened).await;
+    until(&reopened.events, |e| {
+        matches!(e, Event::Diagnostics { revision: 7, .. })
+    })
+    .await;
+    assert_eq!(definition(&reopened, 7).await, a);
+    assert_eq!(
+        log(&logfile)
+            .iter()
+            .filter(|v| v["method"] == "initialize")
+            .count(),
+        1
+    );
+    reopened.retire_provider();
+    reopened.shutdown_and_join().unwrap();
+    assert!(log(&logfile).iter().any(|v| v["method"] == "shutdown"));
+    assert!(log(&logfile).iter().any(|v| v["method"] == "exit"));
+    let restarted = shared(&client, &logfile, &b, 4);
+    ready(&restarted).await;
+    assert_eq!(
+        log(&logfile)
+            .iter()
+            .filter(|v| v["method"] == "initialize")
+            .count(),
+        2
+    );
+    restarted.shutdown_and_join().unwrap();
+    drop(client);
+    assert_eq!(
+        log(&logfile)
+            .iter()
+            .filter(|v| v["method"] == "exit")
+            .count(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn workspace_clients_isolate_roots_and_configuration_and_retire_idle_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let root_b = dir.path().join("other");
+    std::fs::create_dir(&root_b).unwrap();
+    let logfile = dir.path().join("isolated.jsonl");
+    let client = std::sync::Arc::new(velk_plugin_lsp::lsp::Client::default());
+    let mut services = Vec::new();
+    for index in 0..3 {
+        let mut config = backend(&logfile, "normal");
+        if index == 1 {
+            config.root = Some(root_b.clone());
+        }
+        if index == 2 {
+            config.configuration = serde_json::json!({"other":true});
+        }
+        let service = Service::start(SharedBackend {
+            client: client.clone(),
+            backend: config,
+        })
+        .unwrap();
+        service.update(document(
+            &dir.path().join(format!("file-{index}.rs")),
+            0,
+            "fn hello() {}\n",
+        ));
+        ready(&service).await;
+        until(&service.events, |e| matches!(e, Event::Diagnostics { .. })).await;
+        services.push(service);
+    }
+    assert_eq!(
+        log(&logfile)
+            .iter()
+            .filter(|v| v["method"] == "initialize")
+            .count(),
+        3
+    );
+    client.retire_idle();
+    assert_eq!(
+        definition(&services[0], 0).await,
+        dir.path().join("file-0.rs")
+    );
+    for service in services {
+        service.shutdown_and_join().unwrap();
+    }
+    client.retire_idle();
+    assert_eq!(
+        log(&logfile)
+            .iter()
+            .filter(|v| v["method"] == "exit")
+            .count(),
+        3
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn closing_a_document_during_shared_initialization_detaches_promptly() {
+    let dir = tempfile::tempdir().unwrap();
+    let logfile = dir.path().join("initializing.jsonl");
+    let client = std::sync::Arc::new(velk_plugin_lsp::lsp::Client::default());
+    let service = Service::start(SharedBackend {
+        client: client.clone(),
+        backend: backend(&logfile, "stall-init"),
+    })
+    .unwrap();
+    service.update(document(&dir.path().join("file.rs"), 0, "fn hello() {}\n"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !logfile.exists() || !log(&logfile).iter().any(|v| v["method"] == "initialize") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let started = std::time::Instant::now();
+    client.retire_idle();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "an initializing attachment is active, not idle"
+    );
+    let started = std::time::Instant::now();
+    service.shutdown_and_join().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    client.retire_idle();
+}

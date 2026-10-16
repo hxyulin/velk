@@ -58,10 +58,10 @@ impl NativeSession {
             Err(format!("semantic input failed with status {status}"))
         }
     }
-    fn retire(self) -> bool {
+    fn retire(self, provider: bool) -> bool {
         self.callback.active.store(false, Ordering::Release);
         // SAFETY: exclusive lifecycle worker, one destroy per successful create.
-        let status = unsafe { (self.destroy)(self.instance.as_ptr()) };
+        let status = unsafe { (self.destroy)(self.instance.as_ptr(), u32::from(provider)) };
         if status != OK {
             // Producer quiescence is unproven. Preserve callback storage; caller
             // also pins provider code and blocks reactivation of this plugin ID.
@@ -106,7 +106,7 @@ impl Manager {
             if doc.session.is_cancelled() {
                 if let Some(native) = doc.native.take() {
                     let provider = native.provider.clone();
-                    if !native.retire() {
+                    if !native.retire(false) {
                         self.quarantine_semantic_provider(&provider);
                     }
                 }
@@ -148,7 +148,7 @@ impl Manager {
                     doc.attempted = Some(key.clone());
                     let retired = if let Some(native) = doc.native.take() {
                         let provider = native.provider.clone();
-                        if native.retire() {
+                        if native.retire(true) {
                             true
                         } else {
                             self.quarantine_semantic_provider(&provider);
@@ -253,7 +253,7 @@ impl Manager {
             {
                 let native = doc.native.take().unwrap();
                 let provider = native.provider.clone();
-                if !native.retire() {
+                if !native.retire(true) {
                     success = false;
                     failed_providers.push(provider);
                 }
@@ -262,6 +262,36 @@ impl Manager {
                 doc.session
                     .events()
                     .publish(SemanticEvent::Status(Status::Stopped));
+            }
+        }
+        let semantic_provider = self
+            .plugins
+            .get(id)
+            .is_some_and(|p| p.language.is_some() || p.semantic.is_some());
+        if semantic_provider {
+            let providers: Vec<_> = self
+                .plugins
+                .values()
+                .filter(|p| {
+                    !p.destroyed
+                        && p.semantic.is_some()
+                        && p.hooks.iter().any(|h| {
+                            h.info.name == velk_plugin_contracts::hooks::SEMANTIC_RETIRE_IDLE_HOOK
+                        })
+                })
+                .map(|p| p.info.id.clone())
+                .collect();
+            for provider in providers {
+                let retired = self
+                    .bind_hook(
+                        &provider,
+                        velk_plugin_contracts::hooks::SEMANTIC_RETIRE_IDLE_HOOK,
+                    )
+                    .and_then(|handle| self.call_hook(&handle, &[]));
+                if retired.is_err() {
+                    success = false;
+                    failed_providers.push(provider);
+                }
             }
         }
         if !success {
@@ -279,7 +309,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     static INSTANCE_DESTROYS: AtomicUsize = AtomicUsize::new(0);
-    unsafe extern "C" fn fail_session(_: *mut c_void) -> i32 {
+    unsafe extern "C" fn fail_session(_: *mut c_void, _: u32) -> i32 {
         PANICKED
     }
     unsafe extern "C" fn input(_: *mut c_void, _: *const SemanticInput) -> i32 {

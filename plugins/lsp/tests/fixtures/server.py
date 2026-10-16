@@ -46,8 +46,17 @@ def offset(text, position):
 
 log({"pid": os.getpid()})
 uri, text, version, held = None, "", 0, None
+documents = {}
 while (message := read()) is not None:
-    method, params = message.get("method"), message.get("params", {})
+    method, params = message.get("method"), (message.get("params") or {})
+    target = params.get("textDocument", {}).get("uri")
+    if method == "textDocument/didClose":
+        documents.pop(target, None)
+        uri = None
+        continue
+    if target in documents:
+        uri = target
+        text, version = documents[target]
     if method == "initialize":
         if mode == "stall-init":
             while True:
@@ -131,3 +140,6 @@ while (message := read()) is not None:
         if mode == "runtime-stop":
             print("fixture server stopped", file=sys.stderr, flush=True)
         break
+
+    if uri is not None:
+        documents[uri] = (text, version)

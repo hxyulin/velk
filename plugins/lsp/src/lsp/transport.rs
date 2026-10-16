@@ -14,7 +14,6 @@ pub(super) struct Connection {
     reader: JoinHandle<()>,
     stderr: JoinHandle<()>,
     pub root_uri: String,
-    pub document_uri: Option<String>,
     configuration: Value,
 }
 impl Connection {
@@ -83,7 +82,6 @@ impl Connection {
             reader,
             stderr,
             root_uri: String::new(),
-            document_uri: None,
             configuration,
         })
     }
@@ -94,7 +92,7 @@ impl Connection {
             .await
             .ok_or_else(|| "language server disconnected".to_string())?
     }
-    async fn send(&mut self, message: Value) -> Result<(), String> {
+    pub(super) async fn send(&mut self, message: Value) -> Result<(), String> {
         let _trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.write_message");
         let bytes = {
             let _cpu = velk_plugin_sdk::diagnostics::scope!("lsp.encode");
@@ -140,10 +138,6 @@ impl Connection {
     pub async fn shutdown(&mut self) {
         let _trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.shutdown");
         let _ = tokio::time::timeout(Duration::from_secs(2), async {
-            if let Some(uri) = self.document_uri.take() {
-                self.notify("textDocument/didClose", json!({"textDocument":{"uri":uri}}))
-                    .await?;
-            }
             let id = i32::MAX as u64;
             self.request(id, "shutdown", Value::Null).await?;
             loop {

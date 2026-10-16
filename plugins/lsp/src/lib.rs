@@ -3,7 +3,9 @@ pub mod lsp;
 mod text;
 use velk_plugin_sdk::{LanguageServer, Plugin, semantic::*};
 #[derive(Default)]
-pub struct Lsp;
+pub struct Lsp {
+    client: std::sync::Arc<lsp::Client>,
+}
 impl Plugin for Lsp {
     const ID: &'static str = "velk.lsp";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -104,15 +106,24 @@ impl Plugin for Lsp {
     }
     fn register(reg: &mut velk_plugin_sdk::Registrar<Self>) -> Result<(), String> {
         reg.provide(
+            velk_plugin_sdk::hooks::Request(
+                velk_plugin_sdk::contracts::hooks::SEMANTIC_RETIRE_IDLE_HOOK,
+            ),
+            |this: &mut Self, _: &[u8]| {
+                this.client.retire_idle();
+                Ok(Vec::new())
+            },
+        )?;
+        reg.provide(
             velk_plugin_sdk::hooks::SemanticSessions,
-            |_: &mut Self, definition: LanguageServer| -> Box<dyn Backend> {
-                Box::new(Configured(definition))
+            |this: &mut Self, definition: LanguageServer| -> Box<dyn Backend> {
+                Box::new(Configured(definition, this.client.clone()))
             },
         )
     }
 }
 
-struct Configured(LanguageServer);
+struct Configured(LanguageServer, std::sync::Arc<lsp::Client>);
 impl Backend for Configured {
     fn run(self: Box<Self>, session: Session) -> BackendFuture {
         Box::pin(async move {
@@ -126,7 +137,7 @@ impl Backend for Configured {
                 configuration: serde_json::from_str(&d.configuration)
                     .map_err(|e| format!("LSP configuration: {e}"))?,
             };
-            Box::new(backend).run(session).await
+            self.1.run(backend, session).await
         })
     }
 }

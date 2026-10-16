@@ -100,7 +100,9 @@ pub type CreateSemantic = unsafe extern "C" fn(
     *mut *mut c_void,
 ) -> i32;
 pub type SendSemantic = unsafe extern "C" fn(*mut c_void, *const SemanticInput) -> i32;
-pub type DestroySemantic = unsafe extern "C" fn(*mut c_void) -> i32;
+/// Destroy a document attachment. A nonzero retire flag also releases shared
+/// workspace resources owned by this provider/configuration.
+pub type DestroySemantic = unsafe extern "C" fn(*mut c_void, u32) -> i32;
 
 /// UTF-8 configuration borrowed only for query callback / session creation.
 #[repr(C)]

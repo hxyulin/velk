@@ -109,11 +109,10 @@ and requests are cancelled on source edits and timed out after ten seconds.
   failures. Ranges are Unicode scalar offsets. Hover results retain request
   identity, document revision, and requested position.
 
-The first implementation owns **one open document per service**. The app still
-opens one file. Sharing a workspace server across multiple open documents needs
-keyed document queues and lifecycle management before adding multiple tabs.
-Document submissions should come from the single document owner in revision
-order. An `Events` clone shares the result stream; it is not a broadcast
+Each service is **one document attachment**, with its own bounded queues and
+result consumer. The LSP client multiplexes these attachments over a physical
+connection shared by workspace root and effective configuration. Document
+submissions still come from the single document owner in revision order. An `Events` clone shares the result stream; it is not a broadcast
 subscription for independent consumers.
 
 Document, hover, and save input queues each retain one pending value. Status,
@@ -208,15 +207,18 @@ stay within its supported integer range, including shutdown.
 
 Opening `.rs` creates an endpoint which resolves the Rust support plugin and its
 LSP transport dependency. The Rust definition selects persistent rust-analyzer;
-the generic transport has no language-specific default. The transport discovers the
-nearest ancestor Cargo manifest on the worker; an explicit `LspBackend::root`
-can override it. The Rust definition defaults to `rust-analyzer` on PATH and can be
-replaced with `VELK_RUST_ANALYZER=/absolute/path/to/rust-analyzer`. Initialization
+the generic transport has no language-specific default. The client discovers
+project roots on the worker: Cargo's workspace resolution handles member crates
+and nested independent workspaces; compilation databases, compile flags and
+repository markers provide other project roots. An explicit `LspBackend::root`
+overrides discovery. The Rust definition defaults to `rust-analyzer` on PATH and
+can be replaced with `VELK_RUST_ANALYZER=/absolute/path/to/rust-analyzer`. Initialization
 options and workspace configuration are separate configurable JSON objects in
 the LSP adapter. `VELK_LSP_CONFIG=/path/to/config.json` can set `executable`,
 `arguments`, `root`, `initialization_options`, and `configuration` privately in the
 Rust definition plugin; the file and copied definition are limited to 1 MiB. The editor has no user-configurable language
-routing yet, and one session still owns one document/server.
+routing yet. Document attachments share workspace clients rather than starting
+one server process per buffer.
 
 `checkOnSave` is enabled by default in both initialization options and workspace
 configuration. This allows rust-analyzer's initial Cargo check and checks after
@@ -340,3 +342,40 @@ its text, leaving, and reopening it. A native Markdown fixture verified headings
 emphasis, strikethrough, code, lists, styled links, and text selection. Markdown
 rendering also has a GPU selection regression test and a host test for asynchronous execution, renderer injection, and cancellation. Actionable links remain deferred.
 No native end-to-end latency measurement is claimed for this integration.
+
+## Workspace client ownership
+
+The LSP plugin instance owns a client registry. A key contains the canonical
+workspace root, executable, arguments, initialization options, and configuration.
+Different effective keys start independent processes. Language ID remains a
+per-document property, allowing compatible C/C++ definitions to share a clangd
+connection. This does not add a bundled clangd definition or C/C++ editor routing.
+
+One worker/reactor owns each physical connection. Initialize/initialized are sent
+once; each document still gets didOpen/didChange/didSave/didClose. Request IDs are
+unique on the connection and replies are translated back to the requesting
+document. Cancelling, editing, or closing one document does not cancel another's
+requests. Wire document versions advance across close/reopen, so old versioned
+diagnostics cannot be mistaken for a new attachment. Versioned workspace edits
+for other attached documents resolve to their known host revisions.
+
+Closing the last buffer leaves the workspace client idle for later reuse.
+Provider replacement or retirement marks document destruction as provider
+retirement and joins the associated client. The standard empty byte request
+`velk.semantic.retire-idle.v1` additionally releases idle clients when a language
+or transport provider retires, including when no document attachments remain.
+Unrelated plugin unloads do not invoke this cleanup. Application shutdown unloads
+providers and joins their clients before freeing callbacks. The root native ABI
+and internal contract numbers remain 1; rebuild the host and plugins together.
+
+The registry bounds live clients to 16, attached documents to 256 per client,
+outstanding requests to 1,024, and retained document-version histories to 4,096
+URIs per client. Physical transport input and per-document delivery are bounded;
+a stalled document receiver fails the client rather than silently dropping a
+command response. Initialization, close and provider retirement remain cancellable
+while another document is attaching.
+
+This change establishes shared connection ownership. The Problems read service
+still exports current open-document diagnostics. Publications for unopened files
+need a workspace diagnostic store and path-based navigation rather than assigning
+an invented buffer revision.

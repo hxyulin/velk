@@ -13,3 +13,7 @@ pub const SEMANTIC_HOOK: &str = "velk.semantic.session";
 
 /// Per-instance host workspace/document service attachment.
 pub const HOST_HOOK: &str = "velk.host.attach.v1";
+
+/// Empty byte request to release idle workspace clients after a language or
+/// transport provider retires. Active document attachments remain unaffected.
+pub const SEMANTIC_RETIRE_IDLE_HOOK: &str = "velk.semantic.retire-idle.v1";

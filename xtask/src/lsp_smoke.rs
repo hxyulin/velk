@@ -32,6 +32,7 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
     std::fs::write(&source, "fn café() {}\n").map_err(|e| e.to_string())?;
     for mode in [
         "normal",
+        "workspace",
         "runtime-stop",
         "stall-init",
         "no-profile",
@@ -169,6 +170,29 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 return Ok::<_,String>(());
             }
             assert_eq!(loaded.loaded, 3);
+            if mode == "workspace" {
+                until(&service.events, |e| matches!(e, Event::Diagnostics { .. })).await?;
+                let other = path.parent().unwrap().join("second.rs");
+                let second = client.semantic_service()?;
+                second.update(snapshot(&other, 9, initial));
+                until(&second.events, |e| matches!(e, Event::Diagnostics { revision: 9, .. })).await?;
+                let initial_messages = messages(log);
+                assert_eq!(initial_messages.iter().filter(|v|v["method"] == "initialize").count(), 1);
+                assert_eq!(initial_messages.iter().filter(|v|v.get("pid").is_some()).count(), 1);
+                service.shutdown();
+                logged(log, |messages| messages.iter().any(|v| v["method"] == "textDocument/didClose")).await?;
+                second.command(PositionRequest { id:1, revision:9, position:4 }, serde_json::json!({"method":"textDocument/definition","result":"locations","capability":"/definitionProvider"}),None)?;
+                let Event::Command { result: Ok(velk_commands::Outcome::Locations { locations }), .. } = until(&second.events, |e|matches!(e, Event::Command { .. })).await? else { panic!("shared definition failed") };
+                assert_eq!(locations[0].path, other);
+                second.shutdown();
+                logged(log, |messages| messages.iter().filter(|v| v["method"] == "textDocument/didClose").count() == 2).await?;
+                assert!(!messages(log).iter().any(|v|v["method"] == "shutdown"));
+                client.unload("velk.language-server.rust-analyzer".into())?.recv().await.map_err(|e|e.to_string())??;
+                logged(log, |messages|messages.iter().any(|v|v["method"] == "exit")).await?;
+                assert_reaped(log);
+                return Ok::<_,String>(());
+            }
+
             let profile_resident=loaded.plugins.iter().find(|p|p.id=="velk.language-server.rust-analyzer").unwrap().resident_code;
             let profile_image=loaded.plugins.iter().find(|p|p.id=="velk.language-server.rust-analyzer").unwrap().loaded_path.clone();
             let image = loaded

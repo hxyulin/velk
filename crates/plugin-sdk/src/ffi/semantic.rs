@@ -89,13 +89,16 @@ pub(super) unsafe extern "C" fn input(instance: *mut c_void, raw: *const Semanti
         OK
     })
 }
-pub(super) unsafe extern "C" fn destroy(instance: *mut c_void) -> i32 {
+pub(super) unsafe extern "C" fn destroy(instance: *mut c_void, retire: u32) -> i32 {
     if instance.is_null() {
         return INVALID;
     }
     guard(|| {
         // Keep ownership intact on failure: the host retains library + sink.
         let session = unsafe { &*instance.cast::<OwnedSession>() };
+        if retire != 0 {
+            session.service.retire_provider();
+        }
         if session.service.shutdown_and_join().is_err() {
             return PANICKED;
         }

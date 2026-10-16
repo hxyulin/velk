@@ -1,10 +1,12 @@
 //! LSP adapter. Wire types, URIs, encoding negotiation, and child processes stay
 //! here; the editor and other semantic backends do not depend on them.
+mod client;
+pub use client::Client;
 mod commands;
 mod edits;
 mod positions;
 mod transport;
-use self::{positions::Encoding, transport::Connection};
+use self::{client::Connection, positions::Encoding};
 use crate::{
     Backend, BackendFuture, Capabilities, Diagnostic, DocumentSnapshot, Event, Hover, Input,
     PositionRequest, Session, Severity, Status, text::difference,
@@ -33,42 +35,49 @@ pub struct LspBackend {
 impl Backend for LspBackend {
     fn run(self: Box<Self>, session: Session) -> BackendFuture {
         Box::pin(async move {
-            let _trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.session");
-            let first = loop {
-                match session.next().await {
-                    Some(Input::Document(document)) => break document,
-                    Some(_) => continue,
-                    None => return Ok(()),
-                }
-            };
-            let root = self
-                .root
-                .clone()
-                .unwrap_or_else(|| project_root(&first.path));
-            let mut connection = Connection::spawn(
-                &self.executable,
-                &self.arguments,
-                &root,
-                self.configuration.clone(),
-            )?;
-            let result = tokio::select! {
-                result = drive(&mut connection, &session, first, &root, self.initialization_options) => result,
-                _ = session.cancelled() => Ok(()),
-            };
-            connection.shutdown().await;
-            result
+            std::sync::Arc::new(Client::default())
+                .run(*self, session)
+                .await
         })
     }
 }
 
-fn project_root(path: &Path) -> PathBuf {
+async fn project_root(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or(Path::new("."));
-    parent
-        .ancestors()
-        .find(|p| p.join("Cargo.toml").is_file())
-        .unwrap_or(parent)
-        .to_path_buf()
+    for directory in parent.ancestors() {
+        let manifest = directory.join("Cargo.toml");
+        if manifest.is_file() {
+            // Cargo resolves member crates and nested independent workspaces.
+            let output = tokio::process::Command::new("cargo")
+                .kill_on_drop(true)
+                .args([
+                    "locate-project",
+                    "--workspace",
+                    "--message-format",
+                    "plain",
+                    "--manifest-path",
+                ])
+                .arg(&manifest)
+                .output();
+            if let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(5), output).await
+                && output.status.success()
+                && let Ok(manifest) = String::from_utf8(output.stdout)
+                && let Some(root) = Path::new(manifest.trim()).parent()
+            {
+                return root.to_path_buf();
+            }
+            return directory.to_path_buf();
+        }
+        if ["compile_commands.json", "compile_flags.txt", ".git"]
+            .iter()
+            .any(|name| directory.join(name).exists())
+        {
+            return directory.to_path_buf();
+        }
+    }
+    parent.to_path_buf()
 }
+
 fn uri(path: &Path) -> Result<String, String> {
     Url::from_file_path(path)
         .map(|url| url.to_string())
@@ -99,7 +108,6 @@ async fn drive(
             }
         }, "initializationOptions":options
     });
-    connection.root_uri = root_uri;
     let initialize_trace = velk_plugin_sdk::diagnostics::async_scope!("lsp.initialize");
     connection.request(1, "initialize", initialize).await?;
     let initialized = tokio::time::timeout(Duration::from_secs(30), async {
@@ -143,8 +151,8 @@ async fn drive(
     connection.notify("initialized", json!({})).await?;
     let mut document = first;
     let document_uri = uri(&document.path)?;
-    connection.document_uri = Some(document_uri.clone());
     let mut version = 1i32;
+    connection.record(&document, version);
     connection.notify("textDocument/didOpen", json!({"textDocument":{"uri":document_uri,"languageId":document.language,"version":version,"text":document.text.to_string()}})).await?;
     session
         .events()
@@ -179,6 +187,7 @@ async fn drive(
                     version = version.checked_add(1).ok_or("LSP document version overflow")?;
                     connection.notify("textDocument/didChange", json!({"textDocument":{"uri":document_uri,"version":version},"contentChanges":[change]})).await?;
                     document = next;
+                    connection.record(&document, version);
                     diagnostic_context.clear();
                 }
                 Some(Input::Saved(saved)) => {
@@ -246,7 +255,7 @@ async fn drive(
                 } else if command.as_ref().is_some_and(|(id,_,_,_)| message.get("id") == Some(&json!(id))) {
                     let (_, request, spec, _) = command.take().unwrap();
                     let result = if let Some(error) = message.get("error") { Err(format!("Command failed: {error}")) }
-                        else { spec.outcome(message["result"].clone(), encoding, &document, version, request, &server_capabilities) };
+                        else { spec.outcome(message["result"].clone(), encoding, (&document, version), request, &server_capabilities, &connection.documents()) };
                     session.events().publish(Event::Command { request, result });
                 } else if let Some((id,request,_)) = pending {
                     if message.get("id") != Some(&json!(id)) { continue; }
@@ -346,6 +355,37 @@ async fn cancel_command(
 #[cfg(test)]
 mod hover_markup_tests {
     use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn project_roots_respect_cargo_workspaces_nested_projects_and_compile_databases() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = dir.path().join("member");
+        let nested = member.join("nested");
+        std::fs::create_dir_all(nested.join("src")).unwrap();
+        std::fs::create_dir_all(member.join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers=[\"member\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname=\"member\"\nversion=\"0.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(member.join("src/lib.rs"), "").unwrap();
+        std::fs::write(
+            nested.join("Cargo.toml"),
+            "[package]\nname=\"nested\"\nversion=\"0.0.0\"\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(nested.join("src/lib.rs"), "").unwrap();
+        assert_eq!(project_root(&member.join("src/lib.rs")).await, dir.path());
+        assert_eq!(project_root(&nested.join("src/lib.rs")).await, nested);
+        let cpp = dir.path().join("cpp");
+        std::fs::create_dir_all(cpp.join("src")).unwrap();
+        std::fs::write(cpp.join("compile_commands.json"), "[]").unwrap();
+        assert_eq!(project_root(&cpp.join("src/main.cpp")).await, cpp);
+    }
     #[test]
     fn preserves_markup_format_and_fences_legacy_language_strings() {
         let (text, markdown) = hover_text(HoverContents::Scalar(MarkedString::LanguageString(

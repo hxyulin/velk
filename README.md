@@ -207,8 +207,9 @@ Current limitations include:
 - Language integration focuses on Rust. Completion is explicitly invoked and
   plain-text only; snippets, automatic suggestions, and server command execution
   are not yet implemented.
-- Language-server sessions are currently per buffer rather than shared across
-  an entire workspace.
+- Language-server clients are shared by workspace and configuration. Problems
+  currently exposes diagnostics for open documents; retaining results for unopened
+  files is still future work.
 - Disk conflicts are detected during saves, but automatic reload and interactive
   conflict resolution are still future work.
 - Accessibility exposes the editor role and label, but does not yet publish
