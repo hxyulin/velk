@@ -100,7 +100,12 @@ impl Document {
         }
         self.shell.store.error = None;
         match self.shell.store.preferences.set(key, value) {
-            Ok(()) => self.persist_shell(cx),
+            Ok(()) => {
+                if matches!(key, "indentation_provider" | "pairing_provider") {
+                    self.refresh_editing(cx);
+                }
+                self.persist_shell(cx);
+            }
             Err(error) => self.shell.store.error = Some(format!("Cannot set {key}: {error}")),
         }
     }

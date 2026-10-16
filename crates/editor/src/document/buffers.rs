@@ -354,6 +354,10 @@ impl Document {
         }
     }
     pub(super) fn start_buffer_semantics(&mut self, cx: &mut Context<'_, Self>) {
+        let providers = self.selected_editing();
+        self.buffer
+            .editor
+            .update(cx, |editor, _| editor.set_editing_providers(providers));
         if self.buffer.file.is_some()
             && Language::for_path(&self.buffer.path) == Some(Language::Rust)
             && let Some(plugins) = &self.plugins

@@ -19,6 +19,8 @@ pub struct Preferences {
     pub activity_bar: Option<bool>,
     pub search_backend: String,
     pub markdown_provider: String,
+    pub indentation_provider: String,
+    pub pairing_provider: String,
     /// Plugin IDs the user turned off; every other manifest plugin loads.
     pub disabled_plugins: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -36,6 +38,8 @@ impl Default for Preferences {
             activity_bar: None,
             search_backend: velk_search::DEFAULT_BACKEND.into(),
             markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
+            indentation_provider: "velk.indentation".into(),
+            pairing_provider: "velk.autopairs".into(),
             disabled_plugins: Vec::new(),
             plugins: Default::default(),
             extra: Default::default(),
@@ -198,13 +202,14 @@ impl Preferences {
     }
     /// `None` removes the key, restoring a field's default.
     pub fn set(&mut self, key: &str, value: Option<Value>) -> Result<(), String> {
-        if key == "markdown_provider"
-            && value.as_ref().is_some_and(|v| {
-                v.as_str()
-                    .is_none_or(|id| velk_plugin_contracts::parse_plugin_id(id).is_none())
-            })
-        {
-            return Err("Markdown provider must be a valid plugin ID".into());
+        if matches!(
+            key,
+            "markdown_provider" | "indentation_provider" | "pairing_provider"
+        ) && value.as_ref().is_some_and(|v| {
+            v.as_str()
+                .is_none_or(|id| velk_plugin_contracts::parse_plugin_id(id).is_none())
+        }) {
+            return Err("Provider must be a valid plugin ID".into());
         }
         if let Some((plugin, setting)) = plugin_key(key) {
             if let Some(value) = value {
@@ -369,6 +374,27 @@ fn markdown_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, 
     }
     choices
 }
+fn editing_providers(
+    plugins: &[velk_plugin_host::PluginInfo],
+    role: velk_editing::Role,
+    default: &str,
+) -> Vec<(String, String)> {
+    let mut choices = vec![(default.into(), format!("{default} (bundled default)"))];
+    for plugin in plugins {
+        if plugin.hooks.iter().any(|hook| hook == role.hook())
+            && !choices.iter().any(|(id, _)| id == &plugin.id)
+        {
+            choices.push((plugin.id.clone(), plugin.metadata.name.clone()));
+        }
+    }
+    choices
+}
+fn indentation_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    editing_providers(plugins, velk_editing::Role::Indentation, "velk.indentation")
+}
+fn pairing_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    editing_providers(plugins, velk_editing::Role::Pairing, "velk.autopairs")
+}
 pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::new(|| {
     vec![
     Setting {
@@ -420,6 +446,18 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         description: "Plugin for README and hover documentation. Reload Window to apply. If unavailable, show source text.".into(),
         category: Category::Plugins,
         control: Control::Choice(markdown_providers),
+    },
+    Setting {
+        plugin: None, keywords: "tab shift-tab newline indent".into(), default: Value::Null,
+        key: "indentation_provider".into(), title: "Indentation provider".into(),
+        description: "Plugin for Tab, Shift+Tab, and newline indentation.".into(), category: Category::Plugins,
+        control: Control::Choice(indentation_providers),
+    },
+    Setting {
+        plugin: None, keywords: "brackets parentheses pairing".into(), default: Value::Null,
+        key: "pairing_provider".into(), title: "Pairing provider".into(),
+        description: "Plugin for typed pairs and paired deletion.".into(), category: Category::Plugins,
+        control: Control::Choice(pairing_providers),
     },
 ]
 });

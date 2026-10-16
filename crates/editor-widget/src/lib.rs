@@ -38,6 +38,7 @@ pub use velk_syntax::Language;
 #[derive(Default)]
 pub struct Editor {
     buffer: Buffer,
+    editing: velk_editor_model::editing::Session,
     syntax_worker: Option<Arc<velk_syntax::Worker>>,
     syntax_revision: u64,
     syntax_demand: Option<syntax::Demand>,
@@ -55,6 +56,35 @@ pub struct Editor {
 }
 
 impl Editor {
+    pub fn set_editing_providers(
+        &mut self,
+        providers: std::collections::BTreeMap<velk_editing::Role, Arc<dyn velk_editing::Provider>>,
+    ) {
+        self.editing.set_providers(providers);
+    }
+    fn interactive(&mut self, intent: velk_editing::Intent) -> bool {
+        match self.editing.evaluate(&mut self.buffer, intent) {
+            Ok(true) => {
+                self.composition = None;
+                self.edited();
+                true
+            }
+            Ok(false) => false,
+            Err(error) => {
+                tracing::warn!(%error, "interactive editing provider failed");
+                false
+            }
+        }
+    }
+    fn committed_text(&mut self, text: &str, source: rxui::TextInsertSource) {
+        if source == rxui::TextInsertSource::Keyboard
+            && self.composition.is_none()
+            && self.interactive(velk_editing::Intent::Type(text.into()))
+        {
+            return;
+        }
+        self.insert(text);
+    }
     pub fn new(text: &str) -> Self {
         Self {
             buffer: Buffer::new(text),
@@ -191,6 +221,9 @@ impl Editor {
         {
             self.input_started = Some(Instant::now());
         }
+        if matches!(command, EditCommand::Undo | EditCommand::Redo) {
+            self.editing.clear_pairs();
+        }
         if !command.apply(&mut self.buffer) {
             return false;
         }
@@ -227,6 +260,7 @@ impl Editor {
         }
     }
     fn edited(&mut self) {
+        self.editing.synchronize(&self.buffer);
         tracing::debug!(
             revision = self.buffer.revision(),
             bytes = self.buffer.text().len_bytes(),
@@ -293,7 +327,23 @@ impl Editor {
         } else {
             Platform::Other
         };
-        if let Some(command) = key_command(key_name, modifiers, platform) {
+        let intent = if !modifiers.control && !modifiers.alt && !modifiers.meta {
+            match key_name {
+                Key::Tab => Some(if modifiers.shift {
+                    velk_editing::Intent::Outdent
+                } else {
+                    velk_editing::Intent::Indent
+                }),
+                Key::Enter if !modifiers.shift => Some(velk_editing::Intent::Newline),
+                Key::Backspace => Some(velk_editing::Intent::Backspace),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if intent.is_some_and(|intent| self.interactive(intent)) {
+            event.prevent_default();
+        } else if let Some(command) = key_command(key_name, modifiers, platform) {
             command.apply(&mut self.buffer);
             #[cfg(any(test, feature = "performance"))]
             {
@@ -413,6 +463,7 @@ impl View for Editor {
                     this.input_started = Some(Instant::now());
                 }
                 this.note_input();
+                this.editing.clear_pairs();
                 EditCommand::Undo.apply(&mut this.buffer);
                 this.edited();
             })
@@ -425,6 +476,7 @@ impl View for Editor {
                     this.input_started = Some(Instant::now());
                 }
                 this.note_input();
+                this.editing.clear_pairs();
                 EditCommand::Redo.apply(&mut this.buffer);
                 this.edited();
             })
@@ -492,7 +544,9 @@ impl View for Editor {
             }
         }))
         .on_pointer_up(cx.listener(|_, event: &PointerInput, _| event.release_pointer()))
-        .on_text_insert(cx.listener(|this, event: &TextInsertInput, _| this.insert(&event.text)))
+        .on_text_insert(cx.listener(|this, event: &TextInsertInput, _| {
+            this.committed_text(&event.text, event.source)
+        }))
         .on_ime(cx.listener(|this, event: &ImeInput, _| {
             #[cfg(any(test, feature = "performance"))]
             {
@@ -799,5 +853,59 @@ mod responsiveness_tests {
         draw_and_check(&mut test, 3);
         assert!(!test.read(|e| e.frame_metrics().composition_fallback));
         assert_eq!(test.read(|e| e.buffer.text().to_string()), source);
+    }
+}
+
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    #[derive(Debug)]
+    struct Provider;
+    impl velk_editing::Provider for Provider {
+        fn evaluate(
+            &self,
+            request: &velk_editing::Request,
+        ) -> Result<velk_editing::Decision, String> {
+            use velk_editing::*;
+            Ok(Decision::Apply(Proposal {
+                revision: request.revision,
+                edits: vec![Edit {
+                    start: request.selection.range().start,
+                    end: request.selection.range().end,
+                    text: "()".into(),
+                }],
+                selection: Some(Selection::caret(request.selection.range().start + 1)),
+                pairs: vec![],
+            }))
+        }
+    }
+    #[test]
+    fn typing_uses_provider_but_paste_and_ime_keep_literal_text_and_undo() {
+        for source in [
+            rxui::TextInsertSource::Keyboard,
+            rxui::TextInsertSource::Paste,
+            rxui::TextInsertSource::Ime,
+        ] {
+            let mut editor = Editor::new("");
+            editor.set_editing_providers(std::collections::BTreeMap::from([(
+                velk_editing::Role::Pairing,
+                Arc::new(Provider) as Arc<dyn velk_editing::Provider>,
+            )]));
+            editor.committed_text("(", source);
+            assert_eq!(
+                editor.buffer().text().to_string(),
+                if source == rxui::TextInsertSource::Keyboard {
+                    "()"
+                } else {
+                    "("
+                }
+            );
+            editor.execute(EditCommand::Undo);
+            assert_eq!(editor.buffer().text().to_string(), "");
+            assert!(!editor.buffer().can_undo());
+        }
+        let mut plain = Editor::new("");
+        plain.committed_text("(", rxui::TextInsertSource::Keyboard);
+        assert_eq!(plain.buffer().text().to_string(), "(");
     }
 }

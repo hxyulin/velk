@@ -4026,6 +4026,7 @@ dependencies = [
  "velk-commands",
  "velk-core",
  "velk-diagnostics",
+ "velk-editing",
  "velk-editor-model",
  "velk-editor-widget",
  "velk-markup",
@@ -4043,6 +4044,7 @@ dependencies = [
  "ropey",
  "velk-commands",
  "velk-core",
+ "velk-editing",
 ]
 
 [[package]]
@@ -4057,6 +4059,7 @@ dependencies = [
  "unicode-ident",
  "unicode-segmentation",
  "velk-core",
+ "velk-editing",
  "velk-editor-model",
  "velk-markup",
  "velk-syntax",

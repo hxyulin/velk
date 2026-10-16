@@ -24,3 +24,22 @@ refer to the original document; final selections and newly tracked pairs refer
 to the result. Providers cannot edit outside their supplied context. The host
 validates decisions before applying a Core transaction and remains responsible
 for revisions, undo, IME, focus, lifecycle, and recovery.
+
+## Editor integration
+
+`indentation_provider` and `pairing_provider` select plugin IDs in Settings.
+Provider selection applies to existing and newly opened buffers. Disabling,
+unloading, or restarting a provider invalidates its old leases. Plugin setting
+changes take effect when that plugin is restarted, matching other plugin settings.
+
+Tab/Shift+Tab, Enter, and Backspace are editing intents only inside the focused
+editor. Ordinary committed keyboard text can use pairing; paste and IME commits
+remain literal and preedit is never rewritten. Missing, declining, or failing
+providers use the editor's original behavior (four-space Tab, literal newline,
+normal deletion; Shift+Tab retains focus navigation without an indenter).
+
+Every accepted proposal is one Core transaction with optional final selection.
+The host transforms tracked pair endpoints through text edits and invalidates
+pairs when either delimiter is replaced. Undo, redo, and provider changes clear
+pair tracking rather than claiming that restored or pre-existing brackets were
+inserted by the current provider. Tracking is local to a buffer and not persisted.

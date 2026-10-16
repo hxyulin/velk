@@ -12,6 +12,7 @@ pub(super) enum Operation {
 pub(super) struct State {
     pub(super) client: Client,
     markdown_provider: String,
+    pub(super) editing: velk_editing::Providers,
     pub(super) task: Option<Task>,
     pub status: String,
     pub(super) loaded: Vec<velk_plugin_host::PluginInfo>,
@@ -29,6 +30,7 @@ impl State {
         Self {
             client,
             markdown_provider,
+            editing: Default::default(),
             task: None,
             status: String::new(),
             loaded: Vec::new(),
@@ -58,6 +60,38 @@ impl Document {
             selected.map_or(Operation::Load, |ids| Operation::LoadSelected(ids, states)),
             cx,
         );
+    }
+    pub(super) fn selected_editing(
+        &self,
+    ) -> std::collections::BTreeMap<velk_editing::Role, std::sync::Arc<dyn velk_editing::Provider>>
+    {
+        let preferences = &self.shell.store.preferences;
+        let Some(state) = &self.plugins else {
+            return Default::default();
+        };
+        [
+            (
+                velk_editing::Role::Indentation,
+                &preferences.indentation_provider,
+            ),
+            (velk_editing::Role::Pairing, &preferences.pairing_provider),
+        ]
+        .into_iter()
+        .filter_map(|(role, id)| {
+            state
+                .editing
+                .get(&(id.clone(), role))
+                .map(|provider| (role, provider.clone()))
+        })
+        .collect()
+    }
+    pub(super) fn refresh_editing(&mut self, cx: &mut Context<'_, Self>) {
+        let providers = self.selected_editing();
+        for buffer in self.buffer.iter().chain(self.inactive.values()) {
+            buffer.editor.update(cx, |editor, _| {
+                editor.set_editing_providers(providers.clone())
+            });
+        }
     }
     pub(super) fn markup_renderer(&self) -> std::sync::Arc<dyn velk_markup::Renderer> {
         self.plugins.as_ref().map_or_else(
@@ -173,6 +207,7 @@ impl Document {
                             }
                             state.known.insert(plugin.id.clone(), plugin.clone());
                         }
+                        state.editing = report.editing;
                         state.available = report.available;
                         state.loaded = report.plugins;
                         let errors: Vec<_> = report
