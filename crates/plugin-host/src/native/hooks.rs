@@ -281,3 +281,39 @@ impl Generation {
         Ok(Some(metadata))
     }
 }
+
+impl Generation {
+    pub(super) fn configure_settings(
+        &mut self,
+        overrides: &velk_plugin_sdk::settings::Values,
+    ) -> Result<(), String> {
+        use velk_plugin_sdk::settings::{Values, resolve};
+        let schema = &self.info.metadata.settings;
+        if schema.is_empty() {
+            return Ok(());
+        }
+        let values = match resolve(schema, overrides) {
+            Ok(values) => values,
+            Err(error) => {
+                self.info.settings_error = Some(format!(
+                    "{error}; using plugin defaults until corrected and restarted."
+                ));
+                resolve(schema, &Values::new())?
+            }
+        };
+        let hook = self
+            .hooks
+            .iter()
+            .find(|h| h.info.name == SETTINGS_HOOK)
+            .ok_or("plugin declares settings without a configuration hook")?;
+        let api = hook
+            .bytes
+            .ok_or("settings hook must use the bytes request contract")?;
+        call_bytes(
+            api,
+            &serde_json::to_vec(&values).map_err(|e| e.to_string())?,
+        )?;
+        self.info.settings_values = values;
+        Ok(())
+    }
+}

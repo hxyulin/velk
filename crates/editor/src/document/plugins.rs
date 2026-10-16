@@ -23,6 +23,20 @@ pub(super) struct State {
     /// Latest rejection per ID, cleared when that plugin loads.
     pub(super) failed: std::collections::BTreeMap<String, String>,
 }
+impl State {
+    pub(super) fn new(client: Client) -> Self {
+        Self {
+            client,
+            task: None,
+            status: String::new(),
+            loaded: Vec::new(),
+            known: Default::default(),
+            readmes: Default::default(),
+            available: Vec::new(),
+            failed: Default::default(),
+        }
+    }
+}
 impl Document {
     pub fn enable_plugins(&mut self, client: Client, cx: &mut Context<'_, Self>) {
         self.enable_selected_plugins(client, None, Vec::new(), cx);
@@ -34,16 +48,7 @@ impl Document {
         states: Vec<(String, Vec<u8>)>,
         cx: &mut Context<'_, Self>,
     ) {
-        self.plugins = Some(State {
-            client,
-            task: None,
-            status: String::new(),
-            loaded: Vec::new(),
-            known: Default::default(),
-            readmes: Default::default(),
-            available: Vec::new(),
-            failed: Default::default(),
-        });
+        self.plugins = Some(State::new(client));
         self.plugin_operation(
             selected.map_or(Operation::Load, |ids| Operation::LoadSelected(ids, states)),
             cx,
@@ -85,15 +90,18 @@ impl Document {
         self.suspend_panels();
         let disabled = self.shell.store.preferences.disabled_plugins.clone();
         let state = self.plugins.as_mut().expect("plugin state");
-        let receiver = match &operation {
-            Operation::Load => state.client.load_except(disabled),
-            Operation::LoadSelected(ids, states) => {
-                state.client.load_restored(ids.clone(), states.clone())
-            }
-            Operation::Restart(id) => state.client.restart(id.clone()),
-            Operation::UnloadAll => state.client.unload_all(),
-            Operation::Unload(id) => state.client.unload(id.clone()),
-        };
+        let receiver = state
+            .client
+            .set_settings(self.shell.store.preferences.plugins.clone())
+            .and_then(|_| match &operation {
+                Operation::Load => state.client.load_except(disabled),
+                Operation::LoadSelected(ids, states) => {
+                    state.client.load_restored(ids.clone(), states.clone())
+                }
+                Operation::Restart(id) => state.client.restart(id.clone()),
+                Operation::UnloadAll => state.client.unload_all(),
+                Operation::Unload(id) => state.client.unload(id.clone()),
+            });
         let receiver = match receiver {
             Ok(r) => r,
             Err(e) => {

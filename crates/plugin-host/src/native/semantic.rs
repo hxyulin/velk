@@ -324,6 +324,8 @@ mod tests {
                     loaded_path: dir.path().into(),
                     description: String::new(),
                     metadata: Default::default(),
+                    settings_values: Default::default(),
+                    settings_error: None,
                     resident_code: false,
                     hooks: vec![],
                 },

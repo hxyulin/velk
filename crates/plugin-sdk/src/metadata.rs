@@ -41,12 +41,15 @@ pub struct PluginMetadata {
     pub name: String,
     pub readme: String,
     pub capabilities: Vec<Capability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings: Vec<crate::settings::Definition>,
 }
 impl PluginMetadata {
     pub(crate) fn of<P: crate::Plugin>() -> Self {
         Self {
             name: P::NAME.into(),
             readme: P::README.into(),
+            settings: P::settings(),
             capabilities: P::CAPABILITIES
                 .iter()
                 .map(|c| Capability {
@@ -58,6 +61,7 @@ impl PluginMetadata {
         }
     }
     pub fn validate(&self) -> Result<(), String> {
+        crate::settings::validate_schema(&self.settings)?;
         if self.name.trim().is_empty()
             || self.name.len() > 256
             || self.name.chars().any(char::is_control)

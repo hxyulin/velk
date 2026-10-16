@@ -95,6 +95,7 @@ unsafe extern "C" fn create<P: Plugin>(output: *mut *mut c_void) -> i32 {
         let mut plugin = Box::new(P::default());
         let mut registry = registry::Registrar::new(&mut *plugin);
         if register_metadata(&mut registry).is_err()
+            || register_settings(&mut registry).is_err()
             || P::register(&mut registry).is_err()
             || (registry.entries.len() < MAX_HOOKS && register_diagnostics(&mut registry).is_err())
         {
@@ -243,6 +244,27 @@ fn register_metadata<P: Plugin>(registry: &mut registry::Registrar<P>) -> Result
                 return Err("metadata request must be empty".into());
             }
             Ok(bytes.clone())
+        },
+    )
+}
+
+fn register_settings<P: Plugin>(reg: &mut registry::Registrar<P>) -> Result<(), String> {
+    let schema = P::settings();
+    if schema.is_empty() {
+        return Ok(());
+    }
+    crate::settings::validate_schema(&schema)?;
+    reg.provide(
+        registry::Request(SETTINGS_HOOK),
+        move |plugin: &mut P, input: &[u8]| {
+            if input.len() > crate::settings::MAX_SETTINGS_BYTES {
+                return Err("plugin configuration exceeds 256 KiB".into());
+            }
+            let overrides =
+                serde_json::from_slice(input).map_err(|e| format!("plugin settings: {e}"))?;
+            let values = crate::settings::resolve(&schema, &overrides)?;
+            plugin.configure(&values)?;
+            Ok(Vec::new())
         },
     )
 }

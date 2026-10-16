@@ -187,3 +187,6 @@ pub struct DiagnosticsApi {
 /// Optional JSON metadata request; empty input, UTF-8 PluginMetadata response.
 /// Uses BYTES_CONTRACT v1 without changing the root native ABI.
 pub const METADATA_HOOK: &str = "velk.plugin.metadata.v1";
+
+/// Optional settings snapshot request using the v1 bytes contract.
+pub const SETTINGS_HOOK: &str = "velk.plugin.settings.v1";

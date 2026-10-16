@@ -10,6 +10,7 @@ use velk_panels::{Reply, Request, Snapshot};
 use velk_plugin_sdk::{Plugin, Registrar, hooks};
 struct Job {
     id: u64,
+    show_hidden: bool,
     request: Request,
     cancel: Arc<AtomicBool>,
 }
@@ -24,6 +25,7 @@ pub struct Files {
     worker: Option<std::thread::JoinHandle<()>>,
     current: Option<(u64, Arc<AtomicBool>)>,
     next: u64,
+    show_hidden: bool,
     signal: Arc<Mutex<watching::Signal>>,
 }
 impl Default for Files {
@@ -49,6 +51,7 @@ impl Default for Files {
                         queue.job.take().unwrap()
                     };
                     let mut candidate = model.clone();
+                    candidate.set_show_hidden(job.show_hidden);
                     let mut result =
                         candidate.apply_watched(job.request, &job.cancel, &mut |path| {
                             watches.directory(path)
@@ -78,6 +81,7 @@ impl Default for Files {
             worker,
             current: None,
             next: 0,
+            show_hidden: true,
             signal,
         }
     }
@@ -109,6 +113,22 @@ impl Plugin for Files {
             "Watch project directories for file tree updates.",
         ),
     ];
+    fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
+        use velk_plugin_sdk::settings::{Definition, Kind};
+        vec![Definition {
+            key: "show_hidden".into(),
+            title: "Show hidden files".into(),
+            description: "Include files and directories whose names begin with a dot.".into(),
+            kind: Kind::Boolean,
+            default: true.into(),
+        }]
+    }
+    fn configure(&mut self, values: &velk_plugin_sdk::settings::Values) -> Result<(), String> {
+        self.show_hidden = values["show_hidden"]
+            .as_bool()
+            .ok_or("invalid hidden-file preference")?;
+        Ok(())
+    }
     fn describe(&mut self) -> String {
         "Lazy project file tree".into()
     }
@@ -181,6 +201,7 @@ impl Files {
                     id,
                     request,
                     cancel: cancel.clone(),
+                    show_hidden: self.show_hidden,
                 });
                 self.current = Some((id, cancel));
                 self.shared.1.notify_one();
@@ -273,6 +294,26 @@ mod tests {
             panic!("expected tree")
         };
         rows.iter().map(|n| n.label.as_str()).collect()
+    }
+
+    #[test]
+    fn configured_hidden_files_reach_the_directory_worker() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("visible.txt"), "visible").unwrap();
+        std::fs::write(root.path().join(".hidden"), "hidden").unwrap();
+        std::fs::create_dir(root.path().join(".hidden-directory")).unwrap();
+        let mut files = Files::default();
+        assert!(names(&describe(&mut files, root.path())).contains(&".hidden"));
+        files
+            .configure(&velk_plugin_sdk::settings::Values::from([(
+                "show_hidden".into(),
+                false.into(),
+            )]))
+            .unwrap();
+        let snapshot = describe(&mut files, root.path());
+        assert!(names(&snapshot).contains(&"visible.txt"));
+        assert!(!names(&snapshot).contains(&".hidden"));
+        assert!(!names(&snapshot).contains(&".hidden-directory"));
     }
     #[test]
     fn native_watcher_detects_create_rename_delete_and_folder_switch() {

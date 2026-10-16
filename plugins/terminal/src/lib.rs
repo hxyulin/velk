@@ -20,7 +20,21 @@ enum Work {
     Context(Context),
     Input(Vec<Input>),
 }
+#[derive(Clone)]
+struct Configuration {
+    shell: String,
+    scrollback_bytes: usize,
+}
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            shell: String::new(),
+            scrollback_bytes: 10_000,
+        }
+    }
+}
 pub struct Terminal {
+    configuration: Arc<Mutex<Configuration>>,
     shared: Arc<Mutex<Published>>,
     sender: Option<SyncSender<Work>>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -99,6 +113,8 @@ impl Default for Terminal {
         let shared = Arc::new(Mutex::new(Published {
             snapshot: snapshot(empty("Show the terminal panel to start a shell."), 0),
         }));
+        let configuration = Arc::new(Mutex::new(Configuration::default()));
+        let options = configuration.clone();
         let state = shared.clone();
         let (sender, receiver) = mpsc::sync_channel(128);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -156,8 +172,17 @@ impl Default for Terminal {
                                                         "terminal has no workspace directory"
                                                     )
                                                 })?;
+                                                let configuration = options.lock().unwrap().clone();
+                                                let shell =
+                                                    (!configuration.shell.is_empty()).then(|| {
+                                                        std::path::Path::new(&configuration.shell)
+                                                    });
                                                 engine = Some(engine::Engine::new(
-                                                    root, cols, rows, None,
+                                                    root,
+                                                    cols,
+                                                    rows,
+                                                    shell,
+                                                    configuration.scrollback_bytes,
                                                 )?);
                                             }
                                             engine.as_mut().unwrap().input(input)?;
@@ -192,6 +217,7 @@ impl Default for Terminal {
                 .ok()
         });
         Self {
+            configuration,
             shared,
             sender: Some(sender),
             worker,
@@ -231,6 +257,35 @@ impl Plugin for Terminal {
             "Resolve the terminal working directory.",
         ),
     ];
+    fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
+        use velk_plugin_sdk::settings::{Definition, Kind};
+        vec![
+            Definition {
+                key: "shell".into(), title: "Shell executable".into(),
+                description: "Shell path or command. Empty uses VELK_TERMINAL_SHELL, then SHELL, then /bin/sh.".into(),
+                kind: Kind::Text { max_length: 4096 }, default: "".into(),
+            },
+            Definition {
+                key: "scrollback_bytes".into(), title: "Scrollback limit (bytes)".into(),
+                description: "Approximate history memory budget in bytes. Zero disables scrollback. Restarting ends its shell session.".into(),
+                kind: Kind::Integer { min: 0, max: 100_000_000 }, default: 10_000.into(),
+            },
+        ]
+    }
+    fn configure(&mut self, values: &velk_plugin_sdk::settings::Values) -> Result<(), String> {
+        let shell = values["shell"]
+            .as_str()
+            .ok_or("invalid terminal shell")?
+            .to_owned();
+        let scrollback_bytes = values["scrollback_bytes"]
+            .as_u64()
+            .ok_or("invalid scrollback limit")? as usize;
+        *self.configuration.lock().unwrap() = Configuration {
+            shell,
+            scrollback_bytes,
+        };
+        Ok(())
+    }
     fn describe(&mut self) -> String {
         "Ghostty terminal emulator with an owned PTY".into()
     }
@@ -321,6 +376,12 @@ mod tests {
     fn plugin_queues_input_streams_frames_and_restarts_without_a_shell_until_shown() {
         let dir = tempfile::tempdir().unwrap();
         let mut plugin = Terminal::default();
+        plugin
+            .configure(&velk_plugin_sdk::settings::Values::from([
+                ("shell".into(), "/bin/sh".into()),
+                ("scrollback_bytes".into(), 100.into()),
+            ]))
+            .unwrap();
         let context = Context {
             root: Some(velk_panels::NativePath::new(dir.path())),
             ..Default::default()

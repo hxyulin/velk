@@ -9,7 +9,7 @@ use std::{
 };
 mod native;
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
-pub use velk_plugin_sdk::{Capability, PluginMetadata};
+pub use velk_plugin_sdk::{Capability, PluginMetadata, settings};
 
 pub mod hook_kind {
     pub use velk_plugin_api::{CONTRIBUTION, EVENT, REQUEST, SERVICE};
@@ -18,7 +18,7 @@ pub mod hook_kind {
 pub mod hook_name {
     pub use velk_plugin_api::{
         DIAGNOSTICS_HOOK, LANGUAGE_HOOK, LIFECYCLE_RESTORE_HOOK, LIFECYCLE_SNAPSHOT_HOOK,
-        MARKUP_HOOK, METADATA_HOOK, SEMANTIC_HOOK,
+        MARKUP_HOOK, METADATA_HOOK, SEMANTIC_HOOK, SETTINGS_HOOK,
     };
 }
 pub type PluginStates = Vec<(String, Vec<u8>)>;
@@ -74,7 +74,7 @@ impl Manifest {
 }
 #[derive(Debug)]
 pub enum Event {
-    Loaded(PluginInfo),
+    Loaded(Box<PluginInfo>),
     Removed(String),
     Rejected { id: String, message: String },
 }
@@ -127,6 +127,7 @@ enum Request {
         ids: Vec<String>,
         reply: async_channel::Sender<Result<PluginStates, String>>,
     },
+    Settings(settings::PluginValues),
     Stop,
 }
 struct Queued {
@@ -153,6 +154,7 @@ impl Sender {
             Request::Call { .. } => "hook.call",
             Request::Emit { .. } => "hook.emit",
             Request::Snapshot { .. } => "snapshot",
+            Request::Settings(_) => "settings",
             Request::Stop => "stop",
         };
         let span = tracing::debug_span!("plugin.request", async_work = true, operation);
@@ -182,6 +184,20 @@ pub struct Client {
     next_session: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Client {
+    /// Store overrides for the next load/restart; running instances are unchanged.
+    pub fn set_settings(&self, settings: settings::PluginValues) -> Result<(), String> {
+        if serde_json::to_vec(&settings)
+            .map_err(|e| e.to_string())?
+            .len()
+            > velk_plugin_api::MAX_INPUT_BYTES
+        {
+            return Err("plugin settings exceed 1 MiB".into());
+        }
+        self.sender
+            .try_send(Request::Settings(settings))
+            .map_err(|e| format!("plugin queue unavailable: {e}"))
+    }
+
     pub fn bind_hook(
         &self,
         plugin: String,
@@ -356,6 +372,10 @@ impl Runtime {
                     let request = queued.request;
                     let (operation, reply) = match request {
                         Request::Stop => break,
+                        Request::Settings(settings) => {
+                            manager.set_settings(settings);
+                            continue;
+                        }
                         Request::Snapshot { ids, reply } => {
                             let _ = reply.try_send(manager.snapshot_plugins(&ids));
                             continue;

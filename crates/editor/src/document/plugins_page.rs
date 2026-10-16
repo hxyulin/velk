@@ -51,7 +51,8 @@ fn contributions(info: &PluginInfo) -> Vec<(&'static str, String)> {
             hook_name::LIFECYCLE_SNAPSHOT_HOOK
             | hook_name::LIFECYCLE_RESTORE_HOOK
             | hook_name::DIAGNOSTICS_HOOK
-            | hook_name::METADATA_HOOK => continue,
+            | hook_name::METADATA_HOOK
+            | hook_name::SETTINGS_HOOK => continue,
             name => {
                 other.push(name.to_owned());
                 continue;
@@ -287,6 +288,17 @@ impl Document {
                                 )
                             })),
                     )
+                    .children(info.filter(|p| !p.metadata.settings.is_empty()).map(|_| {
+                        let id = id.to_owned();
+                        button("Settings")
+                            .key("plugin-settings")
+                            .height(28.)
+                            .padding_y(0.)
+                            .font_size(12.5)
+                            .on_click(cx.listener(move |this, _, cx| {
+                                this.open_plugin_settings(id.clone(), cx)
+                            }))
+                    }))
                     .child(row().flex_grow(1.))
                     .child(
                         button(if enabled { "Disable" } else { "Enable" })
@@ -598,6 +610,8 @@ mod tests {
             loaded_path: Default::default(),
             description: String::new(),
             metadata: Default::default(),
+            settings_values: Default::default(),
+            settings_error: None,
             resident_code: false,
             hooks: vec![
                 velk_panels::HOOK.into(),

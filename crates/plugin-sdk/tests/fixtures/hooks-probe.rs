@@ -22,6 +22,23 @@ impl Plugin for Probe {
         ),
     ];
     const VERSION: &'static str = "1";
+    fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
+        vec![velk_plugin_sdk::settings::Definition {
+            key: "message".into(),
+            title: "Initial message".into(),
+            description: "Probe startup state.".into(),
+            kind: velk_plugin_sdk::settings::Kind::Text { max_length: 128 },
+            default: "initial".into(),
+        }]
+    }
+    fn configure(&mut self, values: &velk_plugin_sdk::settings::Values) -> Result<(), String> {
+        self.last = values["message"]
+            .as_str()
+            .ok_or("invalid probe message")?
+            .as_bytes()
+            .to_vec();
+        Ok(())
+    }
     fn describe(&mut self) -> String {
         "Named registry probe".into()
     }

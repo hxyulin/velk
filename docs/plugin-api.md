@@ -119,3 +119,11 @@ capabilities, 128 bytes per capability ID, 1,024 bytes per single-line reason, a
 IDs, unknown JSON fields and malformed capability IDs are rejected. Limits are
 per plugin, including each selected member of a pack. Metadata is discovered
 after instance creation; inspecting an untrusted native plugin is not sandboxed.
+
+## Plugin settings
+
+Plugins can contribute declarative settings through `Plugin::settings` and
+receive resolved snapshots through `Plugin::configure`. The editor owns storage,
+validation, standard controls, reset behavior, and explicit restart-to-apply.
+See [plugin settings](plugin-settings.md) for the user workflow, storage format,
+bundled integrations, SDK example, and contract limits.

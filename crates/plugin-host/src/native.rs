@@ -27,6 +27,8 @@ pub struct PluginInfo {
     pub description: String,
     /// Owned display name, Markdown README and declared access requirements.
     pub metadata: velk_plugin_sdk::PluginMetadata,
+    pub settings_values: velk_plugin_sdk::settings::Values,
+    pub settings_error: Option<String>,
     /// Logical unload releases sessions/instances, while this build stays mapped.
     pub resident_code: bool,
     /// Names of the hooks this generation registered, in registration order.
@@ -47,7 +49,12 @@ struct Generation {
 impl Generation {
     /// Caller guarantees the plugin ABI and unload contract.
     #[tracing::instrument(level = "debug", skip_all, fields(plugin = %spec.id, generation))]
-    unsafe fn load(spec: &PluginSpec, generation: u64, code: Arc<Code>) -> Result<Self, String> {
+    unsafe fn load(
+        spec: &PluginSpec,
+        generation: u64,
+        code: Arc<Code>,
+        settings: &velk_plugin_sdk::settings::Values,
+    ) -> Result<Self, String> {
         let api = *code
             .apis
             .iter()
@@ -71,6 +78,8 @@ impl Generation {
                 loaded_path: code.path.clone(),
                 description: String::new(),
                 metadata: Default::default(),
+                settings_values: Default::default(),
+                settings_error: None,
                 resident_code: code.resident,
                 hooks: vec![],
             },
@@ -93,6 +102,7 @@ impl Generation {
                     name: loaded.info.id.clone(),
                     ..Default::default()
                 });
+        loaded.configure_settings(settings)?;
         Ok(loaded)
     }
     fn describe(&mut self) -> Result<String, String> {
@@ -267,6 +277,7 @@ pub struct Manager {
     sessions: BTreeMap<u64, semantic::DocumentSession>,
     resident_code: BTreeMap<(String, bool), Arc<Code>>,
     images: BTreeMap<(String, bool), Weak<Code>>,
+    settings: velk_plugin_sdk::settings::PluginValues,
 }
 impl Manager {
     pub fn new(directory: PathBuf) -> Self {
@@ -279,7 +290,11 @@ impl Manager {
             sessions: BTreeMap::new(),
             resident_code: BTreeMap::new(),
             images: BTreeMap::new(),
+            settings: Default::default(),
         }
+    }
+    pub fn set_settings(&mut self, settings: velk_plugin_sdk::settings::PluginValues) {
+        self.settings = settings;
     }
     pub fn plugins(&self) -> impl Iterator<Item = &PluginInfo> {
         self.plugins
@@ -412,12 +427,19 @@ impl Manager {
                         code.clone()
                     });
                 }
-                unsafe { Generation::load(&spec, generation, code) }
+                unsafe {
+                    Generation::load(
+                        &spec,
+                        generation,
+                        code,
+                        self.settings.get(&id).unwrap_or(&Default::default()),
+                    )
+                }
             });
             self.images.retain(|_, image| image.strong_count() != 0);
             match candidate {
                 Ok(candidate) => {
-                    events.push(Event::Loaded(candidate.info.clone()));
+                    events.push(Event::Loaded(Box::new(candidate.info.clone())));
                     self.plugins.insert(id, candidate);
                 }
                 Err(message) => events.push(Event::Rejected { id, message }),
@@ -545,6 +567,8 @@ mod tests {
                     loaded_path: copy.path().into(),
                     description: String::new(),
                     metadata: Default::default(),
+                    settings_values: Default::default(),
+                    settings_error: None,
                     resident_code: false,
                     hooks: vec![],
                 },
@@ -689,6 +713,8 @@ pub(super) mod test_provider {
                     loaded_path: copy.path().into(),
                     description: String::new(),
                     metadata: Default::default(),
+                    settings_values: Default::default(),
+                    settings_error: None,
                     resident_code: false,
                     hooks: vec![],
                 },

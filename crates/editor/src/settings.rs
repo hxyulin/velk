@@ -1,4 +1,4 @@
-//! Small host-owned layout preferences. Plugin settings can use separate schemas.
+//! Host preferences and namespaced plugin overrides.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, io::Write, path::PathBuf};
@@ -20,6 +20,8 @@ pub struct Preferences {
     pub search_backend: String,
     /// Plugin IDs the user turned off; every other manifest plugin loads.
     pub disabled_plugins: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: velk_plugin_host::settings::PluginValues,
     // Preserve settings written by newer versions when changing the shell.
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
@@ -33,6 +35,7 @@ impl Default for Preferences {
             activity_bar: None,
             search_backend: velk_search::DEFAULT_BACKEND.into(),
             disabled_plugins: Vec::new(),
+            plugins: Default::default(),
             extra: Default::default(),
         }
     }
@@ -172,11 +175,13 @@ impl Preferences {
     }
 }
 
-// Settings are addressed by their settings.json key, so registry rows work the
-// same for typed fields and keys preserved in `extra`. The layout rows are the
-// exception: they read and edit the active layout rather than a key of their own.
+// Core rows address root keys; plugin rows use plugins.<id>.<local_key>.
+// Layout rows edit the active layout rather than a root key of their own.
 impl Preferences {
     pub fn get(&self, key: &str) -> Option<Value> {
+        if let Some((plugin, setting)) = plugin_key(key) {
+            return self.plugins.get(plugin)?.get(setting).cloned();
+        }
         let layout = self.resolve_layout().0;
         match key {
             "layout" => return Some(self.layout_name().into()),
@@ -191,6 +196,20 @@ impl Preferences {
     }
     /// `None` removes the key, restoring a field's default.
     pub fn set(&mut self, key: &str, value: Option<Value>) -> Result<(), String> {
+        if let Some((plugin, setting)) = plugin_key(key) {
+            if let Some(value) = value {
+                self.plugins
+                    .entry(plugin.into())
+                    .or_default()
+                    .insert(setting.into(), value);
+            } else if let Some(values) = self.plugins.get_mut(plugin) {
+                values.remove(setting);
+                if values.is_empty() {
+                    self.plugins.remove(plugin);
+                }
+            }
+            return Ok(());
+        }
         match (key, value) {
             ("layout", Some(Value::String(name))) => self.set_layout(&name),
             ("layout", None) => {
@@ -251,15 +270,17 @@ pub enum Category {
     Keymap,
     Files,
     Search,
+    Plugins,
 }
 impl Category {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Editor,
         Self::Appearance,
         Self::Layout,
         Self::Keymap,
         Self::Files,
         Self::Search,
+        Self::Plugins,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -269,32 +290,38 @@ impl Category {
             Self::Keymap => "Keymap",
             Self::Files => "Files",
             Self::Search => "Search",
+            Self::Plugins => "Plugins",
         }
     }
 }
+#[derive(Clone)]
 pub enum Control {
     Toggle,
     /// Options as (value, caption), computed from the loaded plugins.
     Choice(fn(&[velk_plugin_host::PluginInfo]) -> Vec<(String, String)>),
-    // Rendered by the settings page; no registered setting uses them yet.
-    #[allow(dead_code)]
+    Options(Vec<(String, String)>),
     Text,
-    #[allow(dead_code)]
     Number,
 }
-/// One settings page row. Static for now; plugin-contributed rows can later be
-/// appended from a plugin hook with the same shape (their keys live in `extra`).
+#[derive(Clone)]
 pub struct Setting {
-    pub key: &'static str,
-    pub title: &'static str,
-    pub description: &'static str,
+    pub key: String,
+    pub title: String,
+    pub description: String,
     pub category: Category,
     pub control: Control,
+    pub plugin: Option<String>,
+    pub default: Value,
+    pub keywords: String,
 }
 impl Setting {
     /// Every whitespace-separated term must occur in the title, description or key.
     pub fn matches(&self, query: &str) -> bool {
-        let haystack = format!("{} {} {}", self.title, self.description, self.key).to_lowercase();
+        let haystack = format!(
+            "{} {} {} {}",
+            self.title, self.description, self.key, self.keywords
+        )
+        .to_lowercase();
         query
             .split_whitespace()
             .all(|term| haystack.contains(&term.to_lowercase()))
@@ -315,36 +342,50 @@ fn search_backends(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, Str
     }
     ids.into_iter().map(|id| (id.clone(), id)).collect()
 }
-pub static REGISTRY: &[Setting] = &[
+pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::new(|| {
+    vec![
     Setting {
-        key: "layout",
-        title: "Layout preset",
-        description: "Quiet keeps panels hidden until you open them. Rail adds an icon bar and sidebar. Tiled shows panels as splits.",
+        plugin: None,
+        keywords: String::new(),
+        default: Value::Null,
+        key: "layout".into(),
+        title: "Layout preset".into(),
+        description: "Quiet keeps panels hidden until you open them. Rail adds an icon bar and sidebar. Tiled shows panels as splits.".into(),
         category: Category::Layout,
         control: Control::Choice(layouts),
     },
     Setting {
-        key: "status_line",
-        title: "Status line",
-        description: "File, diagnostics, language and cursor position. Applies to the current layout.",
+        plugin: None,
+        keywords: String::new(),
+        default: Value::Null,
+        key: "status_line".into(),
+        title: "Status line".into(),
+        description: "File, diagnostics, language and cursor position. Applies to the current layout.".into(),
         category: Category::Layout,
         control: Control::Toggle,
     },
     Setting {
-        key: "rail",
-        title: "Icon rail",
-        description: "Sidebar panels, plugins and settings on the left edge. Applies to the current layout.",
+        plugin: None,
+        keywords: String::new(),
+        default: Value::Null,
+        key: "rail".into(),
+        title: "Icon rail".into(),
+        description: "Sidebar panels, plugins and settings on the left edge. Applies to the current layout.".into(),
         category: Category::Layout,
         control: Control::Toggle,
     },
     Setting {
-        key: "search_backend",
-        title: "Search backend",
-        description: "Plugin that finds matches in the current buffer.",
+        plugin: None,
+        keywords: String::new(),
+        default: Value::Null,
+        key: "search_backend".into(),
+        title: "Search backend".into(),
+        description: "Plugin that finds matches in the current buffer.".into(),
         category: Category::Search,
         control: Control::Choice(search_backends),
     },
-];
+]
+});
 
 #[derive(Default)]
 pub struct Store {
@@ -412,6 +453,36 @@ pub fn save(path: &std::path::Path, preferences: &Preferences) -> Result<(), Str
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub fn plugin_key(key: &str) -> Option<(&str, &str)> {
+    key.strip_prefix("plugins.")?.rsplit_once('.')
+}
+
+pub fn plugin_rows(plugins: &BTreeMap<String, velk_plugin_host::PluginInfo>) -> Vec<Setting> {
+    use velk_plugin_host::settings::Kind;
+    plugins
+        .values()
+        .flat_map(|plugin| {
+            plugin.metadata.settings.iter().map(|definition| Setting {
+                key: format!("plugins.{}.{}", plugin.id, definition.key),
+                title: definition.title.clone(),
+                description: definition.description.clone(),
+                category: Category::Plugins,
+                control: match &definition.kind {
+                    Kind::Boolean => Control::Toggle,
+                    Kind::Integer { .. } => Control::Number,
+                    Kind::Text { .. } => Control::Text,
+                    Kind::Choice { options } => {
+                        Control::Options(options.iter().map(|s| (s.clone(), s.clone())).collect())
+                    }
+                },
+                plugin: Some(plugin.id.clone()),
+                default: definition.default.clone(),
+                keywords: plugin.metadata.name.clone(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -495,7 +566,7 @@ mod tests {
             REGISTRY
                 .iter()
                 .filter(|s| s.matches(query))
-                .map(|s| s.key)
+                .map(|s| s.key.as_str())
                 .collect()
         };
         assert_eq!(keys("").len(), REGISTRY.len());
@@ -507,7 +578,7 @@ mod tests {
     #[test]
     fn settings_by_key_track_modification_reset_and_reject_bad_values() {
         let mut preferences = Preferences::default();
-        assert!(REGISTRY.iter().all(|s| !preferences.is_modified(s.key)));
+        assert!(REGISTRY.iter().all(|s| !preferences.is_modified(&s.key)));
         preferences.set("layout", Some("rail".into())).unwrap();
         assert_eq!(preferences.layout.as_deref(), Some("rail"));
         assert!(preferences.is_modified("layout"));
@@ -542,5 +613,34 @@ mod tests {
         assert_eq!(Store::read(path).preferences, preferences);
         let legacy: Preferences = serde_json::from_str(r#"{"status_bar":false}"#).unwrap();
         assert!(legacy.disabled_plugins.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod plugin_settings_tests {
+    use super::*;
+    #[test]
+    fn namespaced_overrides_roundtrip_reset_and_preserve_other_plugins_and_unknown_keys() {
+        let mut p: Preferences = serde_json::from_value(serde_json::json!({
+            "plugins": {
+                "velk.files": {"show_hidden":false,"future_key":{"nested":true}},
+                "velk.terminal": {"shell":"/bin/sh"}
+            },
+            "future_core_setting": 7
+        }))
+        .unwrap();
+        let key = "plugins.velk.files.show_hidden";
+        assert_eq!(p.get(key), Some(false.into()));
+        assert!(p.is_modified(key));
+        p.set(key, None).unwrap();
+        assert!(!p.is_modified(key));
+        let saved = serde_json::to_value(&p).unwrap();
+        assert_eq!(saved["plugins"]["velk.files"]["future_key"]["nested"], true);
+        assert_eq!(saved["plugins"]["velk.terminal"]["shell"], "/bin/sh");
+        assert_eq!(saved["future_core_setting"], 7);
+        let roundtrip: Preferences = serde_json::from_value(saved).unwrap();
+        assert_eq!(roundtrip, p);
+        p.set("plugins.velk.terminal.shell", None).unwrap();
+        assert!(!p.plugins.contains_key("velk.terminal"));
     }
 }

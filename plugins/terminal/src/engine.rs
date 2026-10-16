@@ -74,12 +74,18 @@ pub struct Engine {
     status: String,
 }
 impl Engine {
-    pub fn new(root: &Path, cols: u16, rows: u16, shell: Option<&Path>) -> anyhow::Result<Self> {
+    pub fn new(
+        root: &Path,
+        cols: u16,
+        rows: u16,
+        shell: Option<&Path>,
+        scrollback_bytes: usize,
+    ) -> anyhow::Result<Self> {
         let _trace = velk_plugin_sdk::diagnostics::scope!("terminal.spawn");
         let mut term = Vt::new(TerminalOptions {
             cols,
             rows,
-            max_scrollback: 10_000,
+            max_scrollback: scrollback_bytes,
         })?;
         term.set_default_fg_color(Some(color(FOREGROUND)))?;
         term.set_default_bg_color(Some(color(BACKGROUND)))?;
@@ -506,7 +512,7 @@ mod tests {
     fn real_pty_runs_in_workspace_resizes_and_reaps_on_drop() {
         let directory = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(directory.path()).unwrap();
-        let mut engine = Engine::new(&root, 80, 12, Some(Path::new("/bin/sh"))).unwrap();
+        let mut engine = Engine::new(&root, 80, 12, Some(Path::new("/bin/sh")), 10_000).unwrap();
         let pid = engine.pty.child.process_id().unwrap();
         command(&mut engine, "printf '\\033[31mREADY_%s\\033[0m\\n' 314159");
         let grid = wait(&mut engine, "READY_314159");
@@ -545,7 +551,8 @@ mod tests {
     #[test]
     fn ghostty_replaces_cells_and_handles_unicode_and_alternate_screen() {
         let directory = tempfile::tempdir().unwrap();
-        let mut engine = Engine::new(directory.path(), 80, 12, Some(Path::new("/bin/sh"))).unwrap();
+        let mut engine =
+            Engine::new(directory.path(), 80, 12, Some(Path::new("/bin/sh")), 10_000).unwrap();
         engine.term.reset();
         engine
             .term

@@ -1,5 +1,4 @@
-//! Settings page driven by `settings::REGISTRY`. `settings_page` is a plain
-//! element so it can later be mounted as an editor tab; `settings_modal` wraps it.
+//! Host-rendered settings for core preferences and plugin declarations.
 use super::{CloseSettings, Document, ToggleSettings};
 use crate::settings::{self, Category, Control, REGISTRY, Setting};
 use rxui::{Element, prelude::*, taffy::style::AlignItems};
@@ -78,6 +77,28 @@ fn mono(text: impl Into<String>) -> Element {
 
 impl Document {
     fn update_setting(&mut self, key: &str, value: Option<Value>, cx: &mut Context<'_, Self>) {
+        let mut value = value;
+        if let Some((plugin, local_key)) = settings::plugin_key(key) {
+            let definition = self
+                .plugins
+                .as_ref()
+                .and_then(|state| state.known.get(plugin))
+                .and_then(|info| info.metadata.settings.iter().find(|s| s.key == local_key));
+            let Some(definition) = definition else {
+                self.shell.store.error = Some(format!("Unknown plugin setting: {key}"));
+                return;
+            };
+            if let Some(v) = &value {
+                if let Err(error) = definition.validate_value(v) {
+                    self.shell.store.error = Some(error);
+                    return;
+                }
+                if v == &definition.default {
+                    value = None;
+                }
+            }
+        }
+        self.shell.store.error = None;
         match self.shell.store.preferences.set(key, value) {
             Ok(()) => self.persist_shell(cx),
             Err(error) => self.shell.store.error = Some(format!("Cannot set {key}: {error}")),
@@ -119,20 +140,29 @@ impl Document {
         }
     }
     fn setting_control(&self, setting: &Setting, cx: &mut ViewContext<'_, Self>) -> Element {
-        let key = setting.key;
-        let value = self.shell.store.preferences.get(key);
+        let key = setting.key.clone();
+        let value = self
+            .shell
+            .store
+            .preferences
+            .get(&key)
+            .or_else(|| setting.plugin.as_ref().map(|_| setting.default.clone()));
         let control_key = format!("setting-{key}");
-        match setting.control {
+        match &setting.control {
             Control::Toggle => switch(value.and_then(|v| v.as_bool()).unwrap_or(false), "")
                 .key(control_key)
-                .accessibility_label(setting.title)
+                .accessibility_label(setting.title.clone())
                 .on_change(cx.listener(move |this, event: &ToggleEvent, cx| {
-                    this.update_setting(key, Some(Value::Bool(event.checked)), cx)
+                    this.update_setting(&key, Some(Value::Bool(event.checked)), cx)
                 }))
                 .into_element(),
-            Control::Choice(options) => {
+            Control::Choice(_) | Control::Options(_) => {
                 let plugins = self.plugins.as_ref().map_or(&[][..], |s| &s.loaded[..]);
-                let options = options(plugins);
+                let options = match &setting.control {
+                    Control::Choice(options) => options(plugins),
+                    Control::Options(options) => options.clone(),
+                    _ => unreachable!(),
+                };
                 let current = value
                     .as_ref()
                     .and_then(Value::as_str)
@@ -148,8 +178,9 @@ impl Document {
                         .border(1., ThemeColor::Border)
                         .background(ThemeColor::Background)
                         .accessibility_role(SemanticRole::Group)
-                        .accessibility_label(setting.title);
+                        .accessibility_label(setting.title.clone());
                     for (option, caption) in options {
+                        let key = key.clone();
                         let on = option == current;
                         segments = segments.child(
                             button(caption)
@@ -172,21 +203,21 @@ impl Document {
                                     ThemeColor::Background
                                 })
                                 .on_click(cx.listener(move |this, _, cx| {
-                                    this.update_setting(key, Some(option.clone().into()), cx)
+                                    this.update_setting(&key, Some(option.clone().into()), cx)
                                 })),
                         );
                     }
                     segments
                 } else {
-                    select_keyed(cx, key)
+                    select_keyed(cx, key.clone())
                         .key(control_key)
-                        .accessibility_label(setting.title)
+                        .accessibility_label(setting.title.clone())
                         .width(220.)
                         .selected(current)
                         .options(options.into_iter().map(|(v, c)| choice(v, c)))
                         .on_change(cx.listener(move |this, event: &ChoiceEvent, cx| {
                             if let rxui::Key::String(value) = &event.key {
-                                this.update_setting(key, Some(value.to_string().into()), cx)
+                                this.update_setting(&key, Some(value.to_string().into()), cx)
                             }
                         }))
                         .into_element()
@@ -194,28 +225,29 @@ impl Document {
             }
             Control::Text => text_input(value.as_ref().and_then(Value::as_str).unwrap_or(""))
                 .key(control_key)
-                .accessibility_label(setting.title)
+                .accessibility_label(setting.title.clone())
                 .width(220.)
                 .height(28.)
                 .on_change(cx.listener(move |this, event: &TextChangeEvent, cx| {
-                    this.update_setting(key, Some(event.value.clone().into()), cx)
+                    this.update_setting(&key, Some(event.value.clone().into()), cx)
                 })),
             // Unparsable text is rejected, so the field always holds a number.
             Control::Number => text_input(value.map(|v| v.to_string()).unwrap_or_default())
                 .key(control_key)
-                .accessibility_label(setting.title)
+                .accessibility_label(setting.title.clone())
                 .width(72.)
                 .height(28.)
                 .font_family(FontFamily::Monospace)
                 .on_change(cx.listener(move |this, event: &TextChangeEvent, cx| {
                     if let Ok(number) = event.value.trim().parse::<serde_json::Number>() {
-                        this.update_setting(key, Some(Value::Number(number)), cx)
+                        this.update_setting(&key, Some(Value::Number(number)), cx)
                     }
                 })),
         }
     }
     fn setting_row(&self, setting: &Setting, cx: &mut ViewContext<'_, Self>) -> Element {
-        let key = setting.key;
+        let key = setting.key.as_str();
+        let reset_key = key.to_owned();
         let modified = self.shell.store.preferences.is_modified(key);
         row()
             .key(key)
@@ -246,11 +278,11 @@ impl Document {
                         row()
                             .gap(8.)
                             .align_items(AlignItems::CENTER)
-                            .child(label(setting.title).font_weight(FontWeight::MEDIUM))
+                            .child(label(setting.title.clone()).font_weight(FontWeight::MEDIUM))
                             .child(mono(key)),
                     )
                     .child(
-                        label(setting.description)
+                        label(setting.description.clone())
                             .font_size(12.5)
                             .color(ThemeColor::TextMuted),
                     ),
@@ -264,7 +296,9 @@ impl Document {
                     .font_size(12.)
                     .color(ThemeColor::TextMuted)
                     .accessibility_label(format!("Reset {}", setting.title))
-                    .on_click(cx.listener(move |this, _, cx| this.update_setting(key, None, cx)))
+                    .on_click(
+                        cx.listener(move |this, _, cx| this.update_setting(&reset_key, None, cx)),
+                    )
             }))
             .child(self.setting_control(setting, cx))
     }
@@ -275,6 +309,10 @@ impl Document {
         close: Option<rxui::CommandAction<CloseSettings>>,
     ) -> Element {
         let page = &self.shell.page;
+        let mut registry = REGISTRY.to_vec();
+        if let Some(plugins) = &self.plugins {
+            registry.extend(settings::plugin_rows(&plugins.known));
+        }
         let preferences = &self.shell.store.preferences;
         let focus_search = cx
             .command(FocusSearch, |this, _, cx| {
@@ -343,10 +381,10 @@ impl Document {
             .border_color(ThemeColor::Divider)
             .on_command(focus_search.clone());
         for category in Category::ALL {
-            let modified = REGISTRY
+            let modified = registry
                 .iter()
                 .filter(|s| s.category == category)
-                .map(|s| preferences.is_modified(s.key))
+                .map(|s| preferences.is_modified(&s.key))
                 .collect::<Vec<_>>();
             if modified.is_empty() {
                 continue;
@@ -404,7 +442,7 @@ impl Document {
         }
         let mut shown = 0;
         for category in Category::ALL {
-            let rows: Vec<_> = REGISTRY
+            let rows: Vec<_> = registry
                 .iter()
                 .filter(|s| s.category == category)
                 .filter(|s| {
@@ -425,7 +463,14 @@ impl Document {
                     .font_weight(FontWeight::SEMIBOLD)
                     .padding_y(6.),
             );
+            let mut previous_plugin = None;
             for setting in rows {
+                if let Some(id) = &setting.plugin
+                    && previous_plugin != Some(id)
+                {
+                    content = content.child(self.plugin_settings_header(id, cx));
+                    previous_plugin = Some(id);
+                }
                 content = content.child(self.setting_row(setting, cx));
             }
         }
@@ -463,6 +508,69 @@ impl Document {
                     .child(nav)
                     .child(content),
             )
+    }
+    pub(super) fn open_plugin_settings(&mut self, id: String, cx: &mut Context<'_, Self>) {
+        self.set_settings(true, cx);
+        self.shell.page.category = Category::Plugins;
+        self.shell.page.query = id;
+    }
+    fn plugin_settings_header(&self, id: &str, cx: &mut ViewContext<'_, Self>) -> Element {
+        let state = self.plugins.as_ref().expect("settings plugin state");
+        let info = &state.known[id];
+        let overrides = self
+            .shell
+            .store
+            .preferences
+            .plugins
+            .get(id)
+            .cloned()
+            .unwrap_or_default();
+        let resolved = velk_plugin_host::settings::resolve(&info.metadata.settings, &overrides);
+        let loaded = state.loaded.iter().find(|p| p.id == id);
+        let pending = loaded.is_some_and(|p| {
+            resolved.as_ref().is_ok_and(|v| *v != p.settings_values) || p.settings_error.is_some()
+        });
+        let restart_id = id.to_owned();
+        let heading = row()
+            .align_items(AlignItems::CENTER)
+            .gap(10.)
+            .child(
+                label(info.metadata.name.clone())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex_grow(1.),
+            )
+            .children(pending.then(|| {
+                button("Restart to apply")
+                    .key(format!("settings-restart-{id}"))
+                    .height(28.)
+                    .padding_y(0.)
+                    .font_size(12.)
+                    .disabled(self.plugins_busy() || resolved.is_err())
+                    .on_click(cx.listener(move |this, _, cx| {
+                        this.plugin_operation(
+                            super::plugins::Operation::Restart(Some(restart_id.clone())),
+                            cx,
+                        )
+                    }))
+            }));
+        let status = if loaded.is_none() {
+            "Enable this plugin to apply its settings."
+        } else if pending {
+            "Changes take effect after restart. Restarting ends this plugin’s active sessions."
+        } else {
+            "Settings apply when this plugin starts. Restarting ends its active sessions."
+        };
+        let mut header = column()
+            .gap(6.)
+            .padding_y(12.)
+            .child(heading)
+            .child(label(status).font_size(12.).color(ThemeColor::TextMuted));
+        if let Err(error) = resolved {
+            header = header.child(error_box("Invalid plugin settings", error));
+        } else if let Some(error) = loaded.and_then(|p| p.settings_error.as_ref()) {
+            header = header.child(error_box("Plugin is using defaults", error.clone()));
+        }
+        header.into_element()
     }
     pub(super) fn settings_modal(
         &self,
@@ -526,7 +634,7 @@ mod tests {
                 .unwrap();
             let mut keys: Vec<_> = REGISTRY
                 .iter()
-                .map(|s| s.key)
+                .map(|s| s.key.as_str())
                 .chain(["settings-empty"])
                 .filter(|key| ui.elements().any(|e| e.key == Some(&rxui::Key::from(*key))))
                 .collect();
@@ -538,5 +646,102 @@ mod tests {
         assert_eq!(rows("backend"), ["search_backend"]);
         assert_eq!(rows("current layout"), ["rail", "status_line"]);
         assert_eq!(rows("no such setting"), ["settings-empty"]);
+    }
+    #[test]
+    #[allow(unsafe_code)]
+    fn plugin_settings_render_search_validate_reset_and_survive_unload() {
+        use velk_plugin_host::{
+            PluginInfo, PluginMetadata,
+            settings::{Definition, Kind, Values},
+        };
+        struct Measure;
+        impl rxui::TextMeasure for Measure {
+            fn measure(
+                &mut self,
+                _: rxui::ElementId,
+                r: rxui::TextRequest<'_>,
+            ) -> Result<[f32; 2], rxui::UiError> {
+                Ok([r.text.len() as f32 * 7., 18.])
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        // SAFETY: this test-owned directory contains no native libraries.
+        let plugins = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let info = PluginInfo {
+            id: "test.files".into(),
+            version: "1".into(),
+            generation: 1,
+            loaded_path: directory.path().into(),
+            description: String::new(),
+            metadata: PluginMetadata {
+                name: "Workspace Browser".into(),
+                settings: vec![Definition {
+                    key: "show_hidden".into(),
+                    title: "Show hidden files".into(),
+                    description: "Show dot files.".into(),
+                    kind: Kind::Boolean,
+                    default: true.into(),
+                }],
+                ..Default::default()
+            },
+            settings_values: Values::from([("show_hidden".into(), true.into())]),
+            settings_error: None,
+            resident_code: false,
+            hooks: vec![],
+        };
+        let mut runtime = rxui::Runtime::new();
+        let document = runtime.update(|cx| cx.new(|_| Document::empty(1)));
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                let mut state = super::super::plugins::State::new(plugins.client());
+                state.loaded.push(info.clone());
+                state.known.insert(info.id.clone(), info);
+                this.plugins = Some(state);
+                this.open_plugin_settings("test.files".into(), cx);
+                this.shell.page.query = "Workspace Browser".into();
+            })
+        });
+        let mut ui = rxui::Ui::new(&mut runtime, document.clone()).unwrap();
+        ui.prepare(&mut runtime, [1000., 700.], &mut Measure)
+            .unwrap();
+        let has = |ui: &rxui::Ui<Document>, key: &str| {
+            ui.elements().any(|e| e.key == Some(&rxui::Key::from(key)))
+        };
+        let key = "plugins.test.files.show_hidden";
+        assert!(has(&ui, key));
+        assert!(!has(&ui, "settings-restart-test.files"));
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.update_setting(key, Some(false.into()), cx);
+                assert_eq!(this.shell.store.preferences.get(key), Some(false.into()));
+                assert_eq!(
+                    this.plugins.as_ref().unwrap().loaded[0].settings_values["show_hidden"],
+                    true
+                );
+                this.update_setting(key, Some("wrong type".into()), cx);
+                assert_eq!(this.shell.store.preferences.get(key), Some(false.into()));
+                assert!(this.shell.store.error.is_some());
+            })
+        });
+        ui.prepare(&mut runtime, [1000., 700.], &mut Measure)
+            .unwrap();
+        assert!(has(&ui, "settings-restart-test.files"));
+        assert!(has(&ui, "reset-plugins.test.files.show_hidden"));
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.update_setting(key, None, cx);
+                assert!(this.shell.store.preferences.get(key).is_none());
+                assert!(this.shell.store.error.is_none());
+            })
+        });
+        ui.prepare(&mut runtime, [1000., 700.], &mut Measure)
+            .unwrap();
+        assert!(!has(&ui, "settings-restart-test.files"));
+        runtime.update(|cx| {
+            document.update(cx, |this, _| this.plugins.as_mut().unwrap().loaded.clear())
+        });
+        ui.prepare(&mut runtime, [1000., 700.], &mut Measure)
+            .unwrap();
+        assert!(has(&ui, key));
     }
 }

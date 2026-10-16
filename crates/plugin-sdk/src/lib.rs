@@ -21,6 +21,7 @@ pub struct LanguageServer {
     pub configuration: String,
 }
 mod metadata;
+pub mod settings;
 pub use metadata::{Capability, CapabilityDeclaration, PluginMetadata};
 
 pub trait Plugin: Default + 'static {
@@ -33,6 +34,14 @@ pub trait Plugin: Default + 'static {
     /// Declared access requirements, not enforced grants for native code.
     const CAPABILITIES: &'static [CapabilityDeclaration] = &[];
     const RESIDENT_CODE: bool = false;
+    fn settings() -> Vec<settings::Definition> {
+        Vec::new()
+    }
+    /// Called on the plugin worker before feature hooks or lifecycle restore.
+    /// Validate before mutating state; the snapshot contains declared keys only.
+    fn configure(&mut self, _settings: &settings::Values) -> Result<(), String> {
+        Ok(())
+    }
     fn register(_reg: &mut Registrar<Self>) -> Result<(), String> {
         Ok(())
     }

@@ -129,6 +129,10 @@ an enforced permission system. A plugin can crash or block the process. The
 native ABI and extension contracts are experimental: rebuild the editor and
 plugins together when those contracts change.
 
+Plugin-declared settings appear in the existing Settings page, with validation,
+defaults, and Reset controls. Changes apply after an explicit plugin restart.
+See [plugin settings](docs/plugin-settings.md) for the bundled options and SDK.
+
 Start with the [plugin API guide](docs/plugin-api.md) and
 [plugin pack guide](docs/plugin-packs.md). The host currently supports shared
 text, tree, and grid panel models. A general interactive widget API is future
@@ -160,7 +164,8 @@ Current limitations include:
 - [Buffers](docs/buffers.md) and [edit transactions](docs/edit-transactions.md)
 - [Editor shell](docs/editor-shell.md), [panels](docs/panels.md), and
   [window reloading](docs/reloading.md)
-- [Plugin API](docs/plugin-api.md) and [plugin packs](docs/plugin-packs.md)
+- [Plugin API](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
+  [plugin settings](docs/plugin-settings.md)
 - [Semantic services and Rust LSP](docs/semantic-services.md)
 - [Files](docs/files.md), [search](docs/search.md), and [terminal](docs/terminal.md)
 - [Profiling and performance tooling](docs/profiling.md)

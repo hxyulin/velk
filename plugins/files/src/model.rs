@@ -28,6 +28,7 @@ pub(super) struct Model {
     directories: BTreeMap<PathBuf, Listing>,
     nodes: BTreeMap<String, Item>,
     revision: u64,
+    show_hidden: Option<bool>,
     #[cfg(test)]
     pub reads: usize,
 }
@@ -96,6 +97,13 @@ fn root(document: NativePath, cancel: &AtomicBool) -> Result<PathBuf, String> {
     Ok(cargo.unwrap_or_else(|| directory.into()))
 }
 impl Model {
+    pub(super) fn set_show_hidden(&mut self, show: bool) {
+        if self.show_hidden.unwrap_or(true) != show {
+            self.directories.clear();
+            self.nodes.clear();
+        }
+        self.show_hidden = Some(show);
+    }
     #[cfg(test)]
     pub fn apply(
         &mut self,
@@ -252,6 +260,11 @@ impl Model {
                         break;
                     }
                     let entry = entry?;
+                    if !self.show_hidden.unwrap_or(true)
+                        && entry.file_name().as_encoded_bytes().starts_with(b".")
+                    {
+                        continue;
+                    }
                     let kind = entry.file_type()?;
                     // Symlinks are leaves: no traversal cycles or unexpected scans.
                     if kind.is_dir() || kind.is_file() || kind.is_symlink() {

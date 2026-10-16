@@ -24,12 +24,22 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     )?;
     publish(temp.path(), vec![spec])?;
     let mut manager = velk_plugin_host::Manager::new(temp.path().into());
+    manager.set_settings(std::collections::BTreeMap::from([(
+        "test.hooks".into(),
+        std::collections::BTreeMap::from([
+            ("message".into(), "configured before first request".into()),
+            ("future_key".into(), true.into()),
+        ]),
+    )]));
     // SAFETY: only the locally built SDK probe is present in this directory.
     unsafe {
         manager.load()?;
     }
     let metadata = manager.plugins().next().unwrap().metadata.clone();
     assert_eq!(metadata.name, "Named Hooks Probe");
+    assert_eq!(metadata.settings.len(), 1);
+    assert!(manager.plugins().next().unwrap().settings_error.is_none());
+    assert_eq!(manager.plugins().next().unwrap().settings_values.len(), 1);
     assert!(metadata.readme.contains("**Markdown**"));
     assert_eq!(metadata.capabilities.len(), 2);
     assert!(!metadata.capabilities[0].optional);
@@ -64,6 +74,10 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     );
     let echo = manager.bind_hook("test.hooks", "test.echo")?;
     let state = manager.bind_hook("test.hooks", "test.state")?;
+    assert_eq!(
+        manager.call_hook(&state, b"")?,
+        b"configured before first request"
+    );
     let input = b"\0opaque\xffbytes";
     let owned = manager.call_hook(&echo, input)?;
     assert_eq!(owned, input);
@@ -99,9 +113,32 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     assert_eq!(manager.call_hook(&echo, b"new")?, b"new");
     let foreign_handle = echo;
     manager.unload_all();
+    manager.set_settings(std::collections::BTreeMap::from([(
+        "test.hooks".into(),
+        std::collections::BTreeMap::from([("message".into(), false.into())]),
+    )]));
+    unsafe {
+        manager.load()?;
+    }
+    assert!(
+        manager
+            .plugins()
+            .next()
+            .unwrap()
+            .settings_error
+            .as_ref()
+            .is_some_and(|e| e.contains("message"))
+    );
+    let defaults = manager.bind_hook("test.hooks", "test.state")?;
+    assert_eq!(manager.call_hook(&defaults, b"")?, b"initial");
+    manager.unload_all();
     let runtime = unsafe { velk_plugin_host::Runtime::start(temp.path().into())? };
     let client = runtime.client();
     pollster::block_on(async {
+        client.set_settings(std::collections::BTreeMap::from([(
+            "test.hooks".into(),
+            std::collections::BTreeMap::from([("message".into(), "async configuration".into())]),
+        )]))?;
         assert_eq!(
             client
                 .load()?
@@ -123,6 +160,34 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
             .recv()
             .await
             .map_err(|e| e.to_string())??;
+        assert_eq!(
+            client.call_hook(state.clone(), vec![]).await?,
+            b"async configuration"
+        );
+        client.set_settings(std::collections::BTreeMap::from([(
+            "test.hooks".into(),
+            std::collections::BTreeMap::from([("message".into(), "after restart".into())]),
+        )]))?;
+        assert_eq!(
+            client.call_hook(state.clone(), vec![]).await?,
+            b"async configuration"
+        );
+        let restarted = client
+            .restart(Some("test.hooks".into()))?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        assert_eq!(restarted.loaded, 1);
+        assert!(client.call_hook(state, vec![]).await.is_err());
+        let state = client
+            .bind_hook("test.hooks".into(), "test.state".into())?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        assert_eq!(
+            client.call_hook(state.clone(), vec![]).await?,
+            b"after restart"
+        );
         // Dropping an acknowledgement does not cancel an accepted event.
         drop(client.emit_hook("test.notice".into(), b"ordered event".to_vec())?);
         assert_eq!(
@@ -138,7 +203,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         Ok::<_, String>(())
     })?;
     println!(
-        "Named hook smoke passed: discovery, custom opaque-byte requests, ordered event delivery, errors/panic containment, owned replies, cleanup and stale generation rejection; no feature-specific root ABI fields."
+        "Named hook smoke passed: settings defaults, overrides, validation and restart, discovery, custom opaque-byte requests, ordered event delivery, errors/panic containment, owned replies, cleanup and stale generation rejection; no feature-specific root ABI fields."
     );
     Ok(())
 }
