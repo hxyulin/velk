@@ -4,7 +4,6 @@ mod blink;
 mod composition;
 mod horizontal;
 mod hover;
-mod inline;
 mod surface;
 mod syntax;
 mod unicode_window;
@@ -15,11 +14,6 @@ pub use viewport::CpuViewportProbe;
 #[cfg(any(test, feature = "performance"))]
 pub use viewport::FrameMetrics;
 
-pub use annotations::{
-    AnnotationError, Annotations, Color, EditorAppearance, HoverCard, LinePattern, OverlayKind,
-    OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
-};
-pub use hover::{HoverSource, HoverTarget};
 use rxui::{prelude::*, standard_commands as commands};
 use std::sync::Arc;
 #[cfg(any(test, feature = "performance"))]
@@ -30,6 +24,11 @@ use surface::{Composition, Geometry, Surface};
 use velk_core::graphemes;
 pub use velk_core::{
     Buffer, BufferSnapshot, Checkpoint, Selection, TextEdit, Transaction, TransactionError,
+};
+use velk_editor_model::inline;
+pub use velk_editor_model::{
+    AnnotationError, Annotations, Color, EditorAppearance, HoverCard, HoverSource, HoverTarget,
+    LinePattern, OverlayKind, OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
 };
 pub use velk_syntax::Language;
 

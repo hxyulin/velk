@@ -175,7 +175,8 @@ Current limitations include:
 
 Build and try the editor before making a change. The workspace separates the
 application shell (`crates/editor`), UI-independent document state (`crates/core`),
-RXUI editor widget (`crates/editor-widget`), syntax and semantic services, markup
+editor presentation data (`crates/editor-model`), RXUI editor widget
+(`crates/editor-widget`), syntax and semantic services, markup
 contracts, and the native plugin API, SDK, and host. Bundled feature implementations live under
 `plugins/`; development commands live in `xtask/`.
 

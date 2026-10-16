@@ -4,18 +4,20 @@ use std::ops::Range;
 /// nor its caret stops belong to the document. Stable sort preserves provider
 /// order when several hints share an anchor.
 #[derive(Clone, Debug)]
-pub(crate) struct InlineInsertion {
+pub struct InlineInsertion {
     pub base_anchor: usize,
     pub overlay_index: usize,
     pub display: Range<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct InlineProjection {
+pub struct InlineProjection {
     pub insertions: Vec<InlineInsertion>,
 }
 
 impl InlineProjection {
+    /// Hint anchors must be UTF-8 byte boundaries within `base`. The middle tuple
+    /// value identifies the provider's overlay; equal anchors retain input order.
     pub fn build(base: &str, mut hints: Vec<(usize, usize, &str)>) -> (String, Self) {
         hints.sort_by_key(|hint| hint.0);
         let mut projection = Self::default();

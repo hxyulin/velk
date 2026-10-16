@@ -1,24 +1,12 @@
 //! Widget-owned hover lifetime. Providers return content against a target token;
 //! neither the document caret nor a transport-specific request identifies it.
-use crate::{Editor, HoverCard, graphemes, surface::HoverHit};
+use crate::{Editor, HoverCard, HoverSource, HoverTarget, graphemes, surface::HoverHit};
 use rxui::{Context, Task};
 use std::{ops::Range, time::Duration};
 
 const DELAY: Duration = Duration::from_millis(350);
 const LEAVE_GRACE: Duration = Duration::from_millis(180);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HoverSource {
-    Pointer,
-    Caret,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HoverTarget {
-    pub id: u64,
-    pub revision: u64,
-    pub position: usize,
-    pub source: HoverSource,
-}
 #[derive(Default)]
 pub(super) struct State {
     enabled: bool,

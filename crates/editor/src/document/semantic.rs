@@ -2,9 +2,10 @@
 use super::Document;
 use rxui::prelude::*;
 use std::sync::Arc;
-use velk_editor_widget::{
-    Annotations, Buffer, HoverCard, HoverSource, HoverTarget, LinePattern, OverlayKind,
-    OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
+use velk_core::Buffer;
+use velk_editor_model::{
+    Annotations, HoverCard, HoverSource, HoverTarget, LinePattern, OverlayKind, OverlayPlacement,
+    SpanStyle, StyledRange, TextOverlay, Underline,
 };
 use velk_semantic::{DocumentSnapshot, Event, HoverRequest, Service, Severity, Status};
 

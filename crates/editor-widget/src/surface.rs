@@ -1,8 +1,6 @@
 use crate::inline::InlineProjection;
 use crate::{
-    Annotations, Color, HoverCard, LinePattern, OverlayKind, OverlayPlacement, Selection,
-    Underline,
-    annotations::{display_anchor, display_ranges},
+    Annotations, Color, HoverCard, LinePattern, OverlayKind, OverlayPlacement, Selection, Underline,
 };
 use ropey::Rope;
 use rxui::astrelis::{
@@ -11,6 +9,7 @@ use rxui::astrelis::{
 };
 use rxui::{Bounds, CustomElement, CustomPrepare, ElementInfo, UiError};
 use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
+use velk_editor_model::projection::{display_anchor, display_ranges};
 
 pub(crate) const PADDING: f32 = 16.;
 pub(crate) const LINE_HEIGHT: f32 = 24.;
@@ -470,7 +469,7 @@ impl Surface {
                     display_ranges(source, replacement.as_ref())
                         .into_iter()
                         .flat_map(|range| projection.ranges(range))
-                        .filter_map(|range| span.style.text_span(range))
+                        .filter_map(|range| crate::annotations::text_span(&span.style, range))
                 })
                 .collect::<Vec<_>>();
             if let Some(annotations) = &self.annotations {
@@ -1367,7 +1366,7 @@ fn paint_decoration(
 #[cfg(test)]
 mod rich_tests {
     use super::*;
-    use crate::{SpanStyle, annotations::display_ranges};
+    use crate::SpanStyle;
     use rxui::astrelis::TextSystem;
 
     #[test]
@@ -1380,15 +1379,17 @@ mod rich_tests {
         buffer.set_width(Some(640.)).unwrap();
         buffer.set_wrap(TextWrap::None);
         let text = "large café\nsmall";
-        let span = SpanStyle {
-            font_size: Some(32.),
-            italic: Some(true),
-            weight: Some(700),
-            foreground: Some([0.2, 0.6, 0.9, 1.]),
-            strikethrough: Some(true),
-            ..SpanStyle::default()
-        }
-        .text_span(0..5)
+        let span = crate::annotations::text_span(
+            &SpanStyle {
+                font_size: Some(32.),
+                italic: Some(true),
+                weight: Some(700),
+                foreground: Some([0.2, 0.6, 0.9, 1.]),
+                strikethrough: Some(true),
+                ..SpanStyle::default()
+            },
+            0..5,
+        )
         .unwrap();
         buffer
             .set_rich_text(text, editor_text_style(), vec![span])

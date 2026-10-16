@@ -1,0 +1,13 @@
+[package]
+name = "velk-editor-model"
+description = "Renderer-independent Velk editor presentation data and text projections"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+velk-core.workspace = true
+
+[lints]
+workspace = true

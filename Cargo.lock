@@ -4009,12 +4009,20 @@ dependencies = [
  "tracing",
  "velk-core",
  "velk-diagnostics",
+ "velk-editor-model",
  "velk-editor-widget",
  "velk-markup",
  "velk-panels",
  "velk-plugin-host",
  "velk-search",
  "velk-semantic",
+]
+
+[[package]]
+name = "velk-editor-model"
+version = "0.0.0-dev"
+dependencies = [
+ "velk-core",
 ]
 
 [[package]]
@@ -4029,6 +4037,7 @@ dependencies = [
  "unicode-ident",
  "unicode-segmentation",
  "velk-core",
+ "velk-editor-model",
  "velk-markup",
  "velk-syntax",
 ]

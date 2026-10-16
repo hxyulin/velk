@@ -67,7 +67,8 @@ impl UnicodeLine {
             .into_iter()
             .flat_map(|a| &a.spans)
             .filter_map(|span| {
-                span.style.text_span(
+                crate::annotations::text_span(
+                    &span.style,
                     context.char_to_byte(span.range.start.min(context.len_chars()))
                         ..context.char_to_byte(span.range.end.min(context.len_chars())),
                 )

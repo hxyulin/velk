@@ -1,6 +1,7 @@
-use velk_editor_widget::{
-    Annotations, Editor, OverlayKind, OverlayPlacement, SpanStyle, StyledRange, TextOverlay,
+use velk_editor_model::{
+    Annotations, OverlayKind, OverlayPlacement, SpanStyle, StyledRange, TextOverlay,
 };
+use velk_editor_widget::Editor;
 
 /// One bounded Unicode region in an otherwise very long monospace line.
 pub fn unicode_horizontal_editor() -> Editor {
@@ -112,7 +113,7 @@ pub fn rich_horizontal_editor() -> Editor {
             placement: OverlayPlacement::Inline,
             foreground: [0.5, 0.8, 1., 1.],
             background: Some([0.1, 0.3, 0.4, 0.4]),
-            hover: Some(velk_editor_widget::HoverCard {
+            hover: Some(velk_editor_model::HoverCard {
                 title: "Type hint".into(),
                 body: "Source text remains unchanged by this inline label.".into(),
             }),

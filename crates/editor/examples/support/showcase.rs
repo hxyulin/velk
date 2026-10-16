@@ -1,10 +1,12 @@
 use rxui::{AppContext, Entity, Task, prelude::*};
 use std::ops::Range;
 use std::time::Duration;
-use velk_editor_widget::{
-    Annotations, Buffer, Color, Editor, EditorAppearance, HoverCard, LinePattern, OverlayKind,
-    OverlayPlacement, SpanStyle, StyledRange, TextOverlay, Underline,
+use velk_core::Buffer;
+use velk_editor_model::{
+    Annotations, Color, EditorAppearance, HoverCard, LinePattern, OverlayKind, OverlayPlacement,
+    SpanStyle, StyledRange, TextOverlay, Underline,
 };
+use velk_editor_widget::Editor;
 
 const SAMPLE: &str = "Velk / rich text playground\n\nForeground: coral   mint   sky   amber   lavender\nBackground: search match   active range   layered tint\nDecorations: underline   dashed line   wavy line   overline   strikethrough\nTypography: italic   bold   larger text\n\nfn greeting(name: &str) -> String {\n    let count = 42;\n    let message = format!(\"Hello, {name}\");\n    println!(\"{message}\");\n    unknown_call(message)\n}\n\nGhost completion: greeting\n\nUnicode: café   世界   👩‍💻   é\n";
 

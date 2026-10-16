@@ -1,9 +1,10 @@
-use crate::{Annotations, Buffer, SpanStyle, StyledRange, annotations::display_ranges, graphemes};
+use crate::{Annotations, Buffer, SpanStyle, StyledRange, graphemes};
 use rxui::{Context, Listener, Task};
 use std::{
     ops::Range,
     sync::{Arc, Weak},
 };
+use velk_editor_model::projection::display_ranges;
 use velk_syntax::{HighlightSnapshot, Update, Worker};
 
 pub(crate) struct Monitor {

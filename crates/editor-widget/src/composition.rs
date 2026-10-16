@@ -1,12 +1,12 @@
 //! Persistent view-only replacement; document text and undo history stay untouched.
 use crate::{
     Annotations, Selection,
-    annotations::{display_anchor, display_ranges},
     surface::{Composition, Geometry, Surface},
     viewport::{ViewportState, ViewportSurface},
 };
 use rxui::{CustomElement, CustomPrepare, ElementInfo, UiError};
 use std::{cell::RefCell, ops::Range, rc::Rc, sync::Arc};
+use velk_editor_model::projection::{display_anchor, display_ranges};
 
 pub(crate) struct ComposedGeometry {
     pub geometry: Rc<RefCell<Geometry>>,
