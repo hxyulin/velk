@@ -201,21 +201,32 @@ impl Document {
             self.disk_check = Some(task);
         }
     }
+    fn disk_notice_visible(&self) -> bool {
+        self.buffer
+            .as_ref()
+            .is_some_and(|buffer| buffer.disk_changed && !buffer.disk_notice_dismissed)
+    }
+    fn dismiss_disk_notice(&mut self, id: u64, cx: &mut Context<'_, Self>) {
+        self.with_buffer(id, cx, |this, _| this.buffer.disk_notice_dismissed = true);
+    }
     pub(super) fn disk_notice(&self, cx: &mut ViewContext<'_, Self>) -> Option<Element> {
-        if !self.has_buffers() || !self.buffer.disk_changed {
+        if !self.disk_notice_visible() {
             return None;
         }
+        let id = self.buffer.id;
         let busy = self.busy() || self.lifecycle.close_intent().is_some();
         Some(column().key("disk-change-notice").fill_width().padding(10.).gap(6.)
             .background(ThemeColor::Raised)
-            .child(label("This file changed on disk or is unavailable. Your editor contents have been kept.").font_size(12.5))
+            .child(label("This buffer is out of sync with disk, or the file is unavailable. Your editor contents have been kept.").font_size(12.5))
             .child(row().gap(8.)
                 .child(button("Reload from disk…").key("disk-reload").disabled(busy)
                     .on_click(cx.listener(|this, _, cx| this.confirm_reload(cx))))
                 .child(button("Open disk version").key("disk-compare").disabled(busy)
                     .on_click(cx.listener(|this, _, cx| this.open_disk_version(cx))))
                 .child(button("Overwrite disk…").key("disk-overwrite").disabled(busy)
-                    .on_click(cx.listener(|this, _, cx| this.confirm_overwrite(cx))))))
+                    .on_click(cx.listener(|this, _, cx| this.confirm_overwrite(cx))))
+                .child(button("Dismiss").key("disk-dismiss")
+                    .on_click(cx.listener(move |this, _, cx| this.dismiss_disk_notice(id, cx))))))
     }
     fn confirm_reload(&mut self, cx: &mut Context<'_, Self>) {
         if self.busy() {
@@ -413,6 +424,54 @@ mod tests {
     use super::*;
     use crate::document::tests::QueuedExecutor;
     use std::sync::Arc;
+    #[test]
+    fn dismissing_disk_notice_is_local_to_the_buffer_and_survives_later_changes() {
+        let mut runtime = Runtime::new();
+        runtime
+            .configure_tasks(Arc::new(QueuedExecutor::default()), || {})
+            .unwrap();
+        let root = runtime.update(|cx| cx.new(|_| Document::empty(1)));
+        runtime.update(|cx| {
+            root.update(cx, |d, cx| {
+                assert!(!d.disk_notice_visible());
+                d.new_buffer(cx);
+                let first = d.buffer.id;
+                d.buffer.disk_changed = true;
+                assert!(d.disk_notice_visible());
+                d.dismiss_disk_notice(first, cx);
+                assert!(!d.disk_notice_visible());
+                assert!(
+                    d.buffer.disk_changed,
+                    "dismissal cannot clear the disk conflict"
+                );
+                d.buffer.disk_changed = false;
+                d.buffer.disk_changed = true;
+                assert!(
+                    !d.disk_notice_visible(),
+                    "later disk changes do not revive a dismissed notice"
+                );
+                d.new_buffer(cx);
+                let second = d.buffer.id;
+                d.buffer.disk_changed = true;
+                assert!(
+                    d.disk_notice_visible(),
+                    "another buffer keeps its own warning"
+                );
+                d.dismiss_disk_notice(first, cx);
+                assert_eq!(d.buffer.id, second);
+                assert!(d.disk_notice_visible());
+                d.select_buffer(first, cx);
+                assert!(!d.disk_notice_visible());
+                d.close_buffer(first, cx);
+                d.new_buffer(cx);
+                d.buffer.disk_changed = true;
+                assert!(
+                    d.disk_notice_visible(),
+                    "new buffers start with warnings enabled"
+                );
+            })
+        });
+    }
     #[test]
     fn large_external_replacements_require_explicit_reload() {
         let directory = tempfile::tempdir().unwrap();

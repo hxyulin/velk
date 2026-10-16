@@ -85,8 +85,11 @@ selection is clamped to the new text, syntax/search/annotations update, and the
 existing semantic session receives the new snapshot and saved notification.
 Buffer subscribers receive the reconciled saved state, and recovery captures it.
 
-Dirty, unavailable, or larger files retain their contents and expose the disk
-conflict actions. A file or revision change during background I/O cancels applying
+Dirty, unavailable, or larger files retain their contents and expose a warning
+above the buffer with the disk conflict actions. **Dismiss** hides the warning
+for that buffer's remaining lifetime, including after switching tabs or later disk
+changes. Closing and reopening the file creates a buffer with warnings enabled.
+Dismissal does not clear the conflict, permit an unsafe save, or stop reconciliation. A file or revision change during background I/O cancels applying
 the reload; starting IME composition also prevents replacement. Undoing a reload
 restores the prior text as a dirty local change. Large-file automatic reload is
 deferred until a streaming reconciliation policy is available.
