@@ -49,7 +49,9 @@ pub enum CloseAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseResponse {
     Save,
+    SaveAll,
     Discard,
+    DiscardAll,
     Cancel,
 }
 
@@ -58,6 +60,7 @@ pub struct Lifecycle {
     closing: Option<CloseIntent>,
     prompt: Option<u64>,
     approved: BTreeSet<u64>,
+    save_remaining: bool,
     save_queue: VecDeque<u64>,
 }
 
@@ -69,6 +72,19 @@ impl Lifecycle {
     pub fn cancel_close(&mut self) {
         self.closing = None;
         self.prompt = None;
+        self.approved.clear();
+        self.save_remaining = false;
+    }
+
+    pub fn prompted_document(&self) -> Option<u64> {
+        self.prompt
+    }
+
+    pub fn remaining_dirty(&self, documents: &[DocumentState]) -> usize {
+        documents
+            .iter()
+            .filter(|d| d.dirty && !self.approved.contains(&d.id))
+            .count()
     }
 
     pub fn cancel_save_all(&mut self) {
@@ -112,6 +128,9 @@ impl Lifecycle {
         documents: &[DocumentState],
         activity: Activity,
     ) -> CloseAction {
+        if self.closing.is_some() {
+            return CloseAction::Ignore;
+        }
         let Some(active) = documents.first() else {
             if intent == CloseIntent::Buffer || activity.busy || activity.opening {
                 return CloseAction::Ignore;
@@ -131,9 +150,8 @@ impl Lifecycle {
         if activity.saving || activity.opening || self.save_all_pending() {
             return CloseAction::Blocked(CloseBlock::FileOperations);
         }
-        if self.closing.is_none() {
-            self.approved.clear();
-        }
+        self.approved.clear();
+        self.save_remaining = false;
         self.closing = Some(intent);
         let target = if intent != CloseIntent::Buffer && !active.dirty {
             documents.iter().find(|d| d.dirty).unwrap_or(active)
@@ -166,8 +184,22 @@ impl Lifecycle {
             return CloseAction::Ignore;
         }
         match response {
-            CloseResponse::Save => CloseAction::Save { id, then: intent },
+            CloseResponse::Save | CloseResponse::SaveAll => {
+                self.save_remaining =
+                    response == CloseResponse::SaveAll && intent != CloseIntent::Buffer;
+                CloseAction::Save { id, then: intent }
+            }
             CloseResponse::Discard => self.approve_close(intent, Some(id), documents),
+            CloseResponse::DiscardAll => {
+                if intent != CloseIntent::Buffer {
+                    if documents.iter().any(|d| d.composing) {
+                        self.cancel_close();
+                        return CloseAction::Blocked(CloseBlock::Composition);
+                    }
+                    self.approved.extend(documents.iter().map(|d| d.id));
+                }
+                self.approve_close(intent, Some(id), documents)
+            }
             CloseResponse::Cancel => {
                 self.cancel_close();
                 CloseAction::Ignore
@@ -179,8 +211,9 @@ impl Lifecycle {
     /// document open; a failed save should cancel closing without calling this.
     /// The first document must be the one whose save completed, resolved by ID.
     pub fn saved(&mut self, intent: CloseIntent, documents: &[DocumentState]) -> CloseAction {
-        self.cancel_close();
+        self.prompt = None;
         if documents.first().is_some_and(|d| d.dirty) {
+            self.cancel_close();
             CloseAction::Blocked(CloseBlock::NewerEdits)
         } else {
             self.approve_close(intent, documents.first().map(|d| d.id), documents)
@@ -209,7 +242,11 @@ impl Lifecycle {
         }
         // Approval is provisional: the frontend keeps every document until the
         // complete close succeeds, so cancelling a later prompt loses no text.
-        if let Some(id) = id {
+        // Only discards waive dirty checks. A saved document can acquire new
+        // edits while later documents are still being written.
+        if let Some(id) = id
+            && documents.iter().any(|d| d.id == id && d.dirty)
+        {
             self.approved.insert(id);
         }
         self.closing = Some(intent);
@@ -217,6 +254,12 @@ impl Lifecycle {
             .iter()
             .find(|d| d.dirty && !self.approved.contains(&d.id))
         {
+            if self.save_remaining && !next.composing {
+                return CloseAction::Save {
+                    id: next.id,
+                    then: intent,
+                };
+            }
             return self.prompt(next);
         }
         self.cancel_close();

@@ -30,6 +30,16 @@ commands, panels, plugins, settings and the workspace root remain available.
 Command/Ctrl+W closes a buffer; Command/Ctrl+Shift+W explicitly closes the window.
 Recovery and Reload Window preserve an empty workspace and its next document ID.
 
+Save confirmations use an editor-owned modal that remains live as buffers change.
+Closing one dirty buffer offers **Save**, **Don't Save**, and **Cancel**. Closing
+or quitting the window with several dirty buffers also offers **Save All** and
+**Don't Save All**, applying to the remaining undecided documents. Save All writes
+those documents sequentially and asks for untitled destinations as needed. A save
+failure, disk conflict, newer unsaved edits, or cancelled destination picker stops
+closing. Don't Save All approves closing without writing; earlier discard choices
+remain provisional until the whole close succeeds, so cancelling retains every
+buffer and its text. Enter saves the current document; Escape cancels closing.
+
 Save As changes the existing document's destination without changing its ID,
 undo/redo history or selection. Its filename updates language detection. Saving
 captures an immutable text snapshot and checkpoint; edits made while writing

@@ -1,4 +1,5 @@
 mod buffers;
+mod closing;
 mod diagnostics;
 mod grid;
 mod icons;
@@ -226,6 +227,7 @@ impl Document {
     }
     fn busy(&self) -> bool {
         self.workspace_edit.is_some()
+            || self.lifecycle.prompted_document().is_some()
             || self.buffer.as_ref().is_some_and(|b| b.saving.is_some())
             || self.dialog.is_some()
             || self.reloading()
@@ -309,9 +311,6 @@ impl Document {
                     this.saving_as = false;
                 }
                 this.with_buffer(buffer_id, cx, |this, cx| {
-                    if then.is_some() {
-                        this.lifecycle.cancel_close();
-                    }
                     let _entered = save_trace.enter();
                     this.buffer.saving = None;
                     match result {
@@ -353,8 +352,14 @@ impl Document {
                                 this.close_action(action, cx);
                             }
                         }
-                        Ok(Err(error)) => this.notice(Some(format!("Save failed: {error}"))),
-                        Err(error) => this.notice(Some(format!("Save failed: {error}"))),
+                        Ok(Err(error)) => {
+                            this.lifecycle.cancel_close();
+                            this.notice(Some(format!("Save failed: {error}")));
+                        }
+                        Err(error) => {
+                            this.lifecycle.cancel_close();
+                            this.notice(Some(format!("Save failed: {error}")));
+                        }
                     }
                 });
                 this.title();
@@ -454,7 +459,6 @@ impl Document {
                     self.inactive.insert(next.id, next);
                     self.title();
                 }
-                self.show_close_dialog(cx);
             }
             CloseAction::Save { id, then } => {
                 self.with_buffer(id, cx, |this, cx| this.save(Some(then), cx))
@@ -466,9 +470,12 @@ impl Document {
             }
             CloseAction::Finish(intent) => {
                 let result = match intent {
-                    Intent::Close => {
-                        cx.close_window(self.window.as_ref().expect("native document window"))
-                    }
+                    Intent::Close => self
+                        .window
+                        .as_ref()
+                        .map_or(Err(rxui::ApplicationError::NoSourceWindow), |window| {
+                            cx.close_window(window)
+                        }),
                     Intent::Quit => cx.exit(),
                     Intent::Buffer => unreachable!(),
                 };
@@ -477,42 +484,6 @@ impl Document {
                 } else if let Some(recovery) = &self.recovery {
                     recovery.discard();
                 }
-            }
-        }
-    }
-
-    fn show_close_dialog(&mut self, cx: &mut Context<'_, Self>) {
-        use velk_core::lifecycle::CloseResponse;
-        let id = self.buffer.id;
-        let options = MessageDialog::new()
-            .parent(self.window.as_ref().expect("native document window"))
-            .title("Save changes?")
-            .description(format!(
-                "Save changes to ‘{}’ before closing?",
-                self.buffer.path.display()
-            ))
-            .level(MessageLevel::Warning)
-            .buttons(MessageButtons::YesNoCancel);
-        match cx.show_message(options, move |this, result, cx| {
-            this.dialog = None;
-            let response = match result {
-                Ok(MessageResponse::Yes) => CloseResponse::Save,
-                Ok(MessageResponse::No) => CloseResponse::Discard,
-                Ok(_) => CloseResponse::Cancel,
-                Err(error) => {
-                    this.lifecycle.cancel_close();
-                    this.notice(Some(format!("Cannot show save dialog: {error}")));
-                    return;
-                }
-            };
-            let documents = this.lifecycle_documents(cx);
-            let action = this.lifecycle.respond(id, response, &documents);
-            this.close_action(action, cx);
-        }) {
-            Ok(task) => self.dialog = Some(task),
-            Err(error) => {
-                self.lifecycle.cancel_close();
-                self.notice(Some(format!("Cannot show save dialog: {error}")));
             }
         }
     }
@@ -874,6 +845,7 @@ impl View for Document {
             .children(self.command_result_modal(cx))
             .children(plugin_menu)
             .children(settings_menu)
+            .children(self.close_confirmation(cx))
             .children(self.reloading().then(|| {
                 modal(label("Reloading window…").padding(20.))
                     .key("reload-progress")
