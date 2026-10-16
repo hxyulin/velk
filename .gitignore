@@ -21,3 +21,6 @@ __pycache__/
 
 # Agent-created worktrees are local checkout state.
 /.claude/worktrees/
+
+# Standalone diagnostic demo builds invoked from the repository root.
+/examples/diagnostics/target/
