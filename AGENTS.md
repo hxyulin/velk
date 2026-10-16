@@ -47,6 +47,9 @@ and any checks that could not run.
 
 ## YAGNI
 
+During early development, prefer correcting the design over compatibility. Do not
+add compatibility shims, deprecated aliases, or migrations unless requested.
+
 Implement the current requirement with the smallest coherent change. Avoid
 speculative features, configuration, dependencies, and abstractions for imagined
 future needs. Introduce shared machinery when concrete use cases justify it.

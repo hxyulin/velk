@@ -693,7 +693,10 @@ mod tests {
         let document = runtime.update(|cx| cx.new(|_| Document::empty(1)));
         runtime.update(|cx| {
             document.update(cx, |this, cx| {
-                let mut state = super::super::plugins::State::new(plugins.client());
+                let mut state = super::super::plugins::State::new(
+                    plugins.client(),
+                    velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
+                );
                 state.loaded.push(info.clone());
                 state.known.insert(info.id.clone(), info);
                 this.plugins = Some(state);

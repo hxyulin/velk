@@ -118,7 +118,9 @@ fn valid_name(s: &str) -> bool {
         })
 }
 
+#[cfg(feature = "markup")]
 pub struct RenderMarkdown;
+#[cfg(feature = "markup")]
 impl<P, F> Provider<P, F> for RenderMarkdown
 where
     P: Plugin,

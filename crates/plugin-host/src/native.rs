@@ -309,29 +309,29 @@ impl Manager {
             .describe()
     }
     pub fn render_markdown(&mut self, source: &str) -> Result<velk_markup::Document, String> {
+        self.render_markdown_with(crate::DEFAULT_MARKDOWN_PROVIDER, source)
+    }
+    pub fn render_markdown_with(
+        &mut self,
+        provider: &str,
+        source: &str,
+    ) -> Result<velk_markup::Document, String> {
+        if velk_plugin_contracts::parse_plugin_id(provider).is_none() {
+            return Err("invalid Markdown provider ID".into());
+        }
         if source.len() > MAX_INPUT_BYTES {
             return Err("Markdown input exceeds 1 MiB".into());
         }
-        let count = self
-            .plugins
-            .values()
-            .filter(|p| !p.destroyed && p.markdown.is_some())
-            .count();
-        if count > 1 {
-            return Err(
-                "multiple Markdown providers loaded; provider selection is not implemented yet"
-                    .into(),
-            );
-        }
         match self
             .plugins
-            .values_mut()
-            .find(|p| !p.destroyed && p.markdown.is_some())
+            .get_mut(provider)
+            .filter(|p| !p.destroyed && p.markdown.is_some())
         {
             Some(provider) => provider.render_markdown(source),
             None => Ok(velk_markup::Document::plain(source)),
         }
     }
+
     /// Load inactive plugins listed on disk. Already-active IDs are left alone,
     /// even when a newer build is staged. Unload explicitly before replacing one.
     /// # Safety
@@ -700,14 +700,24 @@ pub(super) mod test_provider {
         state.drops.fetch_add(1, Ordering::SeqCst);
         OK
     }
+    pub fn manager_for(control: Control, id: &str) -> Manager {
+        let mut manager = manager(control);
+        let mut plugin = manager
+            .plugins
+            .remove(crate::DEFAULT_MARKDOWN_PROVIDER)
+            .unwrap();
+        plugin.info.id = id.into();
+        manager.plugins.insert(id.into(), plugin);
+        manager
+    }
     pub fn manager(control: Control) -> Manager {
         let copy = tempfile::tempdir().unwrap();
         let mut manager = Manager::new(copy.path().into());
         manager.plugins.insert(
-            "test.markdown".into(),
+            crate::DEFAULT_MARKDOWN_PROVIDER.into(),
             Generation {
                 info: PluginInfo {
-                    id: "test.markdown".into(),
+                    id: crate::DEFAULT_MARKDOWN_PROVIDER.into(),
                     version: "1".into(),
                     generation: 1,
                     loaded_path: copy.path().into(),
@@ -740,7 +750,10 @@ pub(super) mod test_provider {
                 library: None,
             },
         );
-        let plugin = manager.plugins.get_mut("test.markdown").unwrap();
+        let plugin = manager
+            .plugins
+            .get_mut(crate::DEFAULT_MARKDOWN_PROVIDER)
+            .unwrap();
         plugin.markdown = Some(MarkupApi {
             context: plugin.instance.as_ptr(),
             render,
@@ -752,5 +765,82 @@ pub(super) mod test_provider {
 impl Drop for Manager {
     fn drop(&mut self) {
         self.unload_all();
+    }
+}
+
+#[cfg(test)]
+mod markdown_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    fn provider() -> (Manager, mpsc::SyncSender<()>, Arc<AtomicUsize>) {
+        let (entered, _) = mpsc::sync_channel(1);
+        let (release, resume) = mpsc::sync_channel(4);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let manager = test_provider::manager(test_provider::Control {
+            entered,
+            release: resume,
+            calls: calls.clone(),
+            drops: Default::default(),
+        });
+        (manager, release, calls)
+    }
+
+    #[test]
+    fn providers_coexist_and_selection_is_exact_with_literal_fallback() {
+        let (mut manager, release_default, default_calls) = provider();
+        let (mut other, release_other, other_calls) = provider();
+        let mut plugin = other
+            .plugins
+            .remove(crate::DEFAULT_MARKDOWN_PROVIDER)
+            .unwrap();
+        plugin.info.id = "community.markdown".into();
+        manager.plugins.insert(plugin.info.id.clone(), plugin);
+        release_default.send(()).unwrap();
+        let default = manager.render_markdown("**source**").unwrap();
+        assert!(default.runs[0].style.bold);
+        assert_eq!(default_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(other_calls.load(Ordering::SeqCst), 0);
+        release_other.send(()).unwrap();
+        assert!(
+            manager
+                .render_markdown_with("community.markdown", "source")
+                .unwrap()
+                .runs[0]
+                .style
+                .bold
+        );
+        assert_eq!(other_calls.load(Ordering::SeqCst), 1);
+        assert!(manager.render_markdown_with("invalid", "source").is_err());
+        assert_eq!(
+            manager
+                .render_markdown_with("missing.provider", "**source**")
+                .unwrap(),
+            velk_markup::Document::plain("**source**")
+        );
+        manager
+            .plugins
+            .get_mut("community.markdown")
+            .unwrap()
+            .markdown = None;
+        assert_eq!(
+            manager
+                .render_markdown_with("community.markdown", "source")
+                .unwrap(),
+            velk_markup::Document::plain("source")
+        );
+        manager.unload(crate::DEFAULT_MARKDOWN_PROVIDER);
+        assert_eq!(
+            manager.render_markdown("**source**").unwrap(),
+            velk_markup::Document::plain("**source**")
+        );
+        assert_eq!(
+            other_calls.load(Ordering::SeqCst),
+            1,
+            "unavailable selections never invoke another provider"
+        );
     }
 }

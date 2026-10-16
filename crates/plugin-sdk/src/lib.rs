@@ -1,13 +1,15 @@
 //! Safe author-facing lifecycle. Raw ABI operations are confined to `ffi`.
+//! The optional `markup` feature adds the standard styled-documentation adapter.
 pub use ffi::registry::{Provider, Registrar};
 pub use velk_diagnostics as diagnostics;
+#[cfg(feature = "markup")]
 pub use velk_markup as markup;
 pub use velk_plugin_api as api;
 pub use velk_semantic as semantic;
 pub mod hooks {
-    pub use crate::ffi::registry::{
-        Event, LanguageDefinition, RenderMarkdown, Request, SemanticSessions,
-    };
+    #[cfg(feature = "markup")]
+    pub use crate::ffi::registry::RenderMarkdown;
+    pub use crate::ffi::registry::{Event, LanguageDefinition, Request, SemanticSessions};
 }
 mod metadata;
 pub use velk_plugin_contracts as contracts;

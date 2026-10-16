@@ -18,6 +18,7 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_bar: Option<bool>,
     pub search_backend: String,
+    pub markdown_provider: String,
     /// Plugin IDs the user turned off; every other manifest plugin loads.
     pub disabled_plugins: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -34,6 +35,7 @@ impl Default for Preferences {
             status_bar: None,
             activity_bar: None,
             search_backend: velk_search::DEFAULT_BACKEND.into(),
+            markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
             disabled_plugins: Vec::new(),
             plugins: Default::default(),
             extra: Default::default(),
@@ -196,6 +198,14 @@ impl Preferences {
     }
     /// `None` removes the key, restoring a field's default.
     pub fn set(&mut self, key: &str, value: Option<Value>) -> Result<(), String> {
+        if key == "markdown_provider"
+            && value.as_ref().is_some_and(|v| {
+                v.as_str()
+                    .is_none_or(|id| velk_plugin_contracts::parse_plugin_id(id).is_none())
+            })
+        {
+            return Err("Markdown provider must be a valid plugin ID".into());
+        }
         if let Some((plugin, setting)) = plugin_key(key) {
             if let Some(value) = value {
                 self.plugins
@@ -342,6 +352,23 @@ fn search_backends(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, Str
     }
     ids.into_iter().map(|id| (id.clone(), id)).collect()
 }
+fn markdown_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    let mut choices = vec![(
+        velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
+        "CommonMark (bundled default)".into(),
+    )];
+    for plugin in plugins {
+        if plugin
+            .hooks
+            .iter()
+            .any(|h| h == velk_plugin_host::hook_name::MARKUP_HOOK)
+            && !choices.iter().any(|(id, _)| id == &plugin.id)
+        {
+            choices.push((plugin.id.clone(), plugin.metadata.name.clone()));
+        }
+    }
+    choices
+}
 pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::new(|| {
     vec![
     Setting {
@@ -383,6 +410,16 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         description: "Plugin that finds matches in the current buffer.".into(),
         category: Category::Search,
         control: Control::Choice(search_backends),
+    },
+    Setting {
+        plugin: None,
+        keywords: "documentation hover readme renderer".into(),
+        default: Value::Null,
+        key: "markdown_provider".into(),
+        title: "Markdown provider".into(),
+        description: "Plugin for README and hover documentation. Reload Window to apply. If unavailable, show source text.".into(),
+        category: Category::Plugins,
+        control: Control::Choice(markdown_providers),
     },
 ]
 });
@@ -600,6 +637,32 @@ mod tests {
             assert!(!preferences.is_modified(key));
         }
         assert_eq!(preferences.resolve_layout().0, Layout::QUIET);
+    }
+    #[test]
+    fn markdown_provider_validates_roundtrips_and_resets() {
+        let mut preferences = Preferences::default();
+        assert_eq!(
+            preferences.markdown_provider,
+            velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER
+        );
+        assert_eq!(markdown_providers(&[]).len(), 1);
+        preferences
+            .set("markdown_provider", Some("community.markdown".into()))
+            .unwrap();
+        assert!(preferences.is_modified("markdown_provider"));
+        let restored: Preferences =
+            serde_json::from_value(serde_json::to_value(&preferences).unwrap()).unwrap();
+        assert_eq!(restored.markdown_provider, "community.markdown");
+        for value in [Value::Bool(true), "invalid provider".into(), "".into()] {
+            assert!(preferences.set("markdown_provider", Some(value)).is_err());
+            assert_eq!(preferences.markdown_provider, "community.markdown");
+        }
+        preferences.set("markdown_provider", None).unwrap();
+        assert!(!preferences.is_modified("markdown_provider"));
+        assert_eq!(
+            preferences.markdown_provider,
+            velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER
+        );
     }
     #[test]
     fn disabled_plugins_roundtrip() {

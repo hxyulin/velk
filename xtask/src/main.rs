@@ -372,6 +372,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
 
 #[allow(unsafe_code)]
 fn markdown_smoke(output: &Path) -> Result<(), String> {
+    use velk_markup::Renderer;
     use velk_plugin_host::{Event, Manager, Runtime};
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     let spec = stage_plugin(
@@ -415,6 +416,12 @@ fn markdown_smoke(output: &Path) -> Result<(), String> {
             .iter()
             .any(|r| r.style.code && r.text.contains("let value = 42;"))
     );
+    assert_eq!(
+        manager
+            .render_markdown_with("community.missing", source)?
+            .text(),
+        source
+    );
     manager.unload_all();
     assert!(
         document.text().contains("Heading"),
@@ -428,6 +435,7 @@ fn markdown_smoke(output: &Path) -> Result<(), String> {
     // SAFETY: same trusted local artifacts, this time through the async endpoint.
     let runtime = unsafe { Runtime::start(directory.path().into())? };
     let client = runtime.client();
+    let renderer = client.markdown_renderer("velk.markdown");
     pollster::block_on(async {
         assert_eq!(
             client
@@ -438,7 +446,7 @@ fn markdown_smoke(output: &Path) -> Result<(), String> {
                 .loaded,
             1
         );
-        assert_eq!(client.render_markdown(source.into()).await?, document);
+        assert_eq!(renderer.render(source.into()).await?, document);
         assert_eq!(
             client
                 .unload("velk.markdown".into())?
@@ -448,7 +456,7 @@ fn markdown_smoke(output: &Path) -> Result<(), String> {
                 .loaded,
             0
         );
-        assert_eq!(client.render_markdown(source.into()).await?.text(), source);
+        assert_eq!(renderer.render(source.into()).await?.text(), source);
         assert_eq!(
             client
                 .load()?
@@ -458,7 +466,7 @@ fn markdown_smoke(output: &Path) -> Result<(), String> {
                 .loaded,
             1
         );
-        assert_eq!(client.render_markdown(source.into()).await?, document);
+        assert_eq!(renderer.render(source.into()).await?, document);
         Ok::<_, String>(())
     })?;
     println!(

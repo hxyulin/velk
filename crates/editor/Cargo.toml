@@ -19,6 +19,7 @@ path = "examples/widget-preview.rs"
 required-features = ["performance"]
 
 [dependencies]
+velk-plugin-contracts.workspace = true
 velk-editor-model.workspace = true
 velk-core.workspace = true
 async-channel = "2.5"

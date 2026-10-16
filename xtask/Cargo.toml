@@ -9,6 +9,7 @@ velk-panels.workspace = true
 velk-diagnostics = { workspace = true, features = ["collector"] }
 velk-search.workspace = true
 velk-semantic.workspace = true
+velk-markup.workspace = true
 ropey.workspace = true
 tokio = { version = "1.53.3", features = ["rt", "time", "macros"] }
 pollster = "0.4"

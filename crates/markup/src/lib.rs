@@ -1,6 +1,10 @@
-//! Styled-document model and host-facing async contract, independent of RXUI and LSP.
-//! The owned document is suitable for background work and caching. This Rust
-//! interface is an extension seam, not a stable dynamic-library ABI.
+//! Compact styled-text model for documentation, independent of RXUI and LSP.
+//!
+//! This is not a universal markup AST: block layout, embedded widgets, images,
+//! and arbitrary extensions require a richer model and a matching consumer.
+//! Providers for the standard documentation surfaces return these owned runs;
+//! community extensions can define their own contracts without this crate.
+//! The async Rust interface is host-side, not a stable dynamic-library ABI.
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Style {

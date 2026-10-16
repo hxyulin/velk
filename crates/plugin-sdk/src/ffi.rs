@@ -146,6 +146,7 @@ unsafe extern "C" fn describe<P: Plugin>(
         OK
     })
 }
+#[cfg(feature = "markup")]
 unsafe extern "C" fn render_markdown<P: Plugin, F>(
     instance: *mut c_void,
     source: *const u8,

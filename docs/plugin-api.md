@@ -107,14 +107,44 @@ these IDs do not confer resource or path restrictions.
 
 ## Markdown rendering
 
-The detail pane renders the README using the active Markdown provider, including
+The detail pane renders the README using the selected Markdown provider, including
 headings, bold, italic, monospace code, code blocks, lists and strikethrough.
 Links are styled as text; they do not open automatically. The bundled renderer
 shows HTML literally and preserves image alt text without fetching images.
-Disabling the Markdown provider falls back to the README's literal source.
+The bundled `velk.markdown` CommonMark plugin is the default, and can be disabled
+or replaced. Select another loaded provider under Settings > Markdown provider,
+or set `"markdown_provider": "community.markdown"` in user settings, then run
+Reload Window. This selection applies to both plugin READMEs and hover documentation.
+Multiple providers may coexist; only the selected ID handles requests. If that
+provider is unavailable, the host shows literal source rather than silently
+choosing another provider. Rendering errors also fall back to source in the UI.
 
 The list keeps the short plain-text summary instead of displaying Markdown source.
 There is no arbitrary CSS or HTML styling API; the host theme controls appearance.
+
+## Optional documentation model
+
+`velk-markup` is a compact styled-text contract for the editor's documentation
+surfaces, not a universal markup language model. It supports text runs with
+emphasis, code, heading levels and link destinations. Structural tables, images,
+custom block layout and interactive elements are outside this contract. The
+bundled provider flattens supported Markdown structures into those runs; the host
+controls visual styling.
+
+The SDK does not enable its `markup` feature by default. Plugins using the standard
+documentation model opt in explicitly:
+
+```toml
+velk-plugin-sdk = { path = "../../crates/plugin-sdk", features = ["markup"] }
+```
+
+This exposes `hooks::RenderMarkdown` and the `markup` re-export. Plugins that do
+not enable it have no SDK dependency on `velk-markup`. Community extensions can
+maintain their own model crate and versioned named request/event contracts using
+the generic registration APIs.
+Unknown contracts remain discoverable, but require a matching consumer and
+presentation adapter; the editor does not automatically render an arbitrary model.
+This opt-out does not change native plugin trust or provide a sandbox.
 
 ## Native wire contract and compatibility
 

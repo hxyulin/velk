@@ -9,6 +9,9 @@ use std::{
 };
 mod native;
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
+
+/// The bundled default; callers may select any compatible loaded provider.
+pub const DEFAULT_MARKDOWN_PROVIDER: &str = "velk.markdown";
 pub use velk_plugin_contracts::{Capability, PluginMetadata, settings};
 
 pub mod hook_kind {
@@ -100,6 +103,7 @@ enum Request {
         reply: async_channel::Sender<Result<Report, String>>,
     },
     Render {
+        provider: String,
         source: String,
         reply: async_channel::Sender<Result<velk_markup::Document, String>>,
     },
@@ -313,21 +317,48 @@ impl Client {
     ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
         self.request(Operation::Restart(id))
     }
+    /// Render with the bundled default provider.
     /// The returned future is local Rust scheduling, not a future across the ABI.
     /// Dropping it closes the result channel, allowing queued work to be skipped.
     pub async fn render_markdown(&self, source: String) -> Result<velk_markup::Document, String> {
+        self.render_markdown_with(DEFAULT_MARKDOWN_PROVIDER, source)
+            .await
+    }
+    /// Select by exact plugin ID. A missing, disabled, or incompatible provider
+    /// yields literal text; another loaded provider is never chosen implicitly.
+    pub async fn render_markdown_with(
+        &self,
+        provider: &str,
+        source: String,
+    ) -> Result<velk_markup::Document, String> {
+        if velk_plugin_contracts::parse_plugin_id(provider).is_none() {
+            return Err("invalid Markdown provider ID".into());
+        }
         if source.len() > velk_plugin_api::MAX_INPUT_BYTES {
             return Err("Markdown input exceeds 1 MiB".into());
         }
         let (reply, receive) = async_channel::bounded(1);
         self.sender
-            .try_send(Request::Render { source, reply })
+            .try_send(Request::Render {
+                provider: provider.into(),
+                source,
+                reply,
+            })
             .map_err(|e| format!("plugin queue unavailable: {e}"))?;
         receive
             .recv()
             .await
             .map_err(|_| "plugin worker stopped".to_string())?
     }
+    /// Bind a documentation renderer to a provider ID, following its current
+    /// loaded generation on each call. Different consumers can select independently.
+    pub fn markdown_renderer(&self, provider: impl Into<String>) -> MarkdownRenderer {
+        MarkdownRenderer {
+            client: self.clone(),
+            provider: provider.into(),
+        }
+    }
+
     fn request(
         &self,
         operation: Operation,
@@ -414,9 +445,9 @@ impl Runtime {
                             manager.drive_semantics();
                             continue;
                         }
-                        Request::Render { source, reply } => {
+                        Request::Render { provider, source, reply } => {
                             if !reply.is_closed() {
-                                let result = manager.render_markdown(&source);
+                                let result = manager.render_markdown_with(&provider, &source);
                                 let _ = reply.try_send(result);
                             }
                             manager.drive_semantics();
@@ -499,6 +530,24 @@ pub fn read_manifest(directory: &Path) -> Result<Manifest, String> {
     manifest.validate()?;
     Ok(manifest)
 }
+/// Host-side documentation renderer bound to one provider ID.
+#[derive(Clone)]
+pub struct MarkdownRenderer {
+    client: Client,
+    provider: String,
+}
+impl velk_markup::Renderer for MarkdownRenderer {
+    fn render(&self, source: String) -> velk_markup::RenderFuture {
+        let renderer = self.clone();
+        Box::pin(async move {
+            renderer
+                .client
+                .render_markdown_with(&renderer.provider, source)
+                .await
+        })
+    }
+}
+
 impl velk_markup::Renderer for Client {
     fn render(&self, source: String) -> velk_markup::RenderFuture {
         let client = self.clone();
@@ -558,13 +607,15 @@ mod tests {
     #[test]
     fn async_render_cancellation_and_unload_obey_call_lifetimes() {
         use std::{
-            future::Future,
             sync::Arc,
             sync::atomic::{AtomicUsize, Ordering},
             task::{Context, Poll, Waker},
             time::{Duration, Instant},
         };
-        for cancel_active in [false, true] {
+        for (cancel_active, provider) in [
+            (false, DEFAULT_MARKDOWN_PROVIDER),
+            (true, "community.markdown"),
+        ] {
             let (entered, entry) = mpsc::sync_channel(1);
             let (release, resume) = mpsc::sync_channel(1);
             let calls = Arc::new(AtomicUsize::new(0));
@@ -575,17 +626,21 @@ mod tests {
                 calls: calls.clone(),
                 drops: drops.clone(),
             };
-            let runtime = Runtime::spawn(move || native::test_provider::manager(control)).unwrap();
+            let runtime =
+                Runtime::spawn(move || native::test_provider::manager_for(control, provider))
+                    .unwrap();
             let client = runtime.client();
+            use velk_markup::Renderer;
+            let renderer = client.markdown_renderer(provider);
             let mut cx = Context::from_waker(Waker::noop());
-            let mut active = Box::pin(client.render_markdown("active".into()));
+            let mut active = renderer.render("active".into());
             assert!(active.as_mut().poll(&mut cx).is_pending());
             entry.recv_timeout(Duration::from_secs(2)).unwrap();
-            let mut cancelled = Box::pin(client.render_markdown("cancelled".into()));
+            let mut cancelled = renderer.render("cancelled".into());
             assert!(cancelled.as_mut().poll(&mut cx).is_pending());
             drop(cancelled);
             let unloaded = client.unload_all().unwrap();
-            let mut after = Box::pin(client.render_markdown("after".into()));
+            let mut after = renderer.render("after".into());
             assert!(after.as_mut().poll(&mut cx).is_pending());
             assert_eq!(drops.load(Ordering::SeqCst), 0);
             assert!(

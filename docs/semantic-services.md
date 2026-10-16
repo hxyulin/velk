@@ -27,8 +27,8 @@ Tables and their opaque contexts remain owned by the plugin instance; strings an
 results copied out are host-owned. Rust `Any` is used only inside the SDK's own
 library, never across the ABI. Names are unique within an instance; different
 plugins can provide the same operation, with adapter-specific selection rules.
-The existing Markdown conflict check and language-definition conflict check stay
-in effect.
+Markdown uses explicit provider selection; the language-definition conflict check
+remains in effect.
 
 The three built-in registrations are:
 
@@ -240,7 +240,7 @@ scrolling, IME activity, Escape, and outside clicks dismiss it. Hover does not m
 the source caret. No per-hover process or UI-thread parsing is introduced.
 
 Markdown hover responses are preferred over plaintext during LSP negotiation.
-The native `velk.markdown` plugin uses
+The bundled, replaceable default `velk.markdown` plugin uses
 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) to interpret
 Markdown into owned styled runs. `velk-markup` contains only the model and
 host-facing asynchronous interface; neither the editor nor the widget links the
@@ -254,7 +254,12 @@ with destinations preserved as data; activation is deferred. Images retain alt
 text without loading resources, and raw HTML is displayed literally. Plaintext
 responses and diagnostic text are never parsed as Markdown.
 
-Interpretation is submitted asynchronously through `velk_plugin_host::Client`.
+Interpretation is submitted asynchronously through a provider-bound
+`velk_plugin_host::MarkdownRenderer`, created by `Client::markdown_renderer(id)`.
+The editor captures the `markdown_provider` user setting when plugins are enabled;
+Reload Window applies changes consistently to READMEs and hover documentation.
+Other providers may remain loaded without competing for requests.
+`Client::render_markdown` remains a convenience method for the bundled default.
 A bounded host queue sends work to the plugin worker, which calls the optional
 Markdown request table synchronously. Input is borrowed for the call, and a
 single callback batch copies text/style/link data into host-owned runs before
@@ -267,9 +272,11 @@ blocking-pool job waiting on the plugin worker.
 
 The host can inject an `Arc<dyn velk_markup::Renderer>` with
 `enable_semantics_with_renderer`. Its Rust future is entirely host-side and never
-crosses the C ABI. With no provider loaded, requests return literal Markdown as
-plain text; provider/queue errors also use a literal fallback. Loading a provider
-restores formatting for subsequent requests. The parser is not retained as a
+crosses the C ABI. If the selected provider is unavailable, requests return literal
+Markdown as plain text; provider/queue errors also use a literal fallback in the UI.
+Loading the selected provider restores formatting for subsequent requests. A
+request resolves the selected ID's current generation and never selects another
+provider implicitly. The parser is not retained as a
 built-in fallback. See the README's local-plugin workflow for load/unload commands,
 ABI v1, limits, and the cooperative native-code lifecycle contract.
 

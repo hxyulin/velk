@@ -1,6 +1,6 @@
 [package]
 name = "velk-markup"
-description = "UI-independent Markdown presentation for Velk"
+description = "Compact styled documentation model and renderer contract"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

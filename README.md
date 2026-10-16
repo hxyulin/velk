@@ -115,7 +115,7 @@ The bundled pack contains:
 - `velk.files`: a lazy, watched workspace file tree.
 - `velk.search.literal`: Unicode-aware literal search in the active buffer.
 - `velk.terminal`: a terminal session with an owned PTY and Ghostty VT processing.
-- `velk.markdown`: CommonMark rendering for documentation surfaces.
+- `velk.markdown`: bundled, replaceable CommonMark provider for documentation surfaces.
 - `velk.lsp`: generic language-server transport and session management.
 - `velk.language-server.rust-analyzer`: the Rust language-server definition.
 
@@ -142,6 +142,12 @@ work.
 
 Velk is in early development at **0.0.0-dev**. Expect behavior and API changes;
 there are no stable application releases or compatibility guarantees yet.
+We prioritize correcting the design over preserving early decisions. Breaking
+changes to APIs, plugin contracts, configuration, and storage formats are allowed;
+we do not add compatibility shims, deprecated aliases, or migration machinery just
+to preserve experimental behavior. Update the host, SDK, and bundled plugins
+together when their contracts change.
+
 macOS is the primary development environment. Other platforms are not yet
 release-tested.
 

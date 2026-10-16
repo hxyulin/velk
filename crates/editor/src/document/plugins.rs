@@ -11,6 +11,7 @@ pub(super) enum Operation {
 
 pub(super) struct State {
     pub(super) client: Client,
+    markdown_provider: String,
     task: Option<Task>,
     pub status: String,
     pub(super) loaded: Vec<velk_plugin_host::PluginInfo>,
@@ -24,9 +25,10 @@ pub(super) struct State {
     pub(super) failed: std::collections::BTreeMap<String, String>,
 }
 impl State {
-    pub(super) fn new(client: Client) -> Self {
+    pub(super) fn new(client: Client, markdown_provider: String) -> Self {
         Self {
             client,
+            markdown_provider,
             task: None,
             status: String::new(),
             loaded: Vec::new(),
@@ -48,7 +50,10 @@ impl Document {
         states: Vec<(String, Vec<u8>)>,
         cx: &mut Context<'_, Self>,
     ) {
-        self.plugins = Some(State::new(client));
+        self.plugins = Some(State::new(
+            client,
+            self.shell.store.preferences.markdown_provider.clone(),
+        ));
         self.plugin_operation(
             selected.map_or(Operation::Load, |ids| Operation::LoadSelected(ids, states)),
             cx,
@@ -61,8 +66,11 @@ impl Document {
                     as std::sync::Arc<dyn velk_markup::Renderer>
             },
             |state| {
-                std::sync::Arc::new(state.client.clone())
-                    as std::sync::Arc<dyn velk_markup::Renderer>
+                std::sync::Arc::new(
+                    state
+                        .client
+                        .markdown_renderer(state.markdown_provider.clone()),
+                ) as std::sync::Arc<dyn velk_markup::Renderer>
             },
         )
     }
@@ -118,7 +126,9 @@ impl Document {
             "Unloading plugins…"
         }
         .into();
-        let renderer = state.client.clone();
+        let renderer = state
+            .client
+            .markdown_renderer(state.markdown_provider.clone());
         match cx.try_spawn(
             async move {
                 use velk_markup::Renderer;
