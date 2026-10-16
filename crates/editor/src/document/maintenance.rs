@@ -102,6 +102,7 @@ impl Document {
         });
     }
     pub fn start_document_maintenance(&mut self, cx: &mut Context<'_, Self>) {
+        self.reload_keybindings(cx);
         self.arm_maintenance(cx);
     }
     pub fn recovery_notice(&mut self, notice: String) {
@@ -121,6 +122,7 @@ impl Document {
             if let Some(error) = this.recovery.as_ref().and_then(|r| r.error()) {
                 this.notice(Some(format!("Recovery unavailable: {error}")));
             }
+            this.refresh_keybindings(cx);
             this.check_disk(cx);
             this.arm_maintenance(cx);
         }) {

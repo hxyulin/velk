@@ -3110,7 +3110,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "rxui"
 version = "0.2.0-dev.0"
-source = "git+https://github.com/hxyulin/rxui?rev=aecda1e2840b72686a38a45f61382e3fe75a67b1#aecda1e2840b72686a38a45f61382e3fe75a67b1"
+source = "git+https://github.com/hxyulin/rxui?rev=85317cc69a095c6f4550f504580c7ba65113c082#85317cc69a095c6f4550f504580c7ba65113c082"
 dependencies = [
  "accesskit",
  "accesskit_winit",

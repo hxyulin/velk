@@ -61,7 +61,7 @@ so their evaluation is independent of the size of selected lines.
 with `handled: false` retains state while allowing ordinary input to continue.
 Only keymap requests may return input responses; they cannot return text proposals.
 
-State contains a status label, at most 4 KiB of opaque provider data, and flags to
+State contains a stable `mode` ID, a status label, at most 4 KiB of opaque provider data, and flags to
 capture text and clamp the caret to line characters. A response contains at most
 16 actions, with counts limited to 1–10,000. The editor model applies motions,
 line/character deletion, line insertion, undo, and redo to the authoritative Core
@@ -70,6 +70,11 @@ Whole-line or counted-character deletions form one undo step. Undo and redo clea
 pair tracking. Key interpretation, counts, prefixes, and mode transitions stay in
 the plugin. The status label is visible in the normal status bar, or in the notice
 area when that bar is hidden.
+
+The mode ID uses at most 64 lowercase ASCII letters, digits, underscores, or
+hyphens. An empty ID leaves the mode unspecified; the host uses `insert` for
+non-capturing input and `command` for capturing input. User [keybindings](keybindings.md)
+match this ID rather than the display label, which may include counts or prefixes.
 
 State is local to each buffer, reset when its provider is replaced or deselected,
 and is not serialized into recovery data. Unloaded provider leases decline and

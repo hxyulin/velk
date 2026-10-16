@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
+    /// Stable provider-defined mode ID for keybinding contexts; empty means unspecified.
+    pub mode: String,
     pub label: String,
     /// Opaque provider data; never shared between buffers or persisted across restarts.
     pub data: String,
@@ -16,7 +18,12 @@ pub struct State {
 }
 impl State {
     pub fn validate(&self) -> Result<(), String> {
-        if self.label.len() > 64
+        if self.mode.len() > 64
+            || self
+                .mode
+                .chars()
+                .any(|c| !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '_' && c != '-')
+            || self.label.len() > 64
             || self.label.chars().any(char::is_control)
             || self.data.len() > 4096
             || self.control_keys.len() > 8

@@ -10,6 +10,12 @@ of two handlers. Identity includes the owning plugin ID, so two plugins may use
 the same local command ID. Declarations are copied into plugin metadata and
 validated during load. Unloading a plugin removes its commands.
 
+User [keybindings](keybindings.md) invoke these same declarations using
+`plugin-id:command-id`. A binding can supply a string `input` to bypass a declared
+prompt; ordinary invocation retains the prompt. Pickers keep their interactive
+query flow and reject fixed input. Keybindings retain the existing generation,
+capability, availability, and revision checks.
+
 ## Plugin request handlers
 
 Use a named handler for an action performed by the plugin itself:

@@ -23,14 +23,15 @@ pub(super) struct State {
 
 #[derive(Clone)]
 pub(super) struct Entry {
-    id: String,
-    label: String,
-    shortcut: String,
-    enabled: bool,
+    pub(super) id: String,
+    pub(super) label: String,
+    pub(super) shortcut: String,
+    pub(super) enabled: bool,
     invoke: Invocation,
 }
 #[derive(Clone)]
 enum Invocation {
+    Edit(super::keybindings::Edit),
     Host(Rc<dyn Fn(&mut AppContext<'_>)>),
     Plugin(super::plugin_commands::Invoke),
 }
@@ -62,6 +63,25 @@ impl Entry {
         }
     }
 
+    pub fn editing(edit: super::keybindings::Edit, enabled: bool) -> Self {
+        Self {
+            id: edit.id().into(),
+            label: edit.title().into(),
+            shortcut: String::new(),
+            enabled,
+            invoke: Invocation::Edit(edit),
+        }
+    }
+    pub fn matches_id(&self, id: &str) -> bool {
+        self.id == id
+            || matches!(&self.invoke, Invocation::Plugin(invocation) if invocation.command.id == id)
+    }
+    pub fn plugin_id(&self) -> Option<&str> {
+        match &self.invoke {
+            Invocation::Plugin(invocation) => Some(&invocation.command.id),
+            _ => None,
+        }
+    }
     pub fn new<C: Command>(
         id: &'static str,
         action: CommandAction<C>,
@@ -132,16 +152,36 @@ impl Document {
         }
     }
     fn execute_palette(&mut self, entry: &Entry, cx: &mut Context<'_, Self>) {
+        self.execute_bound_entry(entry, None, cx);
+    }
+    pub(super) fn execute_bound_entry(
+        &mut self,
+        entry: &Entry,
+        input: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
         if !entry.enabled {
             return;
         }
-        self.set_palette(false, cx);
+        if self.palette.open {
+            self.set_palette(false, cx);
+        }
         let invoke = match entry.invoke.clone() {
-            Invocation::Plugin(invocation) => {
-                self.invoke_plugin_command(invocation, cx);
+            Invocation::Edit(edit) => {
+                self.execute_bound_edit(edit, input, cx);
                 return;
             }
-            Invocation::Host(invoke) => invoke,
+            Invocation::Plugin(invocation) => {
+                self.invoke_plugin_command_with_input(invocation, input, cx);
+                return;
+            }
+            Invocation::Host(invoke) => {
+                if input.is_some() {
+                    self.notice(Some("This command does not accept fixed input".into()));
+                    return;
+                }
+                invoke
+            }
         };
         // Release the Document borrow before invoking its shared command action.
         // No UI event can interleave before this deferred update is processed.
@@ -456,7 +496,7 @@ mod tests {
         );
         assert!(
             ui.elements()
-                .any(|e| e.key == Some(&rxui::Key::from("velk.diagnostics.marker")))
+                .any(|e| e.key == Some(&rxui::Key::from("velk.keybindings.commands")))
         );
         key(
             &mut ui,

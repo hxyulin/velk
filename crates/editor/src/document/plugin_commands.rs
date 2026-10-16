@@ -209,6 +209,14 @@ impl Document {
         actions
     }
     pub(super) fn invoke_plugin_command(&mut self, invocation: Invoke, cx: &mut Context<'_, Self>) {
+        self.invoke_plugin_command_with_input(invocation, None, cx);
+    }
+    pub(super) fn invoke_plugin_command_with_input(
+        &mut self,
+        invocation: Invoke,
+        input: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
         if !self.command_available(cx)
             || self.plugins.as_ref().is_some_and(|p| p.task.is_some())
             || self.command_task.is_some()
@@ -219,10 +227,14 @@ impl Document {
         let mut guard = self.edit_guard(cx);
         guard.owner = Some((invocation.plugin.clone(), invocation.generation));
         if matches!(invocation.command.handler, Handler::Picker { .. }) {
+            if input.is_some() {
+                self.notice(Some("Picker commands do not accept fixed input".into()));
+                return;
+            }
             self.open_picker(invocation, guard, cx);
             return;
         }
-        if invocation.command.input.is_some() {
+        if invocation.command.input.is_some() && input.is_none() {
             self.command_result = Some(ResultView::Prompt {
                 invocation,
                 guard,
@@ -230,7 +242,7 @@ impl Document {
             });
             return;
         }
-        self.execute_plugin_command(invocation, None, guard, cx);
+        self.execute_plugin_command(invocation, input, guard, cx);
     }
     fn execute_plugin_command(
         &mut self,
@@ -1194,8 +1206,10 @@ mod edit_interaction_tests {
             },
         )
         .unwrap();
+        let completion = session.try_next();
         assert!(
-            matches!(session.try_next(),Some(velk_semantic::Input::Command {input:None,payload,..}) if payload["operation"]=="complete")
+            matches!(&completion, Some(velk_semantic::Input::Command {input:None,payload,..}) if payload["operation"]=="complete"),
+            "unexpected input: {completion:?}"
         );
         runtime.update(|cx| {
             assert_eq!(
@@ -1210,5 +1224,66 @@ mod edit_interaction_tests {
                 "fn old() {}"
             )
         });
+        session.events().publish(velk_semantic::Event::Command {
+            request: runtime.update(|cx| {
+                document
+                    .read(cx)
+                    .buffer
+                    .semantic
+                    .as_ref()
+                    .unwrap()
+                    .command
+                    .as_ref()
+                    .unwrap()
+                    .request
+            }),
+            result: Ok(Outcome::Message {
+                text: String::new(),
+            }),
+        });
+        let _ = pollster::block_on(service.events.recv()).unwrap();
+        runtime.update(|cx| {
+            document.update(cx, |d, _| {
+                d.buffer.semantic.as_mut().unwrap().command = None
+            })
+        });
+        runtime.update(|cx| document.update(cx, |d, cx| {
+            d.keybindings.bindings = velk_commands::keybindings::Bindings::parse(
+                br#"{"bindings":[{"keys":"F9","command":"test.commands:test.rename","input":"fixed-name"}]}"#
+            ).unwrap();
+            d.sync_buffer_keybindings(cx);
+        }));
+        ui.prepare(&mut runtime, [900., 600.], &mut Measure)
+            .unwrap();
+        ui.key(
+            &mut runtime,
+            KeyEvent {
+                key: KeyboardKey::Other("F9".into()),
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(session.try_next(), Some(velk_semantic::Input::Command { input: Some(input), .. }) if input == "fixed-name")
+        );
+        runtime.update(|cx| {
+            document.update(cx, |d, _| {
+                assert!(
+                    d.command_result.is_none(),
+                    "fixed input must bypass the prompt"
+                );
+                d.buffer.semantic.as_mut().unwrap().command = None;
+            })
+        });
+        ui.prepare(&mut runtime, [900., 600.], &mut Measure)
+            .unwrap();
+        let source = ui
+            .elements()
+            .find(|e| e.key == Some(&rxui::Key::from("editor-surface")))
+            .unwrap()
+            .id;
+        ui.focus(source);
     }
 }

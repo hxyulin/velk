@@ -1,4 +1,5 @@
 //! Command data shared by providers, semantic services, and presentation adapters.
+pub mod keybindings;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

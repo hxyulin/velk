@@ -39,6 +39,7 @@ pub use velk_syntax::Language;
 pub struct Editor {
     buffer: Buffer,
     editing: velk_editor_model::editing::Session,
+    reserved_shortcuts: Vec<Shortcut>,
     syntax_worker: Option<Arc<velk_syntax::Worker>>,
     syntax_revision: u64,
     syntax_demand: Option<syntax::Demand>,
@@ -55,10 +56,33 @@ pub struct Editor {
     hover: hover::State,
 }
 
+struct ReservedShortcut;
+impl Command for ReservedShortcut {}
 struct KeymapShortcut<const SLOT: usize>;
 impl<const SLOT: usize> Command for KeymapShortcut<SLOT> {}
 
 impl Editor {
+    fn default_shortcut<C: Command>(
+        &self,
+        action: CommandAction<C>,
+        shortcut: Shortcut,
+    ) -> CommandAction<C> {
+        if self.reserved_shortcuts.contains(&shortcut) {
+            action
+        } else {
+            action.shortcut(shortcut)
+        }
+    }
+
+    /// Reserve host-owned bindings ahead of editing commands in native menu lookup.
+    /// The host's capture listener executes them; this action only blocks accelerators.
+    pub fn set_reserved_shortcuts(&mut self, shortcuts: Vec<Shortcut>) -> bool {
+        if self.reserved_shortcuts == shortcuts {
+            return false;
+        }
+        self.reserved_shortcuts = shortcuts;
+        true
+    }
     pub fn set_editing_providers(
         &mut self,
         providers: std::collections::BTreeMap<velk_editing::Role, Arc<dyn velk_editing::Provider>>,
@@ -76,6 +100,19 @@ impl Editor {
     }
     pub fn selected_text(&self) -> String {
         self.editing.selected_text(&self.buffer)
+    }
+    /// Stable keymap mode, independent of status labels and pending operator text.
+    pub fn input_mode_id(&self) -> &str {
+        let state = self.editing.input_state();
+        if state.mode.is_empty() {
+            if state.capture_text {
+                "command"
+            } else {
+                "insert"
+            }
+        } else {
+            &state.mode
+        }
     }
     pub fn input_mode(&self) -> Option<&str> {
         let label = &self.editing.input_state().label;
@@ -106,12 +143,19 @@ impl Editor {
                 ..Default::default()
             },
         );
+        if self.reserved_shortcuts.contains(&shortcut) {
+            return surface;
+        }
         surface.on_command(
             cx.command(KeymapShortcut::<SLOT>, move |this, _, _| {
                 this.keymap(&key, true, false, false, false);
             })
             .shortcut(shortcut),
         )
+    }
+    /// Apply a plugin editing intent. False asks the caller to use its ordinary fallback.
+    pub fn apply_editing_intent(&mut self, intent: velk_editing::Intent) -> bool {
+        self.interactive(intent)
     }
     fn interactive(&mut self, intent: velk_editing::Intent) -> bool {
         let preserve_selection = matches!(
@@ -551,14 +595,18 @@ impl View for Editor {
             .as_ref()
             .and_then(|snapshot| syntax::SyntaxView::new(snapshot.clone(), &self.buffer));
         let ime_geometry = self.geometry.clone();
+        let mut reserved = cx.command(ReservedShortcut, |_, _, _| {});
+        for shortcut in &self.reserved_shortcuts {
+            reserved = reserved.shortcut(shortcut.clone());
+        }
         let copy = cx
             .command(commands::Copy, |this, _, cx| {
                 if let Err(error) = cx.write_clipboard_text(this.selected_text()) {
                     eprintln!("Velk clipboard: {error}");
                 }
             })
-            .enabled(self.editing.has_selection(&self.buffer))
-            .shortcut(Shortcut::primary("c"));
+            .enabled(self.editing.has_selection(&self.buffer));
+        let copy = self.default_shortcut(copy, Shortcut::primary("c"));
         let cut = cx
             .command(commands::Cut, |this, _, cx| {
                 #[cfg(any(test, feature = "performance"))]
@@ -573,8 +621,8 @@ impl View for Editor {
                     Err(error) => eprintln!("Velk clipboard: {error}"),
                 }
             })
-            .enabled(self.editing.has_selection(&self.buffer) && self.composition.is_none())
-            .shortcut(Shortcut::primary("x"));
+            .enabled(self.editing.has_selection(&self.buffer) && self.composition.is_none());
+        let cut = self.default_shortcut(cut, Shortcut::primary("x"));
         let undo = cx
             .command(commands::Undo, |this, _, _| {
                 #[cfg(any(test, feature = "performance"))]
@@ -585,8 +633,8 @@ impl View for Editor {
                 this.editing.clear_pairs();
                 this.execute(EditCommand::Undo);
             })
-            .enabled(self.buffer.can_undo() && self.composition.is_none())
-            .shortcut(Shortcut::primary("z"));
+            .enabled(self.buffer.can_undo() && self.composition.is_none());
+        let undo = self.default_shortcut(undo, Shortcut::primary("z"));
         let redo = cx
             .command(commands::Redo, |this, _, _| {
                 #[cfg(any(test, feature = "performance"))]
@@ -597,9 +645,9 @@ impl View for Editor {
                 this.editing.clear_pairs();
                 this.execute(EditCommand::Redo);
             })
-            .enabled(self.buffer.can_redo() && self.composition.is_none())
-            .shortcut(Shortcut::primary("z").shift())
-            .shortcut(Shortcut::primary("y"));
+            .enabled(self.buffer.can_redo() && self.composition.is_none());
+        let redo = self.default_shortcut(redo, Shortcut::primary("z").shift());
+        let redo = self.default_shortcut(redo, Shortcut::primary("y"));
         let select_all = cx
             .command(commands::SelectAll, |this, _, _| {
                 #[cfg(any(test, feature = "performance"))]
@@ -608,8 +656,8 @@ impl View for Editor {
                 }
                 this.execute(EditCommand::SelectAll);
             })
-            .enabled(self.composition.is_none())
-            .shortcut(Shortcut::primary("a"));
+            .enabled(self.composition.is_none());
+        let select_all = self.default_shortcut(select_all, Shortcut::primary("a"));
         let mut surface = rxui::custom(viewport::ViewportSurface(Surface {
             rope: self.buffer.text().clone(),
             revision: self.buffer.revision(),
@@ -694,11 +742,7 @@ impl View for Editor {
             this.reveal_caret = false;
             event.prevent_default();
         }))
-        .on_command(copy)
-        .on_command(cut)
-        .on_command(undo)
-        .on_command(redo)
-        .on_command(select_all);
+        .on_command(reserved.clone());
         // RXUI resolves commands by type, so each declared shortcut has its own slot.
         macro_rules! bind_keymap { ($($slot:literal),*) => { $(surface = self.bind_keymap_shortcut::<$slot>(surface, cx);)* }; }
         bind_keymap!(0, 1, 2, 3, 4, 5, 6, 7);
@@ -706,7 +750,16 @@ impl View for Editor {
         // on_text_insert with TextInsertSource::Paste.
         // A container root keeps native input and preparation on the same
         // path as RXUI's built-in editor examples.
-        let mut root = column().fill_width().fill_height().child(surface);
+        let mut root = column()
+            .fill_width()
+            .fill_height()
+            .on_command(reserved)
+            .on_command(copy)
+            .on_command(cut)
+            .on_command(undo)
+            .on_command(redo)
+            .on_command(select_all)
+            .child(surface);
         if let Some((anchor, card)) = self.hover_card() {
             root = root.child(
                 popover(

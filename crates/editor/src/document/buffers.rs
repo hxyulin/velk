@@ -113,9 +113,11 @@ impl BufferState {
                         );
                     }
                     this.buffer.observed_revision = revision;
+                    let bindings_changed = this.sync_buffer_keybindings(cx);
                     let semantic_changed = this.sync_semantics(cx);
                     let search_changed = this.sync_search(cx);
-                    changed = this.buffer.dirty != dirty
+                    changed = bindings_changed
+                        || this.buffer.dirty != dirty
                         || (!this.background_buffer && (semantic_changed || search_changed));
                     this.buffer.dirty = dirty;
                 });

@@ -56,6 +56,8 @@ the terminal plugin is disabled in this example workspace.
 
 - **Native editing:** Unicode and grapheme-aware navigation, IME input,
   selection, clipboard operations, undo/redo, and virtualized text rendering.
+- **Configurable shortcuts:** text-file keybindings, chords, Vim mode filters, and
+  direct invocation of host and plugin commands.
 - **Plugin-provided editing:** Tab / Shift+Tab indentation, aligned newlines, matching brackets, and selection wrapping.
 - **Documents that survive interruptions:** untitled and file-backed buffers,
   Save As, Save All, atomic file replacement, disk-change conflict protection,
@@ -227,6 +229,7 @@ Current limitations include:
   [window reloading](docs/reloading.md)
 - [Plugin API and shared contracts](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
   [plugin settings](docs/plugin-settings.md)
+- [Keybindings and command configuration](docs/keybindings.md)
 - [Interactive editing, indentation, and autopairs](docs/interactive-editing.md)
 - [Workspace and buffer host services](docs/host-services.md)
 - [Buffer events and autosave](docs/buffer-events.md), [Quick Open and workspace search](docs/project-tools.md)

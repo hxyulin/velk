@@ -5,6 +5,7 @@ mod diagnostics;
 mod grid;
 mod host_services;
 mod icons;
+mod keybindings;
 mod maintenance;
 mod navigation;
 mod palette;
@@ -77,6 +78,7 @@ pub struct Document {
     recovery_key: Option<maintenance::RecoveryKey>,
     maintenance: Option<Task>,
     disk_check: Option<Task>,
+    keybindings: keybindings::State,
     restore_focus_pending: bool,
     restore_focus_action: std::cell::RefCell<Option<rxui::CommandAction<reload::RestoreFocus>>>,
     dialog: Option<DialogTask>,
@@ -196,6 +198,7 @@ impl Document {
             recovery_key: None,
             maintenance: None,
             disk_check: None,
+            keybindings: Default::default(),
             restore_focus_pending: false,
             restore_focus_action: Default::default(),
             dialog: None,
@@ -738,99 +741,132 @@ impl View for Document {
                     ..Default::default()
                 },
             ));
-        let (toggle_palette, palette) = self.command_palette(
-            cx,
-            if self.palette.open {
-                let mut entries = vec![
-                    palette::Entry::new("velk.navigation.back", back.clone(), "Alt+Left"),
-                    palette::Entry::new("velk.navigation.forward", forward.clone(), "Alt+Right"),
-                    palette::Entry::new("velk.file.save", save.clone(), palette::primary("S")),
-                    palette::Entry::new("velk.file.new", new_file.clone(), palette::primary("N")),
-                    palette::Entry::new(
-                        "velk.file.save-as",
-                        save_as.clone(),
-                        palette::primary("Shift+S"),
-                    ),
-                    palette::Entry::new(
-                        "velk.file.save-all",
-                        save_all.clone(),
-                        palette::primary("Alt+S"),
-                    ),
-                    palette::Entry::new("velk.file.open", open.clone(), palette::primary("O")),
-                    palette::Entry::new(
-                        "velk.buffer.close",
-                        close_buffer.clone(),
-                        palette::primary("W"),
-                    ),
-                    palette::Entry::new("velk.buffer.next", next_buffer.clone(), "Ctrl+Tab"),
-                    palette::Entry::new(
-                        "velk.buffer.previous",
-                        previous_buffer.clone(),
-                        "Ctrl+Shift+Tab",
-                    ),
-                    palette::Entry::new("velk.search.find", find.clone(), palette::primary("F")),
-                    palette::Entry::new(
-                        "velk.settings.open",
-                        toggle_settings.clone(),
-                        palette::primary(","),
-                    ),
-                    palette::Entry::new(
-                        "velk.plugins.open",
-                        toggle_plugins.clone().label("Plugins"),
-                        "F4",
-                    ),
-                    palette::Entry::new("velk.editor.hover", hover.clone(), "F1"),
-                    palette::Entry::new(
-                        "velk.plugins.load",
-                        load_plugins.clone().label("Plugins: Load from disk"),
-                        "",
-                    ),
-                    palette::Entry::new(
-                        "velk.plugins.unload-all",
-                        unload_plugins.clone().label("Plugins: Unload all"),
-                        "",
-                    ),
-                    palette::Entry::new("velk.window.close", close_window.clone(), ""),
-                    palette::Entry::new("velk.app.quit", quit.clone(), palette::primary("Q")),
-                    palette::Entry::new("velk.plugins.restart", restart_plugins.clone(), ""),
-                    palette::Entry::new(
-                        "velk.window.reload",
-                        reload_window.clone(),
-                        if cfg!(target_os = "macos") {
-                            "⌘⌥R"
-                        } else {
-                            "Ctrl+Alt+R"
-                        },
-                    ),
-                    palette::Entry::new(
-                        "velk.panels.toggle",
-                        toggle_panels.clone(),
-                        palette::primary("B"),
-                    ),
-                    palette::Entry::new(
-                        "velk.folder.open",
-                        open_folder.clone(),
-                        palette::primary("Shift+O"),
-                    ),
-                    palette::Entry::new("velk.panels.refresh", refresh_panels.clone(), ""),
-                    palette::Entry::new("velk.terminal.toggle", toggle_terminal.clone(), "Ctrl+`"),
-                    palette::Entry::new("velk.diagnostics.start", trace_start.clone(), ""),
-                    palette::Entry::new("velk.diagnostics.stop", trace_stop.clone(), ""),
-                    palette::Entry::new("velk.diagnostics.marker", trace_marker.clone(), ""),
-                    palette::Entry::new("velk.layout.quiet", layout_quiet.clone(), ""),
-                    palette::Entry::new("velk.layout.rail", layout_rail.clone(), ""),
-                    palette::Entry::new("velk.layout.tiled", layout_tiled.clone(), ""),
-                ];
-                entries.extend(self.plugin_command_entries(cx));
-                entries
-            } else {
-                Vec::new()
-            },
-        );
+        let mut entries = vec![
+            palette::Entry::new("velk.navigation.back", back.clone(), "Alt+Left"),
+            palette::Entry::new("velk.navigation.forward", forward.clone(), "Alt+Right"),
+            palette::Entry::new("velk.file.save", save.clone(), palette::primary("S")),
+            palette::Entry::new("velk.file.new", new_file.clone(), palette::primary("N")),
+            palette::Entry::new(
+                "velk.file.save-as",
+                save_as.clone(),
+                palette::primary("Shift+S"),
+            ),
+            palette::Entry::new(
+                "velk.file.save-all",
+                save_all.clone(),
+                palette::primary("Alt+S"),
+            ),
+            palette::Entry::new("velk.file.open", open.clone(), palette::primary("O")),
+            palette::Entry::new(
+                "velk.buffer.close",
+                close_buffer.clone(),
+                palette::primary("W"),
+            ),
+            palette::Entry::new("velk.buffer.next", next_buffer.clone(), "Ctrl+Tab"),
+            palette::Entry::new(
+                "velk.buffer.previous",
+                previous_buffer.clone(),
+                "Ctrl+Shift+Tab",
+            ),
+            palette::Entry::new("velk.search.find", find.clone(), palette::primary("F")),
+            palette::Entry::new(
+                "velk.settings.open",
+                toggle_settings.clone(),
+                palette::primary(","),
+            ),
+            palette::Entry::new(
+                "velk.plugins.open",
+                toggle_plugins.clone().label("Plugins"),
+                "F4",
+            ),
+            palette::Entry::new("velk.editor.hover", hover.clone(), "F1"),
+            palette::Entry::new(
+                "velk.plugins.load",
+                load_plugins.clone().label("Plugins: Load from disk"),
+                "",
+            ),
+            palette::Entry::new(
+                "velk.plugins.unload-all",
+                unload_plugins.clone().label("Plugins: Unload all"),
+                "",
+            ),
+            palette::Entry::new("velk.window.close", close_window.clone(), ""),
+            palette::Entry::new("velk.app.quit", quit.clone(), palette::primary("Q")),
+            palette::Entry::new("velk.plugins.restart", restart_plugins.clone(), ""),
+            palette::Entry::new(
+                "velk.window.reload",
+                reload_window.clone(),
+                if cfg!(target_os = "macos") {
+                    "⌘⌥R"
+                } else {
+                    "Ctrl+Alt+R"
+                },
+            ),
+            palette::Entry::new(
+                "velk.panels.toggle",
+                toggle_panels.clone(),
+                palette::primary("B"),
+            ),
+            palette::Entry::new(
+                "velk.folder.open",
+                open_folder.clone(),
+                palette::primary("Shift+O"),
+            ),
+            palette::Entry::new("velk.panels.refresh", refresh_panels.clone(), ""),
+            palette::Entry::new("velk.terminal.toggle", toggle_terminal.clone(), "Ctrl+`"),
+            palette::Entry::new("velk.diagnostics.start", trace_start.clone(), ""),
+            palette::Entry::new("velk.diagnostics.stop", trace_stop.clone(), ""),
+            palette::Entry::new("velk.diagnostics.marker", trace_marker.clone(), ""),
+            palette::Entry::new("velk.layout.quiet", layout_quiet.clone(), ""),
+            palette::Entry::new("velk.layout.rail", layout_rail.clone(), ""),
+            palette::Entry::new("velk.layout.tiled", layout_tiled.clone(), ""),
+        ];
+        entries.extend(self.plugin_command_entries(cx));
+        entries.extend(self.editing_command_entries(cx));
+        let (open_bindings, reload_bindings, show_commands) = self.keybinding_actions(cx);
+        entries.extend([
+            palette::Entry::new("velk.keybindings.open", open_bindings.clone(), ""),
+            palette::Entry::new("velk.keybindings.reload", reload_bindings.clone(), ""),
+            palette::Entry::new("velk.keybindings.commands", show_commands.clone(), ""),
+        ]);
+        self.decorate_binding_entries(&mut entries, cx);
+        let (toggle_palette, palette) = self.command_palette(cx, entries.clone());
+        entries.push(palette::Entry::new(
+            "velk.commands.open",
+            toggle_palette.clone(),
+            palette::primary("Shift+P"),
+        ));
+        self.keybindings.entries.replace(entries);
         let shortcuts = self.plugin_shortcuts(cx);
         let mut content = column()
             .fill_width()
             .fill_height()
+            .on_command(self.window_key_reservation(cx))
+            .children(palette)
+            .children(self.command_result_modal(cx))
+            .children(plugin_menu)
+            .children(settings_menu)
+            .children(self.close_confirmation(cx))
+            .children(self.reloading().then(|| {
+                modal(label("Reloading window…").padding(20.))
+                    .key("reload-progress")
+                    .width(320.)
+                    .accessibility_label("Reloading window")
+                    .into_element()
+            }))
+            .children(self.title_bar(layout, cx))
+            .children(self.keybinding_notice())
+            .child(self.body(layout, search_bar, cx))
+            .children(self.status_line(layout, cx));
+        content = column()
+            .fill_width()
+            .fill_height()
+            .on_command(layout_quiet)
+            .on_command(layout_rail)
+            .on_command(layout_tiled)
+            .on_command(open_bindings)
+            .on_command(reload_bindings)
+            .on_command(show_commands)
             .on_command(back)
             .on_command(forward)
             .on_command(toggle_panels)
@@ -859,24 +895,7 @@ impl View for Document {
             .on_command(toggle_plugins)
             .on_command(toggle_settings)
             .on_command(find)
-            .children(palette)
-            .children(self.command_result_modal(cx))
-            .children(plugin_menu)
-            .children(settings_menu)
-            .children(self.close_confirmation(cx))
-            .children(self.reloading().then(|| {
-                modal(label("Reloading window…").padding(20.))
-                    .key("reload-progress")
-                    .width(320.)
-                    .accessibility_label("Reloading window")
-                    .into_element()
-            }))
-            .on_command(layout_quiet)
-            .on_command(layout_rail)
-            .on_command(layout_tiled)
-            .children(self.title_bar(layout, cx))
-            .child(self.body(layout, search_bar, cx))
-            .children(self.status_line(layout, cx));
+            .child(content);
         // RXUI command identity is a Rust type. Dynamic bindings use separate
         // outer scopes; the inner host scope retains shortcut precedence.
         for action in shortcuts {
@@ -887,6 +906,10 @@ impl View for Document {
                 .child(content);
         }
         content
+            .on_key_down_capture(cx.listener(|this, event: &KeyInput, cx| {
+                this.bound_key(event, velk_commands::keybindings::Scope::Window, cx)
+            }))
+            .on_pointer_down_capture(cx.listener(|this, _, _| this.cancel_key_chord()))
     }
 }
 impl Document {
@@ -904,6 +927,9 @@ impl Document {
                 .clone()
                 .into_element()
                 .focus_handle(self.editor_focus.clone())
+                .on_key_down_capture(cx.listener(|this, event: &KeyInput, cx| {
+                    this.bound_key(event, velk_commands::keybindings::Scope::Editor, cx)
+                }))
                 .fill_width()
                 .fill_height()
                 .flex_shrink(1.)

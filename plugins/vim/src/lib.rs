@@ -54,6 +54,15 @@ impl Mode {
     fn visual(self) -> bool {
         matches!(self, Self::Visual | Self::VisualLine | Self::VisualBlock)
     }
+    fn id(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Insert => "insert",
+            Self::Visual => "visual",
+            Self::VisualLine => "visual_line",
+            Self::VisualBlock => "visual_block",
+        }
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Normal => "NORMAL",
@@ -275,6 +284,7 @@ impl EditingBehavior for Vim {
         let response = input::Response {
             handled,
             state: input::State {
+                mode: state.mode.id().into(),
                 label: format!("{}{prefix}", state.mode.label()),
                 data: serde_json::to_string(&state).map_err(|e| e.to_string())?,
                 capture_text: state.mode != Mode::Insert,
@@ -438,6 +448,7 @@ mod tests {
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "2d");
         assert_eq!(session.input_state().label, "NORMAL 2d");
+        assert_eq!(session.input_state().mode, "normal");
         keys(&mut session, &mut buffer, "3d");
         assert_eq!(buffer.text().to_string(), "7");
         keys(&mut session, &mut buffer, "ui");
