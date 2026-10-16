@@ -1,3 +1,5 @@
+mod filter;
+use filter::Filter;
 use velk_panels::{Content, Effect, Node, Panel, Reply, Request, Slot, Snapshot};
 use velk_plugin_sdk::{
     CapabilityDeclaration, Host, Plugin, Registrar,
@@ -9,6 +11,8 @@ use velk_plugin_sdk::{
 #[derive(Default)]
 pub struct Problems {
     host: Option<Host>,
+    filter: Filter,
+    described_filter: Filter,
     documents: Vec<DiagnosticDocument>,
     truncated: bool,
     revision: u64,
@@ -39,6 +43,9 @@ fn document_key(document: &DiagnosticDocument) -> String {
 }
 impl Problems {
     fn read(&self) -> Result<(Vec<DiagnosticDocument>, bool), String> {
+        self.read_filtered(false)
+    }
+    fn read_filtered(&self, errors_only: bool) -> Result<(Vec<DiagnosticDocument>, bool), String> {
         match self
             .host
             .as_ref()
@@ -61,15 +68,45 @@ impl Problems {
                 documents = merged;
                 documents.sort_by(|a, b| a.title.cmp(&b.title));
                 for document in &mut documents {
+                    let mut seen = std::collections::HashSet::new();
+                    document
+                        .diagnostics
+                        .retain(|item| seen.insert(serde_json::to_vec(item).unwrap_or_default()));
                     document.diagnostics.sort_by_key(|d| (d.start, d.end));
                 }
+                self.filter.apply(&mut documents, errors_only);
                 Ok((documents, truncated))
             }
             _ => Err("invalid diagnostics response".into()),
         }
     }
     fn snapshot(&self, effects: Vec<Effect>) -> Snapshot {
-        let mut nodes = Vec::new();
+        let mut nodes = vec![Node {
+            id: "filter-severity".into(),
+            label: format!("Filter: {}", self.filter.severity_label()),
+            depth: 0,
+            branch: false,
+            expanded: false,
+            lazy: false,
+            action: Some("cycle-severity".into()),
+        }];
+        if !self.filter.source.is_empty() || !self.filter.text.is_empty() {
+            nodes.push(Node {
+                id: "filter-reset".into(),
+                label: display(
+                    &format!(
+                        "Clear filters: source={} text={}",
+                        self.filter.source, self.filter.text
+                    ),
+                    256,
+                ),
+                depth: 0,
+                branch: false,
+                expanded: false,
+                lazy: false,
+                action: Some("reset-filters".into()),
+            });
+        }
         let count: usize = self.documents.iter().map(|d| d.diagnostics.len()).sum();
         for document in &self.documents {
             let key = document_key(document);
@@ -133,11 +170,20 @@ impl Problems {
                 ),
                 slot: Slot::Bottom,
                 revision: self.revision,
-                content: if nodes.is_empty() {
-                    Content::Text("No current workspace diagnostics.".into())
-                } else {
-                    Content::Tree(nodes)
-                },
+                content: Content::Tree({
+                    if count == 0 {
+                        nodes.push(Node {
+                            id: "no-problems".into(),
+                            label: "No current diagnostics match these filters.".into(),
+                            depth: 0,
+                            branch: false,
+                            expanded: false,
+                            lazy: false,
+                            action: None,
+                        });
+                    }
+                    nodes
+                }),
             }],
         }
     }
@@ -146,7 +192,10 @@ impl Problems {
             Request::Changes => {
                 let (documents, truncated) = self.read()?;
                 Ok(
-                    if documents == self.documents && truncated == self.truncated {
+                    if documents == self.documents
+                        && truncated == self.truncated
+                        && self.filter == self.described_filter
+                    {
                         Reply::Unchanged
                     } else {
                         Reply::Invalidated
@@ -155,9 +204,13 @@ impl Problems {
             }
             Request::Describe { .. } => {
                 let (documents, truncated) = self.read()?;
-                if self.revision == 0 || documents != self.documents || truncated != self.truncated
+                if self.revision == 0
+                    || documents != self.documents
+                    || truncated != self.truncated
+                    || self.filter != self.described_filter
                 {
                     self.revision += 1;
+                    self.described_filter = self.filter.clone();
                     self.documents = documents;
                     self.truncated = truncated;
                 }
@@ -171,8 +224,32 @@ impl Problems {
                 node,
                 action,
             } => {
-                if panel != "problems" || revision != self.revision || action != "reveal" {
+                if panel != "problems"
+                    || revision != self.revision
+                    || self.filter != self.described_filter
+                {
                     return Err("stale or invalid diagnostic action".into());
+                }
+                if node == "filter-severity" && action == "cycle-severity"
+                    || node == "filter-reset" && action == "reset-filters"
+                {
+                    if action == "cycle-severity" {
+                        self.filter.cycle();
+                    } else {
+                        self.filter = Filter::default();
+                    }
+                    return self.panel(Request::Describe {
+                        context: Default::default(),
+                    });
+                }
+                if action != "reveal" {
+                    return Err("stale or invalid diagnostic action".into());
+                }
+                if self.host.is_some() {
+                    let (documents, truncated) = self.read()?;
+                    if documents != self.documents || truncated != self.truncated {
+                        return Err("Diagnostic results changed; refresh and try again".into());
+                    }
                 }
                 let location = self
                     .documents
@@ -197,8 +274,13 @@ impl Problems {
             _ => Err("unsupported diagnostics panel request".into()),
         }
     }
-    fn navigate(&self, context: commands::Context, backwards: bool) -> Result<Outcome, String> {
-        let (documents, _) = self.read()?;
+    fn navigate(
+        &self,
+        context: commands::Context,
+        backwards: bool,
+        errors_only: bool,
+    ) -> Result<Outcome, String> {
+        let (documents, _) = self.read_filtered(errors_only)?;
         let buffers = match self
             .host
             .as_ref()
@@ -274,7 +356,7 @@ impl Plugin for Problems {
     const CAPABILITIES: &'static [CapabilityDeclaration] = &[
         CapabilityDeclaration::required(
             "editor.diagnostics.read",
-            "Read current diagnostics from open documents.",
+            "Read current workspace diagnostics.",
         ),
         CapabilityDeclaration::required(
             "editor.buffer.read",
@@ -291,18 +373,51 @@ impl Plugin for Problems {
     fn attach_host(&mut self, host: Host) {
         self.host = Some(host);
     }
+    fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
+        Filter::definitions()
+    }
+    fn configure(&mut self, values: &velk_plugin_sdk::settings::Values) -> Result<(), String> {
+        self.filter = Filter {
+            severity: values
+                .get("severity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("all")
+                .into(),
+            source: values
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            text: values
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+        };
+        Ok(())
+    }
     fn commands() -> Vec<commands::Declaration> {
         [
             ("show", "Show Problems", None),
             ("next", "Next diagnostic", Some(false)),
             ("previous", "Previous diagnostic", Some(true)),
+            ("next-error", "Next error", None),
+            ("previous-error", "Previous error", None),
+            ("filter", "Filter problems by text", None),
+            ("filter-source", "Filter problems by source", None),
+            ("cycle-severity", "Cycle problem severity", None),
+            ("reset-filters", "Reset problem filters", None),
         ]
         .into_iter()
         .map(|(id, title, shift)| commands::Declaration {
             id: format!("velk.problems.{id}"),
             title: format!("Diagnostics: {title}"),
             language: None,
-            input: None,
+            input: match id {
+                "filter" => Some("Match file path, diagnostic message, or code".into()),
+                "filter-source" => Some("Match diagnostic source".into()),
+                _ => None,
+            },
             shortcut: shift.map(|shift| commands::Shortcut {
                 key: "F8".into(),
                 shift,
@@ -315,6 +430,49 @@ impl Plugin for Problems {
         .collect()
     }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+        for id in [
+            "next-error",
+            "previous-error",
+            "filter",
+            "filter-source",
+            "cycle-severity",
+            "reset-filters",
+        ] {
+            let hook: &'static str = match id {
+                "next-error" => "velk.problems.next-error",
+                "previous-error" => "velk.problems.previous-error",
+                "filter" => "velk.problems.filter",
+                "filter-source" => "velk.problems.filter-source",
+                "cycle-severity" => "velk.problems.cycle-severity",
+                _ => "velk.problems.reset-filters",
+            };
+            reg.provide(
+                hooks::Request(hook),
+                move |this: &mut Self, bytes: &[u8]| {
+                    let context: commands::Context =
+                        serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+                    let outcome = match id {
+                        "next-error" | "previous-error" => {
+                            this.navigate(context, id == "previous-error", true)?
+                        }
+                        _ => {
+                            match id {
+                                "filter" => this.filter.text = context.input.unwrap_or_default(),
+                                "filter-source" => {
+                                    this.filter.source = context.input.unwrap_or_default()
+                                }
+                                "cycle-severity" => this.filter.cycle(),
+                                _ => this.filter = Filter::default(),
+                            }
+                            Outcome::ShowPanel {
+                                panel: "problems".into(),
+                            }
+                        }
+                    };
+                    serde_json::to_vec(&outcome).map_err(|e| e.to_string())
+                },
+            )?;
+        }
         reg.provide(
             hooks::Request(velk_panels::HOOK),
             |this: &mut Self, bytes: &[u8]| {
@@ -331,7 +489,7 @@ impl Plugin for Problems {
                 move |this: &mut Self, bytes: &[u8]| {
                     let context = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
                     let outcome = match direction {
-                        Some(backwards) => this.navigate(context, backwards)?,
+                        Some(backwards) => this.navigate(context, backwards, false)?,
                         None => Outcome::ShowPanel {
                             panel: "problems".into(),
                         },
@@ -375,6 +533,48 @@ mod tests {
         };
         assert_eq!(revision, 7);
         (id, location.position)
+    }
+    #[test]
+    fn severity_source_and_text_filters_compose_for_panel_and_navigation() {
+        let mut first = document(1, &[2, 6]);
+        first.title = "src/世界.rs".into();
+        first.diagnostics[0].severity = Severity::Error;
+        first.diagnostics[0].message = "missing Symbol".into();
+        first.diagnostics[0].source = Some("RustC".into());
+        first.diagnostics[0].code = Some("E0425".into());
+        let mut second = document(2, &[4]);
+        second.diagnostics[0].severity = Severity::Hint;
+        let all = vec![first, second];
+        for text in ["symbol", "世界", "e0425"] {
+            let filter = Filter {
+                severity: "errors".into(),
+                source: "rustc".into(),
+                text: text.into(),
+            };
+            let mut documents = all.clone();
+            filter.apply(&mut documents, false);
+            assert_eq!(documents.len(), 1);
+            assert_eq!(documents[0].diagnostics.len(), 1);
+            assert_eq!(target(navigate(&documents, Some(1), 0, false)), (1, 2));
+        }
+        let mut documents = all.clone();
+        Filter::default().apply(&mut documents, true);
+        assert_eq!(documents[0].diagnostics.len(), 1);
+        let mut documents = all;
+        Filter {
+            source: "absent".into(),
+            ..Default::default()
+        }
+        .apply(&mut documents, false);
+        assert!(documents.is_empty());
+        let mut filter = Filter::default();
+        filter.cycle();
+        assert_eq!(filter.severity, "warnings_and_errors");
+        filter.cycle();
+        assert_eq!(filter.severity, "errors");
+        filter.cycle();
+        assert_eq!(filter.severity, "all");
+        velk_plugin_sdk::settings::validate_schema(&Problems::settings()).unwrap();
     }
     #[test]
     fn navigation_skips_duplicate_positions_crosses_buffers_and_wraps() {
@@ -427,6 +627,8 @@ mod tests {
             }]
         );
         let empty = Problems::default().snapshot(vec![]);
-        assert!(matches!(&empty.panels[0].content, Content::Text(_)));
+        assert!(
+            matches!(&empty.panels[0].content, Content::Tree(nodes) if nodes.iter().any(|node| node.id == "no-problems"))
+        );
     }
 }

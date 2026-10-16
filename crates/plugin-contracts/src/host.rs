@@ -119,7 +119,10 @@ impl Request {
         match self {
             Self::PublishDiagnostics { publication, .. } => {
                 let length = publication.text.chars().count();
-                if !publication.path.is_absolute()
+                if publication.collection.is_empty()
+                    || publication.collection.len() > 128
+                    || publication.collection.chars().any(char::is_control)
+                    || !publication.path.is_absolute()
                     || publication.text.len() > MAX_FILE_BYTES
                     || publication.diagnostics.len() > 1000
                     || publication
@@ -179,6 +182,8 @@ pub enum Response {
 /// One provider/client publication, independent of a buffer's lifetime.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticPublication {
+    /// Independent result set within a client, such as push or pull diagnostics.
+    pub collection: String,
     pub path: PathBuf,
     /// Host revision for versioned open-document results; None means disk text.
     pub revision: Option<u64>,

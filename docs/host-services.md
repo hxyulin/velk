@@ -131,7 +131,9 @@ are aligned to grapheme boundaries. Editing invalidates revision-matched results
 immediately; disk publications are omitted from buffers with different contents.
 
 `PublishDiagnostics` replaces one publication keyed by calling plugin generation,
-client ID, and absolute path. Empty publications clear that path;
+client ID, collection name, and absolute path. Collection names distinguish
+independent result sets such as compiler push and native pull diagnostics.
+Empty publications clear that collection's path;
 `ClearDiagnostics` removes that client's publications. The calling instance
 cannot clear another instance's results. Publications include source text (at
 most 1 MiB) for stale checks, at most 1,000 diagnostics, and whether the source
@@ -144,9 +146,15 @@ panel poll. Plugin retirement, client failure, and client retirement clear resul
 
 Closing a buffer keeps results that describe saved text. Navigation rechecks the
 exact buffer revision or loaded file fingerprint, preserves dirty buffers,
-and uses normal asynchronous opening, deduplication, and jump history. A disk
-result can remain visible until the next publication after an external change;
-its old position is rejected if the file contents changed before navigation.
+and uses normal asynchronous opening, deduplication, and jump history. Before a
+plugin's diagnostic read, the host reconciles saved-file publications off the UI
+thread using file identity/change stamps and content validation after a stamp
+changes. Replacement, deletion, unreadability, or changed text invalidates disk
+results, retaining an empty replacement to suppress old document-local fallback.
+An exact versioned buffer result is retained for its buffer, but cannot be used
+as a saved-file target after disk diverges. A new publication is required to revive
+invalidated disk results. The two-second document maintenance cycle also reconciles
+publications when Problems is closed; navigation still checks contents at use time.
 
 A response contains at most 1,000 diagnostics across the window and reports
 `truncated` when more exist. Display strings are bounded to 512 characters for

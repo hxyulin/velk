@@ -64,7 +64,12 @@ pub struct DiskStamp {
     length: u64,
     modified: Option<std::time::SystemTime>,
     #[cfg(unix)]
-    inode: u64,
+    identity: (u64, i64, i64),
+}
+impl DiskStamp {
+    pub fn length(&self) -> u64 {
+        self.length
+    }
 }
 impl FileState {
     pub fn path(&self) -> &Path {
@@ -180,9 +185,9 @@ impl FileState {
             length: metadata.len(),
             modified: metadata.modified().ok(),
             #[cfg(unix)]
-            inode: {
+            identity: {
                 use std::os::unix::fs::MetadataExt;
-                metadata.ino()
+                (metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
             },
         })
     }

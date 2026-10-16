@@ -35,6 +35,7 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
     for mode in [
         "normal",
         "workspace",
+        "pull",
         "runtime-stop",
         "stall-init",
         "no-profile",
@@ -172,6 +173,26 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 return Ok::<_,String>(());
             }
             assert_eq!(loaded.loaded, 3);
+            if mode == "pull" {
+                let Event::Diagnostics { diagnostics, .. } = until(&service.events, |e| matches!(e, Event::Diagnostics { diagnostics, .. } if diagnostics.iter().any(|d| d.message == "pulled"))).await? else { panic!() };
+                assert!(diagnostics.iter().any(|d| d.message == "pulled"));
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !client.diagnostic_publications().iter().any(|p| p.revision == Some(0) && p.diagnostics.iter().any(|d| d.message == "pulled")) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.map_err(|_| "pull results did not reach the host diagnostic store")?;
+                service.saved(snapshot(path, 0, initial));
+                until(&service.events, |e| matches!(e, Event::Diagnostics { revision: 0, .. })).await?;
+                service.update(snapshot(path, 1, "fn fixed() {}\n"));
+                let Event::Diagnostics { diagnostics, .. } = until(&service.events, |e| matches!(e, Event::Diagnostics { revision: 1, .. })).await? else { panic!() };
+                assert!(diagnostics.is_empty());
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while client.diagnostic_publications().iter().any(|p| !p.diagnostics.is_empty()) { tokio::time::sleep(Duration::from_millis(10)).await; }
+                }).await.map_err(|_| "empty pull results did not clear host diagnostics")?;
+                client.unload("velk.language-server.rust-analyzer".into())?.recv().await.map_err(|e|e.to_string())??;
+                assert_reaped(log);
+                return Ok::<_,String>(());
+            }
             if mode == "workspace" {
                 until(&service.events, |e| matches!(e, Event::Diagnostics { .. })).await?;
                 let unopened = path.parent().unwrap().join("unopened.rs").canonicalize().map_err(|e|e.to_string())?;
@@ -197,6 +218,9 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 let Event::Command { result: Ok(velk_commands::Outcome::Locations { locations }), .. } = until(&second.events, |e|matches!(e, Event::Command { .. })).await? else { panic!("shared definition failed") };
                 assert_eq!(locations[0].path, other);
                 assert!(client.diagnostic_publications().iter().any(|p| p.path == unopened), "closing a buffer must not discard workspace diagnostics");
+                std::fs::write(&unopened, "fn repaired() {}\n").map_err(|e|e.to_string())?;
+                client.reconcile_diagnostics();
+                assert!(client.diagnostic_publications().iter().filter(|p| p.path == unopened).all(|p| p.diagnostics.is_empty()), "external edits invalidate results before the next server publication");
                 second.saved(snapshot(&other, 9, initial));
                 tokio::time::timeout(Duration::from_secs(5), async {
                     while client.diagnostic_publications().iter().any(|p| p.path == unopened && !p.diagnostics.is_empty()) {

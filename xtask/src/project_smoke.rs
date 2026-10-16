@@ -167,6 +167,34 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
                 );
             }
         }
+        for (command, input, count) in [
+            ("filter", Some("absent"), 0),
+            ("reset-filters", None, 1),
+            ("filter-source", Some("SMOKE"), 1),
+            ("cycle-severity", None, 1),
+            ("cycle-severity", None, 0),
+            ("reset-filters", None, 1),
+        ] {
+            let handle = client
+                .bind_hook("velk.problems".into(), format!("velk.problems.{command}"))?
+                .recv()
+                .await
+                .map_err(|e| e.to_string())??;
+            let mut input_context = context.clone();
+            input_context.input = input.map(str::to_owned);
+            let _: velk_commands::Outcome = serde_json::from_slice(
+                &client
+                    .call_hook(handle, serde_json::to_vec(&input_context).unwrap())
+                    .await?,
+            )
+            .map_err(|e| e.to_string())?;
+            let bytes = client.call_hook(panel.clone(), describe.clone()).await?;
+            let velk_panels::Reply::Ready { snapshot } = velk_panels::decode(&bytes)? else {
+                panic!()
+            };
+            assert_eq!(snapshot.panels[0].title, format!("Problems ({count})"));
+            snapshot.validate()?;
+        }
         diagnostics_present.store(false, std::sync::atomic::Ordering::Release);
         let bytes = client
             .call_hook(

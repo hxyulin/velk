@@ -5,6 +5,7 @@ pub use client::Client;
 mod commands;
 mod edits;
 mod positions;
+mod pull;
 mod transport;
 use self::{client::Connection, positions::Encoding};
 use crate::{
@@ -97,13 +98,14 @@ async fn drive(
         "rootUri":root_uri, "workspaceFolders":[{"uri":root_uri,"name":root.file_name().unwrap_or_default().to_string_lossy()}],
         "capabilities": {
             "general":{"positionEncodings":["utf-8","utf-16","utf-32"]},
-            "workspace":{"configuration":true,"workspaceFolders":true,"applyEdit":false,"workspaceEdit":{"documentChanges":true,"failureHandling":"abort"}},
+            "workspace":{"diagnostics":{"refreshSupport":true},"configuration":true,"workspaceFolders":true,"applyEdit":false,"workspaceEdit":{"documentChanges":true,"failureHandling":"abort"}},
             "textDocument":{
                 "synchronization":{"dynamicRegistration":false,"didSave":true},
                 "hover":{"dynamicRegistration":false,"contentFormat":["markdown","plaintext"]},
                 "formatting":{"dynamicRegistration":false}, "rename":{"dynamicRegistration":false},
                 "codeAction":{"dynamicRegistration":false,"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix","refactor","source"]}},"resolveSupport":{"properties":["edit"]}},
                 "completion":{"dynamicRegistration":false,"completionItem":{"snippetSupport":false,"insertReplaceSupport":true,"resolveSupport":{"properties":["additionalTextEdits"]}}},
+                "diagnostic":{"dynamicRegistration":false,"relatedDocumentSupport":false},
                 "publishDiagnostics":{"versionSupport":true,"relatedInformation":false}
             }
         }, "initializationOptions":options
@@ -157,7 +159,10 @@ async fn drive(
     session
         .events()
         .publish(Event::Status(Status::Ready(capabilities)));
+    let mut pull = pull::Pull::new(&server_capabilities);
     let mut diagnostic_context = Vec::new();
+    let mut pushed = Vec::new();
+    let mut pulled = Vec::new();
     let mut command: Option<(u64, PositionRequest, commands::Request, Instant)> = None;
     let mut pending: Option<(u64, PositionRequest, Instant)> = None;
     let mut hover_trace = None;
@@ -189,9 +194,12 @@ async fn drive(
                     connection.record(&document, version);
                     connection.notify("textDocument/didChange", json!({"textDocument":{"uri":document_uri,"version":version},"contentChanges":[change]})).await?;
                     diagnostic_context.clear();
+                    pushed.clear(); pulled.clear();
+                    if let Some(pull) = &mut pull { pull.invalidate(connection).await?; }
                 }
                 Some(Input::Saved(saved)) => {
                     if saved.path != document.path { continue; }
+                    if let Some(pull) = &mut pull { pull.invalidate(connection).await?; }
                     if let Some(ref support) = save {
                         let include = matches!(support, lsp_types::TextDocumentSyncSaveOptions::SaveOptions(options) if options.include_text == Some(true));
                         if !matches!(support, lsp_types::TextDocumentSyncSaveOptions::Supported(false)) {
@@ -238,20 +246,27 @@ async fn drive(
                 if message.get("method").is_some() {
                     if message["method"] == "textDocument/publishDiagnostics" {
                         if let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(message["params"].clone()) {
-                            if params.uri.as_str() != document_uri || !(params.version == Some(version) || params.version.is_none() && version == 1) { continue; }
-                            diagnostic_context = params.diagnostics.clone();
-                            let diagnostics = params.diagnostics.into_iter().take(10_000).filter_map(|d| {
-                                let range = encoding.decode_range(&document.text,d.range)?;
-                                Some(Diagnostic { range, severity: match d.severity {
-                                    Some(lsp_types::DiagnosticSeverity::ERROR) => Severity::Error,
-                                    Some(lsp_types::DiagnosticSeverity::WARNING) => Severity::Warning,
-                                    Some(lsp_types::DiagnosticSeverity::HINT) => Severity::Hint,
-                                    _ => Severity::Information,
-                                }, message:d.message, source:d.source, code:d.code.map(|code| match code { lsp_types::NumberOrString::Number(n) => n.to_string(), lsp_types::NumberOrString::String(s) => s }) })
-                            }).collect();
+                            if params.uri.as_str() != document_uri || params.version.is_some_and(|v| v != version) { continue; }
+                            if params.version.is_none() && !disk_matches(&document).await { continue; }
+                            pushed = params.diagnostics.into_iter().take(10_000).collect();
+                            diagnostic_context = combined_diagnostics(&pushed, &pulled);
+                            let diagnostics = diagnostic_items(diagnostic_context.clone(), encoding, &document.text);
                             session.events().publish(Event::Diagnostics { revision:document.revision, diagnostics });
                         }
+                    } else if message["method"] == "workspace/diagnostic/refresh" {
+                        if let Some(pull) = &mut pull { pull.invalidate(connection).await?; }
                     } else { connection.handle_server_request(&message).await?; }
+                } else if pull.as_ref().is_some_and(|pull| pull.matches(&message)) {
+                    match pull.as_mut().unwrap().receive(&message, document.revision) {
+                        Ok(Some(items)) => {
+                            connection.diagnostics(version, items.clone()).await?;
+                            pulled = items;
+                            diagnostic_context = combined_diagnostics(&pushed, &pulled);
+                            session.events().publish(Event::Diagnostics { revision: document.revision, diagnostics: diagnostic_items(diagnostic_context.clone(), encoding, &document.text) });
+                        }
+                        Ok(None) => {},
+                        Err(error) => velk_plugin_sdk::diagnostics::log!(velk_plugin_sdk::diagnostics::Level::Warn, "{}", error),
+                    }
                 } else if command.as_ref().is_some_and(|(id,_,_,_)| message.get("id") == Some(&json!(id))) {
                     let (_, request, spec, _) = command.take().unwrap();
                     let result = if let Some(error) = message.get("error") { Err(format!("Command failed: {error}")) }
@@ -278,6 +293,7 @@ async fn drive(
                 }
             },
             _ = tick.tick() => {
+                if let Some(pull) = &mut pull { pull.tick(connection, &mut next_id, &document).await?; }
                 if command.as_ref().is_some_and(|(_,_,_,deadline)| Instant::now() >= *deadline) {
                     cancel_command(connection, session, &mut command, "Command timed out").await?;
                 }
@@ -287,6 +303,74 @@ async fn drive(
             }
         }
     }
+}
+fn combined_diagnostics(
+    pushed: &[lsp_types::Diagnostic],
+    pulled: &[lsp_types::Diagnostic],
+) -> Vec<lsp_types::Diagnostic> {
+    let mut seen = std::collections::HashSet::new();
+    pushed
+        .iter()
+        .chain(pulled)
+        .filter(|item| seen.insert(serde_json::to_vec(item).unwrap_or_default()))
+        .take(10_000)
+        .cloned()
+        .collect()
+}
+async fn disk_matches(document: &DocumentSnapshot) -> bool {
+    let path = document.path.clone();
+    let expected = document.text.clone();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        if !std::fs::metadata(&path).ok()?.is_file() {
+            return None;
+        }
+        let file = std::fs::File::open(path).ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        let mut text = String::new();
+        file.take(velk_plugin_sdk::host::MAX_FILE_BYTES as u64 + 1)
+            .read_to_string(&mut text)
+            .ok()?;
+        if text.len() > velk_plugin_sdk::host::MAX_FILE_BYTES {
+            return None;
+        }
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        Some(expected.chunks().flat_map(str::bytes).eq(text.bytes()))
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+fn diagnostic_items(
+    items: Vec<lsp_types::Diagnostic>,
+    encoding: Encoding,
+    text: &ropey::Rope,
+) -> Vec<Diagnostic> {
+    items
+        .into_iter()
+        .take(10_000)
+        .filter_map(|d| {
+            let range = encoding.decode_range(text, d.range)?;
+            Some(Diagnostic {
+                range,
+                severity: match d.severity {
+                    Some(lsp_types::DiagnosticSeverity::ERROR) => Severity::Error,
+                    Some(lsp_types::DiagnosticSeverity::WARNING) => Severity::Warning,
+                    Some(lsp_types::DiagnosticSeverity::HINT) => Severity::Hint,
+                    _ => Severity::Information,
+                },
+                message: d.message,
+                source: d.source,
+                code: d.code.map(|code| match code {
+                    lsp_types::NumberOrString::Number(n) => n.to_string(),
+                    lsp_types::NumberOrString::String(s) => s,
+                }),
+            })
+        })
+        .collect()
 }
 async fn cancel_hover(
     connection: &mut Connection,

@@ -28,6 +28,10 @@ impl Endpoint {
         };
         let directory = matches!(request, Request::ReadDirectory { .. });
         match request {
+            Request::Diagnostics => {
+                self.bridge.reconcile_diagnostics();
+                self.dispatch(Request::Diagnostics)
+            }
             Request::PublishDiagnostics {
                 client,
                 publication,

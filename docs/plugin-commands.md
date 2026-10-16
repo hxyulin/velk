@@ -197,3 +197,8 @@ and Previous Diagnostic (`Shift+F8`). Navigation includes every severity, follow
 document title then source position, and wraps. Duplicate diagnostics at the
 same offset share a navigation stop. It reads the current host snapshot for each
 command rather than relying on the panel's cached rows.
+
+The Diagnostics plugin also declares text/source filters, severity cycling/reset,
+and explicit next/previous-error commands. Ordinary diagnostic navigation uses
+the panel's filters; error navigation keeps the text/source filters and restricts
+severity to errors. See [Problems filtering](../plugins/problems/README.md#filtering).

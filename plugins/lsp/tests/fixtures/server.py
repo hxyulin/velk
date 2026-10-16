@@ -48,6 +48,7 @@ log({"pid": os.getpid()})
 uri, text, version, held = None, "", 0, None
 documents = {}
 workspace_published = False
+held_pull = None
 while (message := read()) is not None:
     method, params = message.get("method"), (message.get("params") or {})
     target = params.get("textDocument", {}).get("uri")
@@ -64,6 +65,7 @@ while (message := read()) is not None:
                 time.sleep(60)
         send({"id": message["id"], "result": {"capabilities": {
             "positionEncoding": "utf-16", "hoverProvider": True,
+            **({"diagnosticProvider": {"identifier": "fixture", "interFileDependencies": True, "workspaceDiagnostics": False}} if mode.startswith("pull") else {}),
             "definitionProvider": True, "typeDefinitionProvider": True, "implementationProvider": True, "referencesProvider": True,
             "experimental": {"parentModule": True},
             "documentFormattingProvider": True, "renameProvider": True,
@@ -75,7 +77,8 @@ while (message := read()) is not None:
     elif method == "textDocument/didOpen":
         document = params["textDocument"]
         uri, text, version = document["uri"], document["text"], document["version"]
-        send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": version, "diagnostics": [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "current"}]}})
+        if mode != "pull-stale":
+            send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": version, "diagnostics": [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "current"}]}})
         if mode == "workspace" and not workspace_published:
             workspace_published = True
             unopened = uri.rsplit("/", 1)[0] + "/unopened.rs"
@@ -92,8 +95,26 @@ while (message := read()) is not None:
             else:
                 text = change["text"]
         log({"reconstructed": text, "version": version})
-        for diagnostic_version in [version - 1, version]:
-            send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": diagnostic_version, "diagnostics": [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "current" if diagnostic_version == version else "stale"}]}})
+        if mode != "pull-stale" and not (mode.startswith("pull") and "fixed" in text):
+            for diagnostic_version in [version - 1, version]:
+                pushed = [] if mode.startswith("pull") and "fixed" in text else [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "current" if diagnostic_version == version else "stale"}]
+                send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": diagnostic_version, "diagnostics": pushed}})
+    elif method == "textDocument/diagnostic":
+        current_result = f"r{version}"
+        items = [] if "fixed" in text else [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 7}}, "severity": 1, "message": "pulled", "source": "fixture"}]
+        if mode == "pull-stale" and held_pull is None:
+            held_pull = message["id"]
+            continue
+        if mode == "pull-stale" and held_pull is not None:
+            send({"id": held_pull, "result": {"kind": "full", "resultId": "stale", "items": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "severity": 1, "message": "STALE"}]}})
+        if params.get("previousResultId") == current_result:
+            send({"id": message["id"], "result": {"kind": "unchanged", "resultId": current_result}})
+        else:
+            send({"id": message["id"], "result": {"kind": "full", "resultId": current_result, "items": items}})
+        if not items:
+            send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": version, "diagnostics": []}})
+    elif method == "textDocument/didSave" and mode.startswith("pull"):
+        send({"id": f"refresh-{version}", "method": "workspace/diagnostic/refresh", "params": None})
     elif method == "textDocument/formatting":
         send({"id": message["id"], "result": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "// formatted\n"}]})
     elif method == "textDocument/rename":

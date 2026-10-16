@@ -54,3 +54,19 @@ filtering, colors, and output; external stderr text is recorded at INFO with sou
 Workspace collection respects the native 1 MiB encoded request limit. Diagnostic
 lists are truncated with an explicit marker when necessary; a file publication
 whose source snapshot cannot fit is omitted without stopping the server.
+
+## Pull diagnostics
+
+Servers advertising `diagnosticProvider` use `textDocument/diagnostic` for open
+buffers. Velk requests on open, debounces edits and saves, and handles the server's
+`workspace/diagnostic/refresh` request across attached documents. It reuses result
+IDs and cached full reports for unchanged responses, cancels outdated requests,
+rejects late results, and applies a ten-second deadline. Pulled results enter the
+same host store and inline annotations as push diagnostics. Push and pull use
+independent collections and merge without duplicate entries, since servers such
+as rust-analyzer can pull native diagnostics while pushing compiler diagnostics.
+Clearing one collection preserves the other. Servers without the pull capability
+continue using push diagnostics.
+
+This does not implement workspace pull, partial reports, related-document pull
+reports, or dynamic diagnostic registration; those capabilities are not advertised.

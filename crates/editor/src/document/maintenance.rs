@@ -145,11 +145,15 @@ impl Document {
                     .map(|file| (b.id, file, b.disk_stamp.clone()))
             })
             .collect();
-        if files.is_empty() {
+        let plugins = self.plugins.as_ref().map(|p| p.client.clone());
+        if files.is_empty() && plugins.is_none() {
             return;
         }
         if let Ok(task) = cx.try_spawn_blocking(
             move || {
+                if let Some(plugins) = plugins {
+                    plugins.reconcile_diagnostics();
+                }
                 files
                     .into_iter()
                     .map(|(id, file, previous)| {
@@ -167,15 +171,27 @@ impl Document {
                 this.disk_check = None;
                 if let Ok(results) = result {
                     for (id, baseline, stamp, changed) in results {
-                        this.with_buffer(id, cx, |this, _| {
+                        this.with_buffer(id, cx, |this, cx| {
                             if this.buffer.saving.is_some()
                                 || this.buffer.file.as_ref() != Some(&baseline)
                             {
                                 return;
                             }
+                            let automatic = stamp.as_ref().is_some_and(|stamp| {
+                                stamp.length() <= velk_plugin_contracts::host::MAX_FILE_BYTES as u64
+                            });
                             this.buffer.disk_stamp = stamp;
                             if let Some(changed) = changed {
                                 this.buffer.disk_changed = changed;
+                            }
+                            if this.buffer.disk_changed
+                                && automatic
+                                && !this.buffer.editor.read(cx).buffer().is_dirty()
+                                && !this.buffer.editor.read(cx).has_composition()
+                                && !this.busy()
+                                && this.workspace_edit.is_none()
+                            {
+                                this.reload_from_disk(cx);
                             }
                         });
                     }
@@ -258,24 +274,52 @@ impl Document {
                     match result {
                         Ok(Ok((file, buffer)))
                             if this.buffer.file.as_ref() == Some(&baseline)
-                                && this.buffer.editor.read(cx).buffer().revision() == revision =>
+                                && this.buffer.editor.read(cx).buffer().revision() == revision
+                                && !this.buffer.editor.read(cx).has_composition() =>
                         {
-                            if let Some(state) = this.buffer.semantic.take() {
-                                state.service.shutdown();
-                            }
-                            this.buffer.editor.update(cx, |editor, _| {
-                                *editor = velk_editor_widget::Editor::from_buffer(buffer);
-                                let _ = editor.set_language(
-                                    velk_editor_widget::Language::for_path(file.path()),
-                                );
+                            let applied = this.buffer.editor.update(cx, |editor, _| {
+                                let model = editor.buffer();
+                                if model.text() != buffer.text() {
+                                    let length = buffer.text().len_chars();
+                                    let selection = model.selection();
+                                    editor.apply_transaction(velk_core::Transaction {
+                                        revision: model.revision(),
+                                        edits: vec![velk_core::TextEdit {
+                                            range: 0..model.text().len_chars(),
+                                            text: buffer.text().to_string(),
+                                        }],
+                                        selection: Some(velk_core::Selection {
+                                            anchor: selection.anchor.min(length),
+                                            head: selection.head.min(length),
+                                        }),
+                                    })?;
+                                }
+                                editor.mark_saved(editor.buffer().checkpoint());
+                                Ok::<_, velk_core::TransactionError>(())
                             });
+                            if let Err(error) = applied {
+                                this.notice(Some(format!("Reload failed: {error}")));
+                                return;
+                            }
                             this.buffer.file = Some(file);
                             this.buffer.disk_stamp = None;
                             this.buffer.disk_changed = false;
                             this.buffer.dirty = false;
                             this.buffer.status = None;
-                            this.start_buffer_semantics(cx);
+                            this.sync_semantics(cx);
+                            if let Some(state) = &this.buffer.semantic {
+                                state.service.saved(this.semantic_snapshot(cx));
+                            }
                             this.restart_search(cx);
+                            let buffer = this.buffer_info(&this.buffer, cx);
+                            let saved_revision = buffer.revision;
+                            this.publish_buffer_event(
+                                velk_plugin_contracts::buffers::Event::Saved {
+                                    buffer,
+                                    saved_revision,
+                                },
+                                cx,
+                            );
                         }
                         Ok(Ok(_)) => this.notice(Some(
                             "Document changed while reloading; local edits were kept.".into(),
@@ -370,6 +414,78 @@ mod tests {
     use crate::document::tests::QueuedExecutor;
     use std::sync::Arc;
     #[test]
+    fn large_external_replacements_require_explicit_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let mut runtime = Runtime::new();
+        let executor = Arc::new(QueuedExecutor::default());
+        runtime.configure_tasks(executor.clone(), || {}).unwrap();
+        let root = runtime.update(|cx| {
+            let (file, editor) = FileState::open(&path).unwrap();
+            let editor = cx.new(|_| editor);
+            cx.new(|cx| Document::new(editor, file, path.clone(), cx))
+        });
+        std::fs::write(
+            &path,
+            "x".repeat(velk_plugin_contracts::host::MAX_FILE_BYTES + 1),
+        )
+        .unwrap();
+        runtime.update(|cx| root.update(cx, |d, cx| d.check_disk(cx)));
+        executor.complete(&mut runtime);
+        runtime.update(|cx| {
+            let d = root.read(cx);
+            assert!(d.buffer.disk_changed);
+            assert!(d.buffer.saving.is_none());
+            assert_eq!(
+                d.buffer.editor.read(cx).buffer().text().to_string(),
+                "original"
+            );
+        });
+    }
+    #[test]
+    fn clean_buffers_reconcile_external_changes_without_reusing_revisions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let mut runtime = Runtime::new();
+        let executor = Arc::new(QueuedExecutor::default());
+        runtime.configure_tasks(executor.clone(), || {}).unwrap();
+        let root = runtime.update(|cx| {
+            let (file, editor) = FileState::open(&path).unwrap();
+            let editor = cx.new(|_| editor);
+            cx.new(|cx| Document::new(editor, file, path.clone(), cx))
+        });
+        let revision =
+            runtime.update(|cx| root.read(cx).buffer.editor.read(cx).buffer().revision());
+        std::fs::write(&path, "external").unwrap();
+        runtime.update(|cx| root.update(cx, |d, cx| d.check_disk(cx)));
+        executor.complete(&mut runtime);
+        executor.complete(&mut runtime);
+        runtime.update(|cx| {
+            root.update(cx, |d, cx| {
+                assert_eq!(
+                    d.buffer.editor.read(cx).buffer().text().to_string(),
+                    "external"
+                );
+                assert!(d.buffer.editor.read(cx).buffer().revision() > revision);
+                assert!(!d.buffer.editor.read(cx).buffer().is_dirty());
+                assert!(!d.buffer.disk_changed);
+                d.buffer.editor.update(cx, |editor, _| {
+                    editor.execute(velk_editor_widget::EditCommand::Undo)
+                });
+                assert_eq!(
+                    d.buffer.editor.read(cx).buffer().text().to_string(),
+                    "original"
+                );
+                assert!(
+                    d.buffer.editor.read(cx).buffer().is_dirty(),
+                    "undoing a disk reload is an unsaved local change"
+                );
+            })
+        });
+    }
+    #[test]
     fn external_checks_and_reloads_never_discard_edits_made_while_io_is_pending() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("file.txt");
@@ -382,6 +498,11 @@ mod tests {
             let editor = cx.new(|_| editor);
             cx.new(|cx| Document::new(editor, file, path.clone(), cx))
         });
+        runtime.update(|cx| {
+            root.update(cx, |d, cx| {
+                d.buffer.editor.update(cx, |e, _| e.insert("dirty"))
+            })
+        });
         std::fs::write(&path, "external").unwrap();
         runtime.update(|cx| root.update(cx, |d, cx| d.check_disk(cx)));
         executor.complete(&mut runtime);
@@ -390,7 +511,7 @@ mod tests {
                 assert!(d.buffer.disk_changed);
                 assert_eq!(
                     d.buffer.editor.read(cx).buffer().text().to_string(),
-                    "original"
+                    "dirtyoriginal"
                 );
                 d.reload_from_disk(cx);
                 d.buffer.editor.update(cx, |e, _| e.insert("local"));
@@ -401,7 +522,7 @@ mod tests {
             root.update(cx, |d, cx| {
                 assert_eq!(
                     d.buffer.editor.read(cx).buffer().text().to_string(),
-                    "localoriginal"
+                    "dirtylocaloriginal"
                 );
                 assert!(d.buffer.disk_changed);
                 d.reload_from_disk(cx); // confirmed explicit reload, now no intervening edit

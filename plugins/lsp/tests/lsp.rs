@@ -762,3 +762,107 @@ async fn closing_a_document_during_shared_initialization_detaches_promptly() {
     assert!(started.elapsed() < Duration::from_secs(1));
     client.retire_idle();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn pull_diagnostics_negotiate_cache_refresh_and_clear_after_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("file.rs");
+    let logfile = dir.path().join("pull.jsonl");
+    let service = Service::start(backend(&logfile, "pull")).unwrap();
+    let source = "fn café() {}\n";
+    service.update(document(&path, 1, source));
+    let Event::Diagnostics { diagnostics, .. } = until(&service.events, |e| {
+        matches!(e, Event::Diagnostics { revision: 1, diagnostics } if diagnostics.iter().any(|d| d.message == "pulled"))
+    })
+    .await
+    else {
+        panic!()
+    };
+    assert!(diagnostics.iter().any(|d| d.message == "pulled"));
+    assert!(
+        diagnostics.iter().any(|d| d.message == "current"),
+        "push compiler diagnostics coexist with pulled native diagnostics"
+    );
+    assert_eq!(diagnostics[0].range, 3..7);
+    service.saved(document(&path, 1, source));
+    let Event::Diagnostics { diagnostics, .. } = until(&service.events, |e| {
+        matches!(e, Event::Diagnostics { revision: 1, diagnostics } if diagnostics.iter().any(|d| d.message == "pulled"))
+    })
+    .await
+    else {
+        panic!()
+    };
+    assert!(
+        diagnostics.iter().any(|d| d.message == "pulled"),
+        "unchanged reports retain their full cache"
+    );
+    service.update(document(&path, 2, "fn fixed() {}\n"));
+    let Event::Diagnostics { diagnostics, .. } = until(&service.events, |e| {
+        matches!(e, Event::Diagnostics { revision: 2, .. })
+    })
+    .await
+    else {
+        panic!()
+    };
+    assert!(diagnostics.is_empty());
+    service.shutdown_and_join().unwrap();
+    let messages = log(&logfile);
+    let pulls: Vec<_> = messages
+        .iter()
+        .filter(|v| v["method"] == "textDocument/diagnostic")
+        .collect();
+    assert!(pulls.len() >= 3);
+    assert_eq!(pulls[0]["params"]["identifier"], "fixture");
+    assert!(pulls[0]["params"].get("previousResultId").is_none());
+    assert!(
+        pulls
+            .iter()
+            .skip(1)
+            .any(|v| v["params"]["previousResultId"] == "r1")
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|v| v["id"] == "refresh-1" && v.get("result").is_some())
+    );
+    assert!(messages.iter().any(|v| v["method"] == "shutdown"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn edits_cancel_pull_requests_and_ignore_late_reports() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("file.rs");
+    let logfile = dir.path().join("pull-stale.jsonl");
+    let service = Service::start(backend(&logfile, "pull-stale")).unwrap();
+    service.update(document(&path, 1, "fn café() {}\n"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if logfile.exists()
+                && log(&logfile)
+                    .iter()
+                    .any(|v| v["method"] == "textDocument/diagnostic")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    service.update(document(&path, 2, "fn café() { }\n"));
+    let Event::Diagnostics {
+        revision,
+        diagnostics,
+    } = until(&service.events, |e| matches!(e, Event::Diagnostics { .. })).await
+    else {
+        panic!()
+    };
+    assert_eq!(revision, 2);
+    assert!(diagnostics.iter().all(|d| d.message == "pulled"));
+    service.shutdown_and_join().unwrap();
+    assert!(
+        log(&logfile)
+            .iter()
+            .any(|v| v["method"] == "$/cancelRequest")
+    );
+}

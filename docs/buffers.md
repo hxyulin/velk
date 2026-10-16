@@ -74,3 +74,19 @@ Save As, Save All, persistent recovery, stable IDs, and disk-change handling.
 Current limits: one editor pane and no tab reordering. The semantic service still owns one document per session;
 multiple Rust buffers can therefore start multiple language-server sessions.
 Sharing one LSP connection across a workspace is a separate backend improvement.
+
+## External file reconciliation
+
+The existing two-second document maintenance cycle checks every open file,
+including inactive buffers. Changed clean files up to 1 MiB reload automatically
+when the editor is ready and has no active composition. The reload is one undoable
+transaction on the authoritative document: revisions advance, the current
+selection is clamped to the new text, syntax/search/annotations update, and the
+existing semantic session receives the new snapshot and saved notification.
+Buffer subscribers receive the reconciled saved state, and recovery captures it.
+
+Dirty, unavailable, or larger files retain their contents and expose the disk
+conflict actions. A file or revision change during background I/O cancels applying
+the reload; starting IME composition also prevents replacement. Undoing a reload
+restores the prior text as a dirty local change. Large-file automatic reload is
+deferred until a streaming reconciliation policy is available.

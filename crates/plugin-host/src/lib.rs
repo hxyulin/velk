@@ -7,6 +7,7 @@ use std::{
     sync::mpsc,
     thread,
 };
+mod disk_diagnostics;
 mod native;
 mod services;
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
@@ -192,6 +193,10 @@ pub struct Client {
     next_session: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Client {
+    /// Reconcile saved-file results off the UI thread before presenting them.
+    pub fn reconcile_diagnostics(&self) {
+        self.host.reconcile_diagnostics();
+    }
     /// Latest publications, including empty replacements that clear earlier results.
     pub fn diagnostic_publications(&self) -> Vec<std::sync::Arc<host::DiagnosticPublication>> {
         self.host.diagnostics()

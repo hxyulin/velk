@@ -181,10 +181,10 @@ input. Incoming frames also have a bounded queue. It supports:
   incremental edit. Multiple separated changes may include intervening unchanged
   text in their bounding replacement; primitive transaction streaming is deferred.
 - Versioned push diagnostics for the current document; wrong URI/version results
-  are discarded. **Unversioned diagnostics are accepted only before the first
-  document change.** This conservative policy avoids assigning an old result to
-  new text. Servers that never version push diagnostics need a further policy or
-  pull-diagnostics support before they can provide diagnostics throughout editing.
+  are discarded. Unversioned push diagnostics describe disk and are accepted for
+  inline annotations only when disk text exactly matches the current snapshot.
+  Dirty buffers with different text cannot receive disk results. Negotiated pull
+  diagnostics provide exact-revision results throughout unsaved editing.
 - One pending hover request, supersession/cancellation, a five-second deadline,
   and rejection of late responses to cancelled requests. Results preserve plain
   text versus Markdown information; the UI delegates Markdown to the loaded renderer.
@@ -295,7 +295,7 @@ provider implicitly. The parser is not retained as a
 built-in fallback. See the README's local-plugin workflow for load/unload commands,
 ABI v1, limits, and the cooperative native-code lifecycle contract.
 
-Snippet completion, inlay hints, pull diagnostics, file-watch registration, and automatic server
+Snippet completion, inlay hints, workspace pull diagnostics, file-watch registration, and automatic server
 restart are deferred. Input modifiers, indentation, and pairing behavior are
 unchanged.
 
@@ -382,3 +382,23 @@ publications clear a path, and client failure or retirement clears its results.
 Saved-file results survive buffer closure. Problems can open an unopened target
 through the normal navigation flow, checking its content fingerprint before
 moving the caret. See [host diagnostic services](host-services.md#diagnostic-reads).
+
+### Open-document pull diagnostics
+
+When `diagnosticProvider` is advertised, the document driver pulls diagnostics on
+open and after a 150 ms edit/save debounce (scheduled on its 250 ms service tick).
+It passes the provider identifier and last accepted result ID, keeps full reports
+for `unchanged` replies, and clears both annotations and the workspace publication
+on an empty full report. Push and pull results use separate named collections in
+the host store and merge for inline annotations, code-action context, and Problems.
+A clear from one stream cannot erase the other; duplicate entries are omitted.
+This preserves rust-analyzer compiler push results alongside native pull results.
+Unopened-file push results are still collected by the workspace connection.
+
+Each pull has its own request ID, exact source revision, cancellation and ten-second
+deadline. Source edits cancel outstanding pulls, and late responses cannot reach
+the new revision. Server `workspace/diagnostic/refresh` requests are acknowledged
+once by the shared connection and fan out to attached documents. Content-modified
+errors reschedule a pull; other failures are logged and a later edit/save/refresh
+can retry. No related-document, partial-result, dynamic-registration, or workspace
+pull support is advertised in this first implementation.

@@ -44,6 +44,11 @@ impl Drop for Worker {
     }
 }
 enum Control {
+    Diagnostics {
+        id: u64,
+        version: i32,
+        items: Vec<lsp_types::Diagnostic>,
+    },
     Attach {
         id: u64,
         send: mpsc::Sender<Result<Value, String>>,
@@ -222,6 +227,20 @@ impl Client {
     }
 }
 impl Connection {
+    pub async fn diagnostics(
+        &self,
+        version: i32,
+        items: Vec<lsp_types::Diagnostic>,
+    ) -> Result<(), String> {
+        self.send
+            .send(Control::Diagnostics {
+                id: self.id,
+                version,
+                items,
+            })
+            .await
+            .map_err(|_| "LSP workspace stopped".into())
+    }
     pub fn record(&self, snapshot: &DocumentSnapshot, version: i32) {
         self.documents
             .lock()
@@ -386,6 +405,14 @@ async fn multiplex(
             _ = stopped.changed() => return Ok(()),
             control = receive.recv() => match control {
                 None => return Ok(()),
+                Some(Control::Diagnostics { id, version, items }) => {
+                    if let Some(host) = host
+                        && let Some((uri, base)) = attachments.get(&id).and_then(|a| a.document.as_ref())
+                        && let Some(version) = version.checked_add(*base) {
+                        let message = json!({"params":{"uri":uri,"version":version,"diagnostics":items}});
+                        publish_diagnostics(host, (client, "pull"), &message, encoding, attachments, documents, &connection.root_uri).await?;
+                    }
+                }
                 Some(Control::Attach { id, send }) => {
                     if attachments.len() >= 256 { let _ = send.try_send(Err("LSP document limit reached".into())); }
                     else { attachments.insert(id, Attachment { send, document: None }); }
@@ -450,7 +477,7 @@ async fn multiplex(
                 let mut message = message?;
                 if message["method"] == "textDocument/publishDiagnostics" {
                     if let Some(host) = host {
-                        publish_diagnostics(host, client, &message, encoding, attachments, documents, &connection.root_uri).await?;
+                        publish_diagnostics(host, (client, "push"), &message, encoding, attachments, documents, &connection.root_uri).await?;
                     }
                     let uri = message["params"]["uri"].as_str().unwrap_or("");
                     if let Some(attachment) = attachments.values().find(|a| a.document.as_ref().is_some_and(|(path,_)| path == uri)) {
@@ -461,6 +488,9 @@ async fn multiplex(
                         }
                         deliver(attachment,message)?;
                     }
+                } else if message["method"] == "workspace/diagnostic/refresh" {
+                    for attachment in attachments.values() { deliver(attachment, json!({"method":"workspace/diagnostic/refresh"}))?; }
+                    if let Some(id) = message.get("id") { connection.send(json!({"jsonrpc":"2.0","id":id,"result":null})).await?; }
                 } else if message.get("method").is_some() {
                     connection.handle_server_request(&message).await?;
                 } else if message.get("id") == Some(&json!(1)) {
@@ -509,7 +539,7 @@ fn translate_versions(value: &mut Value, attachments: &BTreeMap<u64, Attachment>
 
 async fn publish_diagnostics(
     host: &velk_plugin_sdk::Host,
-    client: u64,
+    owner: (u64, &str),
     message: &Value,
     encoding: Encoding,
     attachments: &BTreeMap<u64, Attachment>,
@@ -517,6 +547,7 @@ async fn publish_diagnostics(
     root_uri: &str,
 ) -> Result<(), String> {
     use velk_plugin_sdk::host::DiagnosticPublication;
+    let (client, collection) = owner;
     let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(message["params"].clone())
     else {
         return Ok(());
@@ -625,6 +656,7 @@ async fn publish_diagnostics(
     let request = bounded_publication(
         client,
         DiagnosticPublication {
+            collection: collection.into(),
             path,
             revision,
             disk_matches: disk.as_ref() == Some(&text),
@@ -676,6 +708,7 @@ mod publication_tests {
     fn publications_fit_the_native_encoded_budget_and_report_truncation() {
         use velk_plugin_sdk::host::*;
         let publication = DiagnosticPublication {
+            collection: "pull".into(),
             path: "/project/file.rs".into(),
             revision: None,
             disk_matches: true,

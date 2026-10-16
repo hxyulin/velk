@@ -22,8 +22,9 @@ impl HostRequest {
         let _ = self.reply.try_send(result);
     }
 }
-type PublicationKey = (String, u64, u64, std::path::PathBuf);
+type PublicationKey = (String, u64, u64, String, std::path::PathBuf);
 struct Publication {
+    stamp: Option<crate::disk_diagnostics::Stamp>,
     active: Arc<AtomicBool>,
     value: Arc<velk_plugin_contracts::host::DiagnosticPublication>,
 }
@@ -53,9 +54,25 @@ impl Bridge {
         active: Arc<AtomicBool>,
         mut value: velk_plugin_contracts::host::DiagnosticPublication,
     ) -> Result<(), String> {
+        let stamp = if value.disk_matches {
+            let stamp = crate::disk_diagnostics::validate(&value.path, &value.text);
+            value.disk_matches = stamp.is_some();
+            if stamp.is_none() && value.revision.is_none() {
+                value.diagnostics.clear();
+            }
+            stamp
+        } else {
+            None
+        };
         let mut store = self.diagnostics.lock().unwrap();
         store.retain(|_, p| p.active.load(Ordering::Acquire));
-        let key = (plugin.into(), generation, client, value.path.clone());
+        let key = (
+            plugin.into(),
+            generation,
+            client,
+            value.collection.clone(),
+            value.path.clone(),
+        );
         if value.diagnostics.is_empty() {
             // Retain the empty publication so a reader cannot resurrect an older
             // document-local result while its semantic event is still queued.
@@ -90,17 +107,48 @@ impl Bridge {
         store.insert(
             key,
             Publication {
+                stamp,
                 active,
                 value: Arc::new(value),
             },
         );
         Ok(())
     }
+    pub fn reconcile_diagnostics(&self) {
+        let snapshots: Vec<_> = self
+            .diagnostics
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, p)| p.stamp.is_some() && p.active.load(Ordering::Acquire))
+            .map(|(key, p)| (key.clone(), p.value.clone(), p.stamp.clone()))
+            .collect();
+        for (key, value, previous) in snapshots {
+            if crate::disk_diagnostics::Stamp::read(&value.path) == previous {
+                continue;
+            }
+            let stamp = crate::disk_diagnostics::validate(&value.path, &value.text);
+            let mut store = self.diagnostics.lock().unwrap();
+            if let Some(current) = store.get_mut(&key)
+                && Arc::ptr_eq(&current.value, &value)
+            {
+                let mut replacement = (*value).clone();
+                replacement.disk_matches = stamp.is_some();
+                if stamp.is_none() && replacement.revision.is_none() {
+                    replacement.diagnostics.clear();
+                    replacement.text.clear();
+                    replacement.truncated = false;
+                }
+                current.value = Arc::new(replacement);
+                current.stamp = stamp;
+            }
+        }
+    }
     pub fn clear_diagnostics(&self, plugin: &str, generation: u64, client: u64) {
         self.diagnostics
             .lock()
             .unwrap()
-            .retain(|(p, g, c, _), _| p != plugin || *g != generation || *c != client);
+            .retain(|(p, g, c, _, _), _| p != plugin || *g != generation || *c != client);
     }
     pub fn diagnostics(&self) -> Vec<Arc<velk_plugin_contracts::host::DiagnosticPublication>> {
         let mut store = self.diagnostics.lock().unwrap();
@@ -155,8 +203,9 @@ mod tests {
     fn publication(message: &str) -> velk_plugin_contracts::host::DiagnosticPublication {
         use velk_plugin_contracts::host::*;
         DiagnosticPublication {
+            collection: "push".into(),
             path: "/project/file.rs".into(),
-            revision: None,
+            revision: Some(1),
             text: "bad".into(),
             disk_matches: true,
             truncated: false,
@@ -171,6 +220,89 @@ mod tests {
                 code: None,
             }],
         }
+    }
+    #[test]
+    fn push_and_pull_collections_replace_and_clear_independently() {
+        let bridge = Bridge::new();
+        let active = Arc::new(AtomicBool::new(true));
+        let push = publication("compiler");
+        let mut pull = publication("native");
+        pull.collection = "pull".into();
+        bridge
+            .publish_diagnostics("provider", 1, 1, active.clone(), push.clone())
+            .unwrap();
+        bridge
+            .publish_diagnostics("provider", 1, 1, active.clone(), pull)
+            .unwrap();
+        assert_eq!(bridge.diagnostics().len(), 2);
+        let mut clear = push;
+        clear.diagnostics.clear();
+        bridge
+            .publish_diagnostics("provider", 1, 1, active, clear)
+            .unwrap();
+        assert_eq!(
+            bridge
+                .diagnostics()
+                .iter()
+                .filter(|p| !p.diagnostics.is_empty())
+                .count(),
+            1
+        );
+        assert!(
+            bridge
+                .diagnostics()
+                .iter()
+                .any(|p| p.collection == "pull" && p.diagnostics[0].message == "native")
+        );
+        bridge.clear_diagnostics("provider", 1, 1);
+        assert!(bridge.diagnostics().is_empty());
+    }
+    #[test]
+    fn disk_changes_invalidate_saved_results_without_reviving_them_after_recreation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.rs");
+        std::fs::write(&path, "bad\r\n").unwrap();
+        let bridge = Bridge::new();
+        let active = Arc::new(AtomicBool::new(true));
+        let mut value = publication("disk diagnostic");
+        value.path = path.clone();
+        value.text = "bad\n".into();
+        value.revision = None;
+        bridge
+            .publish_diagnostics("provider", 1, 1, active.clone(), value.clone())
+            .unwrap();
+        assert!(!bridge.diagnostics()[0].diagnostics.is_empty());
+        // Atomic replacements with the same length still invalidate the result.
+        let replacement = directory.path().join("replacement");
+        std::fs::write(&replacement, "new\n").unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        bridge.reconcile_diagnostics();
+        assert!(bridge.diagnostics()[0].diagnostics.is_empty());
+        std::fs::write(&path, "bad\n").unwrap();
+        bridge.reconcile_diagnostics();
+        assert!(
+            bridge.diagnostics()[0].diagnostics.is_empty(),
+            "only a new publication can revive results"
+        );
+        bridge
+            .publish_diagnostics("provider", 1, 1, active.clone(), value.clone())
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        bridge.reconcile_diagnostics();
+        assert!(bridge.diagnostics()[0].diagnostics.is_empty());
+        std::fs::write(&path, "bad\n").unwrap();
+        value.revision = Some(9);
+        bridge
+            .publish_diagnostics("provider", 1, 1, active, value)
+            .unwrap();
+        std::fs::write(&path, "different").unwrap();
+        bridge.reconcile_diagnostics();
+        assert!(!bridge.diagnostics()[0].disk_matches);
+        assert_eq!(bridge.diagnostics()[0].revision, Some(9));
+        assert!(
+            !bridge.diagnostics()[0].diagnostics.is_empty(),
+            "exact buffer results still describe their buffer snapshot"
+        );
     }
     #[test]
     fn publications_replace_clear_and_retire_independently_of_buffers() {

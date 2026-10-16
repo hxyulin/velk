@@ -209,9 +209,11 @@ Current limitations include:
   are not yet implemented.
 - Language-server clients and diagnostic publications are shared by workspace.
   Problems includes unopened files when the server publishes them; Velk does not
-  independently scan every file or implement pull diagnostics yet.
-- Disk conflicts are detected during saves, but automatic reload and interactive
-  conflict resolution are still future work.
+  independently scan every file. Pull diagnostics are supported for open buffers
+  when the server advertises them; workspace pull remains future work.
+- External changes automatically reload clean files up to 1 MiB. Dirty, unavailable,
+  or larger files keep their contents and expose reload/compare/overwrite actions.
+  Streaming reconciliation for large files and interactive merging remain future work.
 - Accessibility exposes the editor role and label, but does not yet publish
   document text and selection to assistive technology.
 - Plugin capabilities, ABI compatibility, and richer widget contracts need more
