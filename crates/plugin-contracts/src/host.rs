@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub const WORKSPACE_READ: &str = "workspace.read";
 pub const PROJECT_READ: &str = "filesystem.project.read";
+pub const DIAGNOSTICS_READ: &str = "editor.diagnostics.read";
 pub const BUFFER_READ: &str = "editor.buffer.read";
 pub const BUFFER_WRITE: &str = "editor.buffer.write";
 pub const BUFFER_MANAGE: &str = "editor.buffer.manage";
@@ -60,6 +61,8 @@ pub enum Request {
         after: Option<PathBuf>,
     },
     Buffers,
+    /// Current diagnostics for open buffers; stale revisions are omitted.
+    Diagnostics,
     ReadBuffer {
         id: u64,
     },
@@ -95,6 +98,7 @@ impl Request {
     pub fn capability(&self) -> &'static str {
         match self {
             Self::Workspace => WORKSPACE_READ,
+            Self::Diagnostics => DIAGNOSTICS_READ,
             Self::ReadFile { .. } | Self::ReadDirectory { .. } => PROJECT_READ,
             Self::Buffers | Self::ReadBuffer { .. } => BUFFER_READ,
             Self::ApplyEdit { .. } | Self::EditBuffer { .. } => BUFFER_WRITE,
@@ -121,6 +125,10 @@ impl Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
+    Diagnostics {
+        documents: Vec<DiagnosticDocument>,
+        truncated: bool,
+    },
     Workspace {
         workspace: Workspace,
     },
@@ -143,4 +151,33 @@ pub enum Response {
     /// Dispatched through the normal host flow. Opens, saves, edits, and dirty
     /// closes may finish later or be cancelled by the user; this is not completion.
     Accepted,
+}
+
+/// A versioned Unicode-scalar location in an open buffer, including untitled buffers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticDocument {
+    pub id: u64,
+    pub revision: u64,
+    pub title: String,
+    pub diagnostics: Vec<Diagnostic>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub start: usize,
+    pub end: usize,
+    /// Zero-based logical line and Unicode-scalar column for display.
+    pub line: usize,
+    pub column: usize,
+    pub severity: Severity,
+    pub message: String,
+    pub source: Option<String>,
+    pub code: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Error,
+    Warning,
+    Information,
+    Hint,
 }

@@ -99,8 +99,8 @@ impl Configuration {
             executable,
             arguments: vec![],
             root: None,
-            initialization_options: serde_json::json!({"checkOnSave":false}),
-            configuration: serde_json::json!({"rust-analyzer":{"checkOnSave":false}}),
+            initialization_options: serde_json::json!({"checkOnSave":true}),
+            configuration: serde_json::json!({"rust-analyzer":{"checkOnSave":true}}),
         }
     }
     fn definition(self) -> LanguageServer {
@@ -125,9 +125,14 @@ mod tests {
         assert_eq!(definition.language, "rust");
         assert_eq!(definition.executable, "/tools/rust-analyzer");
         assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&definition.initialization_options).unwrap()
+                ["checkOnSave"],
+            true
+        );
+        assert_eq!(
             serde_json::from_str::<serde_json::Value>(&definition.configuration).unwrap()["rust-analyzer"]
                 ["checkOnSave"],
-            false
+            true
         );
         assert!(
             RustAnalyzer::default()

@@ -4149,6 +4149,7 @@ version = "0.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
+ "velk-commands",
 ]
 
 [[package]]
@@ -4188,6 +4189,7 @@ dependencies = [
  "velk-plugin-indentation",
  "velk-plugin-lsp",
  "velk-plugin-markdown",
+ "velk-plugin-problems",
  "velk-plugin-project",
  "velk-plugin-rust-analyzer",
  "velk-plugin-sdk",
@@ -4264,6 +4266,15 @@ name = "velk-plugin-markdown"
 version = "0.0.0-dev"
 dependencies = [
  "pulldown-cmark",
+ "velk-plugin-sdk",
+]
+
+[[package]]
+name = "velk-plugin-problems"
+version = "0.0.0-dev"
+dependencies = [
+ "serde_json",
+ "velk-panels",
  "velk-plugin-sdk",
 ]
 

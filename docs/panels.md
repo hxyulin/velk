@@ -103,7 +103,10 @@ unchanged.
 
 ## Host effects
 
-An Invoke reply can include one-shot `Effect::OpenFile { path }` values. The host
+An Invoke reply can include one-shot `Effect::OpenFile { path }` or
+`Effect::RevealBuffer { location }` values. A buffer location contains a session
+buffer ID, exact revision, and Unicode-scalar offset. Reveal rejects closed or
+edited targets, selects the existing buffer, and records navigation history. The host
 validates the entire snapshot before applying effects, removes effects before
 storing the contribution, and opens files through its normal asynchronous buffer
 path. Canonical path deduplication and unsaved buffers retain normal behavior.
@@ -151,3 +154,9 @@ cancellation, unusual filenames, bounds and host buffer queuing. The native
 pack smoke in `cargo xtask test-plugins` expands a real directory, collects an
 open-file effect, unloads with outstanding work, verifies stale-handle rejection
 observes a filesystem invalidation, and reads host-owned snapshots after unload.
+
+The bundled `velk.problems` provider contributes a bottom Problems tree through
+this same contract. Rows group current diagnostics by open buffer; leaf actions
+reveal revision-checked buffer locations. Its Show Problems command selects only
+its own panel without reopening other closed slots. See
+[the Diagnostics plugin](../plugins/problems/README.md).

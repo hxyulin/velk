@@ -183,9 +183,23 @@ pub struct Choice {
     pub detail: Option<String>,
     pub action: ChoiceAction,
 }
+/// Revision-checked navigation into an existing buffer. Offsets are Unicode scalars.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BufferLocation {
+    pub id: u64,
+    pub revision: u64,
+    pub position: usize,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Outcome {
+    RevealBuffer {
+        location: BufferLocation,
+    },
+    /// Select a panel belonging to the command provider.
+    ShowPanel {
+        panel: String,
+    },
     Edit {
         edit: WorkspaceEdit,
     },
@@ -208,6 +222,11 @@ pub enum Outcome {
 impl Outcome {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::ShowPanel { panel }
+                if panel.is_empty() || panel.len() > 128 || panel.chars().any(char::is_control) =>
+            {
+                return Err("invalid panel identity".into());
+            }
             Self::Edit { edit } => edit.validate()?,
             Self::Choices { title, items } => {
                 if title.is_empty() || title.len() > 256 || items.len() > 1000 {

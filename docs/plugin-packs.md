@@ -5,7 +5,7 @@ required and optional capabilities, and Markdown READMEs. Each pack member has
 its own metadata through the ordinary named request contract.
 
 The default built-in artifact is now `velk_plugin_builtin`, a single native
-library containing Markdown, generic LSP, the Rust-analyzer definition, buffer
+library containing Diagnostics, Markdown, generic LSP, the Rust-analyzer definition, buffer
 search, Files, Terminal, Indentation, Autopairs, Vim, Autosave, Quick Open, and Find in
 Workspace. Each keeps its own plugin ID, named registrations, instance state,
 generation, dependency resolution, and load/unload controls.

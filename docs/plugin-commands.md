@@ -173,3 +173,21 @@ Navigation records successful provider-directed jumps. The bounded history follo
 text edits and removes closed buffers. Back/forward do not create another jump.
 Normal tab switches and file-dialog opens do not add entries. History is local
 to the window and is not persisted across Reload Window.
+
+## Panels and existing buffer locations
+
+`Outcome::ShowPanel { panel }` selects a panel local to the command's owning
+plugin, opens its slot, and preserves the closed state of other slots. It cannot
+select another plugin's panel. The contribution must already be discovered.
+
+`Outcome::RevealBuffer { location }` navigates to a Unicode-scalar offset in an
+existing session buffer ID at an exact revision. The host rejects changed or
+closed targets before switching buffers. Navigation preserves unsaved text,
+records the origin in jump history, and restores editor focus. This result also
+supports untitled buffers and avoids reconstructing file paths from labels.
+
+The bundled Diagnostics plugin declares Show Problems, Next Diagnostic (`F8`),
+and Previous Diagnostic (`Shift+F8`). Navigation includes every severity, follows
+document title then source position, and wraps. Duplicate diagnostics at the
+same offset share a navigation stop. It reads the current host snapshot for each
+command rather than relying on the panel's cached rows.

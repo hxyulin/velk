@@ -127,7 +127,12 @@ pub enum Reply {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "effect", rename_all = "snake_case")]
 pub enum Effect {
-    OpenFile { path: NativePath },
+    OpenFile {
+        path: NativePath,
+    },
+    RevealBuffer {
+        location: velk_commands::BufferLocation,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -156,6 +161,7 @@ impl Snapshot {
         }
         for effect in &self.effects {
             match effect {
+                Effect::RevealBuffer { .. } => {}
                 Effect::OpenFile { path } => {
                     path.to_path()?;
                 }

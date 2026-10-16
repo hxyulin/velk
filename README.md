@@ -143,6 +143,7 @@ separate editor stacks.
 The bundled pack contains:
 
 - `velk.files`: a lazy, watched workspace file tree.
+- `velk.problems`: a live [Problems panel and diagnostic navigation](plugins/problems/README.md) across open buffers.
 - `velk.search.literal`: Unicode-aware literal search in the active buffer.
 - `velk.terminal`: a terminal session with an owned PTY and Ghostty VT processing.
 - `velk.markdown`: bundled, replaceable CommonMark provider for documentation surfaces.

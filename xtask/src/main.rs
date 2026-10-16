@@ -98,6 +98,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         "velk.autosave",
         "velk.quick-open",
         "velk.workspace-find",
+        "velk.problems",
     ]
     .into_iter()
     .map(|id| PluginSpec {

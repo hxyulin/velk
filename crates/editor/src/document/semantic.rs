@@ -14,6 +14,7 @@ pub(super) struct State {
     pub revision: u64,
     pub status: Status,
     pub count: usize,
+    pub diagnostics: Vec<velk_semantic::Diagnostic>,
     pub hover: Option<PositionRequest>,
     pub command: Option<super::plugin_commands::Pending>,
     pub target: Option<HoverTarget>,
@@ -42,6 +43,7 @@ impl Document {
             revision: snapshot.revision,
             status: Status::Starting,
             count: 0,
+            diagnostics: Vec::new(),
             hover: None,
             command: None,
             target: None,
@@ -101,6 +103,7 @@ impl Document {
         let visible_changed = state.count != 0 || state.notice.is_some();
         state.revision = buffer.revision();
         state.count = 0;
+        state.diagnostics.clear();
         state.notice = None;
         state.service.update(DocumentSnapshot {
             path: active
@@ -183,6 +186,7 @@ impl Document {
                 }
                 if matches!(status, Status::Failed(_) | Status::Stopped) {
                     state.count = 0;
+                    state.diagnostics.clear();
                     state.hover = None;
                     state.render_task = None;
                     active
@@ -212,6 +216,7 @@ impl Document {
                 }
                 let annotations = annotations(active.editor.read(cx).buffer(), &diagnostics);
                 state.count = diagnostics.len();
+                state.diagnostics = diagnostics;
                 active.editor.update(cx, |editor, _| {
                     let _ = editor.set_annotations(annotations);
                 });
@@ -432,7 +437,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.txt");
         let b = dir.path().join("b.txt");
-        std::fs::write(&a, "first").unwrap();
+        std::fs::write(&a, "fi\u{301}rst").unwrap();
         std::fs::write(&b, "second").unwrap();
         let mut runtime = rxui::Runtime::new();
         let queue = Arc::new(Queue::default());
@@ -483,11 +488,125 @@ mod tests {
                         .len(),
                     1
                 );
+                let response = d
+                    .host_request(velk_plugin_contracts::host::Request::Diagnostics, None, cx)
+                    .unwrap();
+                let velk_plugin_contracts::host::Response::Diagnostics {
+                    documents,
+                    truncated,
+                } = response
+                else {
+                    panic!()
+                };
+                assert!(!truncated);
+                assert_eq!(documents.len(), 1);
+                assert_eq!(documents[0].id, 1);
+                assert_eq!(documents[0].diagnostics[0].message, "belongs to first");
+                let original = d
+                    .inactive
+                    .get_mut(&1)
+                    .unwrap()
+                    .semantic
+                    .as_mut()
+                    .unwrap()
+                    .diagnostics
+                    .clone();
+                d.inactive
+                    .get_mut(&1)
+                    .unwrap()
+                    .semantic
+                    .as_mut()
+                    .unwrap()
+                    .diagnostics[0]
+                    .range = 2..3;
+                let velk_plugin_contracts::host::Response::Diagnostics { documents, .. } = d
+                    .host_request(velk_plugin_contracts::host::Request::Diagnostics, None, cx)
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(
+                    (
+                        documents[0].diagnostics[0].start,
+                        documents[0].diagnostics[0].end
+                    ),
+                    (1, 3)
+                );
+                let mut large = original[0].clone();
+                large.message = "界\n".repeat(600);
+                d.inactive
+                    .get_mut(&1)
+                    .unwrap()
+                    .semantic
+                    .as_mut()
+                    .unwrap()
+                    .diagnostics = vec![large; 1001];
+                let velk_plugin_contracts::host::Response::Diagnostics {
+                    documents,
+                    truncated,
+                } = d
+                    .host_request(velk_plugin_contracts::host::Request::Diagnostics, None, cx)
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert!(truncated);
+                assert_eq!(documents[0].diagnostics.len(), 1000);
+                assert_eq!(documents[0].diagnostics[0].message.chars().count(), 512);
+                assert!(!documents[0].diagnostics[0].message.contains('\n'));
+                d.inactive
+                    .get_mut(&1)
+                    .unwrap()
+                    .semantic
+                    .as_mut()
+                    .unwrap()
+                    .diagnostics = original;
+
+                d.reveal_plugin_buffer(
+                    velk_commands::BufferLocation {
+                        id: 1,
+                        revision: 0,
+                        position: 1,
+                    },
+                    cx,
+                );
+                assert_eq!(d.buffer.id, 1);
+                assert_eq!(d.buffer.editor.read(cx).buffer().selection().head, 1);
+                d.buffer
+                    .editor
+                    .update(cx, |editor, _| editor.insert("changed"));
+                let velk_plugin_contracts::host::Response::Diagnostics { documents, .. } = d
+                    .host_request(velk_plugin_contracts::host::Request::Diagnostics, None, cx)
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert!(documents.is_empty());
+                d.select_buffer(2, cx);
+                d.reveal_plugin_buffer(
+                    velk_commands::BufferLocation {
+                        id: 1,
+                        revision: 0,
+                        position: 0,
+                    },
+                    cx,
+                );
+                assert_eq!(d.buffer.id, 2, "stale locations must not switch buffers");
                 d.select_buffer(1, cx);
+                d.buffer.editor.update(cx, |editor, _| {
+                    editor.execute(velk_editor_model::EditCommand::Undo);
+                });
                 d.intent(super::super::Intent::Buffer, cx);
                 assert_eq!(d.buffer.id, 2);
                 assert!(session.is_cancelled());
                 assert!(!d.inactive.contains_key(&1));
+                let velk_plugin_contracts::host::Response::Diagnostics { documents, .. } = d
+                    .host_request(velk_plugin_contracts::host::Request::Diagnostics, None, cx)
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert!(documents.is_empty());
             })
         });
     }
@@ -547,6 +666,7 @@ mod tests {
                         hover: true,
                     }),
                     count: 0,
+                    diagnostics: Vec::new(),
                     hover: None,
                     command: None,
                     target: None,
@@ -668,6 +788,7 @@ mod tests {
                         diagnostics: true,
                     }),
                     count: 0,
+                    diagnostics: Vec::new(),
                     hover: None,
                     command: None,
                     target: None,
@@ -756,6 +877,7 @@ mod tests {
                     revision: 0,
                     status: Status::Ready(Default::default()),
                     count: 0,
+                    diagnostics: Vec::new(),
                     hover: Some(request),
                     command: None,
                     target: None,

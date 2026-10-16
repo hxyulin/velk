@@ -76,7 +76,112 @@ impl Document {
             head: selection.head,
         }
     }
-    fn host_request(
+    fn plugin_diagnostics(&self, cx: &impl rxui::ReadContext) -> Response {
+        let mut documents = Vec::new();
+        let mut remaining = 1000usize;
+        let mut truncated = false;
+        let clean = |text: &str, limit: usize| -> String {
+            text.chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .take(limit)
+                .collect()
+        };
+        for buffer in self.buffer.iter().chain(self.inactive.values()) {
+            let Some(state) = &buffer.semantic else {
+                continue;
+            };
+            let editor = buffer.editor.read(cx);
+            let model = editor.buffer();
+            if state.revision != model.revision()
+                || matches!(
+                    state.status,
+                    velk_semantic::Status::Failed(_) | velk_semantic::Status::Stopped
+                )
+            {
+                continue;
+            }
+            let mut diagnostics = Vec::new();
+            for diagnostic in &state.diagnostics {
+                let Some(range) = model.grapheme_range(diagnostic.range.clone()) else {
+                    continue;
+                };
+                if remaining == 0 {
+                    truncated = true;
+                    break;
+                }
+                remaining -= 1;
+                let line = model.text().char_to_line(range.start);
+                diagnostics.push(host::Diagnostic {
+                    start: range.start,
+                    end: range.end,
+                    line,
+                    column: range.start - model.text().line_to_char(line),
+                    severity: match diagnostic.severity {
+                        velk_semantic::Severity::Error => host::Severity::Error,
+                        velk_semantic::Severity::Warning => host::Severity::Warning,
+                        velk_semantic::Severity::Information => host::Severity::Information,
+                        velk_semantic::Severity::Hint => host::Severity::Hint,
+                    },
+                    message: clean(&diagnostic.message, 512),
+                    source: diagnostic.source.as_deref().map(|s| clean(s, 64)),
+                    code: diagnostic.code.as_deref().map(|s| clean(s, 64)),
+                });
+            }
+            if !diagnostics.is_empty() {
+                documents.push(host::DiagnosticDocument {
+                    id: buffer.id,
+                    revision: model.revision(),
+                    title: clean(&buffer.path.to_string_lossy(), 256),
+                    diagnostics,
+                });
+            }
+        }
+        Response::Diagnostics {
+            documents,
+            truncated,
+        }
+    }
+    pub(super) fn reveal_plugin_buffer(
+        &mut self,
+        location: velk_commands::BufferLocation,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.busy()
+            || self.opening.is_some()
+            || self.lifecycle.close_intent().is_some()
+            || self
+                .buffer
+                .as_ref()
+                .is_some_and(|b| b.editor.read(cx).has_composition())
+        {
+            return;
+        }
+        let valid = self.host_buffer(location.id).is_ok_and(|b| {
+            let editor = b.editor.read(cx);
+            editor.buffer().revision() == location.revision
+                && location.position <= editor.buffer().text().len_chars()
+                && !editor.has_composition()
+        });
+        if !valid {
+            self.notice(Some(
+                "Navigation target changed or closed; refresh results and try again".into(),
+            ));
+            return;
+        }
+        let origin = self.navigation_anchor(cx);
+        self.select_buffer(location.id, cx);
+        if let Some(origin) = origin {
+            self.navigation.record(origin);
+        }
+        self.buffer.editor.update(cx, |editor, _| {
+            editor.execute(velk_editor_widget::EditCommand::SetCaret {
+                position: location.position,
+                extend: false,
+            })
+        });
+        self.restore_focus_pending = true;
+    }
+    pub(super) fn host_request(
         &mut self,
         request: Request,
         owner: Option<(String, u64)>,
@@ -92,6 +197,7 @@ impl Document {
                     },
                 });
             }
+            Request::Diagnostics => return Ok(self.plugin_diagnostics(cx)),
             Request::Buffers => {
                 return Ok(Response::Buffers {
                     buffers: self

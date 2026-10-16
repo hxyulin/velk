@@ -218,8 +218,11 @@ the LSP adapter. `VELK_LSP_CONFIG=/path/to/config.json` can set `executable`,
 Rust definition plugin; the file and copied definition are limited to 1 MiB. The editor has no user-configurable language
 routing yet, and one session still owns one document/server.
 
-`checkOnSave` is initially disabled. Native analyzer diagnostics still arrive,
-but compiler/check diagnostics are not equivalent to running `cargo check`.
+`checkOnSave` is enabled by default in both initialization options and workspace
+configuration. This allows rust-analyzer's initial Cargo check and checks after
+save to publish compiler diagnostics, including borrow-checking errors. Native
+analyzer diagnostics remain available between checks. Explicit Rust provider
+configuration can disable checking.
 Cargo project discovery, build scripts, and procedural macro support may still
 start helper processes. Opening a file does not spawn a process for every hover
 or edit; the server and its stdio connection persist.

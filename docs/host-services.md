@@ -12,6 +12,7 @@ There is no process-global current plugin, including in multi-plugin packs.
 | --- | --- |
 | `workspace.read` | `Workspace`: current working directory and selected project root |
 | `filesystem.project.read` | `ReadFile`, `ReadDirectory`: disk contents inside the project |
+| `editor.diagnostics.read` | `Diagnostics`: current revision-matched diagnostics across open buffers |
 | `editor.buffer.read` | `Buffers`, `ReadBuffer`: metadata and current unsaved text |
 | `editor.buffer.write` | `EditBuffer`, `ApplyEdit`: versioned document edits |
 | `editor.buffer.manage` | `OpenBuffer`, `NewBuffer`, `SelectBuffer`, `SaveBuffer`, `CloseBuffer` |
@@ -118,3 +119,26 @@ together after changes.
 `SaveBuffer.expected_revision` is `None` for ordinary saves. Autosave supplies
 `Some(revision)` to require a file-backed buffer at that exact revision.
 See [buffer events and autosave](buffer-events.md) for post-commit subscriptions.
+
+## Diagnostic reads
+
+`Diagnostics` returns owned `DiagnosticDocument` records keyed by session buffer
+ID and revision. Each diagnostic includes a Unicode-scalar range, zero-based
+logical line and scalar column, severity, message, source, and code. Ranges are
+aligned to grapheme boundaries so navigation does not get stuck inside a combining
+sequence. The host
+retains the latest semantic diagnostics per buffer. Closed documents, failed or
+stopped services, and results whose revision differs from current text are
+omitted; editing invalidates results immediately, before the backend responds.
+
+A response contains at most 1,000 diagnostics across the window and reports
+`truncated` when more exist. Display strings are bounded to 512 characters for
+messages, 64 for source/code, and 256 for document titles. Control characters are
+replaced with spaces. These are display summaries; editor hover retains the full
+message. Replies contain no document text or filesystem contents.
+
+The bundled Diagnostics plugin reads through this service on the serialized
+plugin worker, outside rendering. Its ordinary 200 ms panel invalidation check
+compares current records with the last described panel. No separate LSP session
+or plugin-owned UI is involved. Requests use the existing host C FFI and retain
+contract version 1.

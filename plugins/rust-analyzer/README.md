@@ -19,7 +19,12 @@ documents and require a ready language-server session. See the
 
 Set `VELK_RUST_ANALYZER` to override the executable. Set `VELK_LSP_CONFIG` to load a JSON language-server configuration file.
 
-The LSP transport plugin starts and manages the server process.
+The LSP transport plugin starts and manages the server process. Cargo checking is
+enabled by default, including rust-analyzer's initial project check and checks on
+save. Compiler diagnostics such as borrow errors depend on this integration;
+native rust-analyzer diagnostics alone do not cover all compiler errors. An
+explicit `VELK_LSP_CONFIG` can override `checkOnSave` in initialization options
+and the `rust-analyzer` configuration section.
 
 ## Settings
 

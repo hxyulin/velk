@@ -597,6 +597,9 @@ impl Document {
                         if this.panels.error.is_none() {
                             for effect in effects {
                                 match effect {
+                                    Effect::RevealBuffer { location } => {
+                                        this.reveal_plugin_buffer(location, cx)
+                                    }
                                     Effect::OpenFile { path } => match path.to_path() {
                                         Ok(path) => this.open_path(path, cx),
                                         Err(error) => this.panels.error = Some(error),
@@ -828,6 +831,30 @@ impl Document {
         self.panels.ui.closed.clear();
         self.suspend_panels();
         self.refresh_panels(cx);
+    }
+    pub(super) fn show_plugin_panel(
+        &mut self,
+        provider: &str,
+        panel: &str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(entry) = self
+            .panels
+            .entries
+            .iter()
+            .find(|e| e.provider == provider && e.panel.id == panel)
+        else {
+            self.notice(Some(
+                "Panel is not available; refresh panels and try again".into(),
+            ));
+            return;
+        };
+        let slot = entry.panel.slot;
+        self.panels.ui.tabs.insert(slot, entry.key.clone());
+        self.panels.ui.closed.remove(&slot);
+        self.panels.ui.visible = true;
+        self.panels.watching = None;
+        self.watch_panels(cx);
     }
     /// Applies a layout's panel default; `cx` restarts watching for streams.
     pub(super) fn show_panels(&mut self, show: bool, cx: Option<&mut Context<'_, Self>>) {
@@ -1425,6 +1452,17 @@ mod tests {
         ui.dispatch_command::<Toggle>(&mut runtime).unwrap();
         prepare(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui).width, full.width - 560.);
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.panels.ui.closed.insert(Slot::Left);
+                this.panels.ui.closed.insert(Slot::Bottom);
+                this.show_plugin_panel("test", "Bottom", cx);
+                assert!(this.panels.ui.visible);
+                assert!(this.panels.ui.closed.contains(&Slot::Left));
+                assert!(!this.panels.ui.closed.contains(&Slot::Bottom));
+                assert_eq!(this.panels.ui.tabs[&Slot::Bottom], "test:Bottom");
+            })
+        });
         // A lifecycle transition removes cached contributions immediately.
         runtime.update(|cx| document.update(cx, |this, _| this.suspend_panels()));
         prepare(&mut ui, &mut runtime);

@@ -625,7 +625,9 @@ mod tests {
                 action: "open".into(),
             },
         );
-        let Effect::OpenFile { path: actual } = &open.effects[0];
+        let Effect::OpenFile { path: actual } = &open.effects[0] else {
+            panic!("expected file open effect")
+        };
         assert_eq!(actual.to_path().unwrap(), path);
     }
 }

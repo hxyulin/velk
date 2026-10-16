@@ -351,6 +351,12 @@ impl Document {
             return;
         }
         match outcome {
+            Outcome::RevealBuffer { location } => self.reveal_plugin_buffer(location, cx),
+            Outcome::ShowPanel { panel } => {
+                if let Some((provider, _)) = guard.owner {
+                    self.show_plugin_panel(&provider, &panel, cx);
+                }
+            }
             Outcome::Edit { edit } => self.apply_workspace_edit(edit, guard, cx),
             Outcome::Choices { title, items } => {
                 if items.is_empty() {
@@ -715,6 +721,7 @@ mod tests {
                     revision: 0,
                     status: Status::Ready(Default::default()),
                     count: 0,
+                    diagnostics: Vec::new(),
                     hover: None,
                     command: None,
                     target: None,
@@ -1094,6 +1101,7 @@ mod edit_interaction_tests {
                     revision: 0,
                     status: velk_semantic::Status::Ready(Default::default()),
                     count: 0,
+                    diagnostics: Vec::new(),
                     hover: None,
                     command: None,
                     target: None,

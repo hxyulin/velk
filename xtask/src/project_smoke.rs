@@ -31,10 +31,12 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
         path: Some(path.clone()),
         revision: 9,
         dirty: true,
-        active: false,
+        active: true,
         anchor: 0,
         head: 0,
     };
+    let diagnostics_present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let present = diagnostics_present.clone();
     let requests = client.host_requests();
     let info = buffer.clone();
     let (saved, receive_saved) = std::sync::mpsc::channel();
@@ -45,6 +47,28 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
                 continue;
             }
             let response = match request.request {
+                Request::Diagnostics => Ok(Response::Diagnostics {
+                    documents: if present.load(std::sync::atomic::Ordering::Acquire) {
+                        vec![velk_plugin_host::host::DiagnosticDocument {
+                            id: 7,
+                            revision: 9,
+                            title: "main.rs".into(),
+                            diagnostics: vec![velk_plugin_host::host::Diagnostic {
+                                start: 3,
+                                end: 4,
+                                line: 0,
+                                column: 3,
+                                severity: velk_plugin_host::host::Severity::Warning,
+                                message: "native diagnostic".into(),
+                                source: Some("smoke".into()),
+                                code: None,
+                            }],
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    truncated: false,
+                }),
                 Request::Buffers => Ok(Response::Buffers {
                     buffers: vec![info.clone()],
                 }),
@@ -75,6 +99,107 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())??;
         assert!(report.plugins.iter().any(|p| p.id == "velk.autosave"));
+        let panel = client
+            .bind_hook("velk.problems".into(), velk_panels::HOOK.into())?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        let describe = velk_panels::encode(&velk_panels::Request::Describe {
+            context: Default::default(),
+        })?;
+        let bytes = client.call_hook(panel.clone(), describe.clone()).await?;
+        let velk_panels::Reply::Ready { snapshot } = velk_panels::decode(&bytes)? else {
+            return Err("missing Problems panel".into());
+        };
+        snapshot.validate()?;
+        let revision = snapshot.panels[0].revision;
+        assert_eq!(snapshot.panels[0].title, "Problems (1)");
+        let bytes = client
+            .call_hook(
+                panel.clone(),
+                velk_panels::encode(&velk_panels::Request::Changes)?,
+            )
+            .await?;
+        assert!(matches!(
+            velk_panels::decode::<velk_panels::Reply>(&bytes)?,
+            velk_panels::Reply::Unchanged
+        ));
+        let bytes = client
+            .call_hook(
+                panel.clone(),
+                velk_panels::encode(&velk_panels::Request::Invoke {
+                    panel: "problems".into(),
+                    revision,
+                    node: "7-0".into(),
+                    action: "reveal".into(),
+                })?,
+            )
+            .await?;
+        let velk_panels::Reply::Ready { snapshot } = velk_panels::decode(&bytes)? else {
+            panic!()
+        };
+        assert!(
+            matches!(&snapshot.effects[..], [velk_panels::Effect::RevealBuffer { location }] if location.id == 7 && location.revision == 9 && location.position == 3)
+        );
+        let context = velk_commands::Context {
+            input: None,
+            path: Some(path.clone()),
+            language: None,
+            revision: Some(9),
+            position: Some(0),
+        };
+        for command in ["show", "next", "previous"] {
+            let handle = client
+                .bind_hook("velk.problems".into(), format!("velk.problems.{command}"))?
+                .recv()
+                .await
+                .map_err(|e| e.to_string())??;
+            let bytes = client
+                .call_hook(handle, serde_json::to_vec(&context).unwrap())
+                .await?;
+            let outcome: velk_commands::Outcome =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            outcome.validate()?;
+            if command == "show" {
+                assert!(matches!(outcome, velk_commands::Outcome::ShowPanel { .. }));
+            } else {
+                assert!(
+                    matches!(outcome, velk_commands::Outcome::RevealBuffer { location } if location.id == 7 && location.position == 3)
+                );
+            }
+        }
+        diagnostics_present.store(false, std::sync::atomic::Ordering::Release);
+        let bytes = client
+            .call_hook(
+                panel.clone(),
+                velk_panels::encode(&velk_panels::Request::Changes)?,
+            )
+            .await?;
+        assert!(matches!(
+            velk_panels::decode::<velk_panels::Reply>(&bytes)?,
+            velk_panels::Reply::Invalidated
+        ));
+        let bytes = client.call_hook(panel.clone(), describe).await?;
+        let velk_panels::Reply::Ready { snapshot } = velk_panels::decode(&bytes)? else {
+            panic!()
+        };
+        assert_eq!(snapshot.panels[0].title, "Problems (0)");
+        assert!(snapshot.panels[0].revision > revision);
+        client
+            .unload("velk.problems".into())?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        assert!(
+            client
+                .call_hook(panel, velk_panels::encode(&velk_panels::Request::Changes)?)
+                .await
+                .is_err()
+        );
+        snapshot.validate()?;
+        println!(
+            "Native Diagnostics plugin smoke passed: host reads, panel actions, navigation commands and invalidation."
+        );
         for (id, session, hook, text, expected) in [
             (1, 1, "velk.quick-open.query", "smr", Some(path.clone())),
             (3, 1, "velk.quick-open.query", "new-file", None),
