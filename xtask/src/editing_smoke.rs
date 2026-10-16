@@ -33,6 +33,11 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     assert_eq!(buffer.text().to_string(), "ab  ");
     buffer.undo();
     assert_eq!(buffer.text().to_string(), "ab");
+    let mut brackets = velk_core::Buffer::new("{}");
+    brackets.set_caret(1, false);
+    assert!(session.evaluate(&mut brackets, Intent::Newline)?);
+    assert_eq!(brackets.text().to_string(), "{\n    \n}");
+    assert_eq!(brackets.selection().head, 6);
     manager.unload("velk.indentation");
     assert!(!session.evaluate(&mut buffer, Intent::Indent)?);
     manager.set_settings(std::collections::BTreeMap::from([(

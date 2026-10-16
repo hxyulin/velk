@@ -88,6 +88,53 @@ impl EditingBehavior for Indentation {
                     },
                 });
             }
+            Intent::Newline => {
+                let line_start = text[..start]
+                    .iter()
+                    .rposition(|ch| *ch == '\n')
+                    .map_or(0, |i| i + 1);
+                let leading: String = text[line_start..start]
+                    .iter()
+                    .take_while(|ch| matches!(ch, ' ' | '\t'))
+                    .collect();
+                let before = text[line_start..start]
+                    .iter()
+                    .rev()
+                    .find(|ch| !matches!(ch, ' ' | '\t'))
+                    .copied();
+                let closing = match before {
+                    Some('(') => Some(')'),
+                    Some('[') => Some(']'),
+                    Some('{') => Some('}'),
+                    _ => None,
+                };
+                let inner = if closing.is_some() {
+                    format!(
+                        "{leading}{}",
+                        if tabs { "\t".into() } else { " ".repeat(width) }
+                    )
+                } else {
+                    leading.clone()
+                };
+                let mut inserted = format!("\n{inner}");
+                let caret = range.start + inserted.chars().count();
+                let next = text[end..]
+                    .iter()
+                    .position(|ch| !matches!(ch, ' ' | '\t'))
+                    .map(|i| end + i);
+                let mut replace_end = range.end;
+                if closing.is_some() && next.is_some_and(|i| Some(text[i]) == closing) {
+                    replace_end = request.offset + next.unwrap();
+                    inserted.push('\n');
+                    inserted.push_str(&leading);
+                }
+                proposal.edits.push(Edit {
+                    start: range.start,
+                    end: replace_end,
+                    text: inserted,
+                });
+                proposal.selection = Some(Selection::caret(caret));
+            }
             Intent::Indent | Intent::Outdent => {
                 for line in std::iter::once(0).chain(
                     text.iter()
@@ -191,6 +238,22 @@ mod tests {
                 .to_string(),
             "ab\t"
         );
+    }
+    #[test]
+    fn newline_preserves_indent_expands_empty_pairs_and_places_the_caret() {
+        for (text, caret, expected, final_caret, tabs) in [
+            ("    value", 9, "    value\n    ", 14, false),
+            ("{}", 1, "{\n    \n}", 6, false),
+            ("  {  }", 3, "  {\n      \n  }", 10, false),
+            ("\t[]", 2, "\t[\n\t\t\n\t]", 5, true),
+            ("界", 1, "界\n", 2, false),
+        ] {
+            let mut buffer = apply(text, Selection::caret(caret), Intent::Newline, tabs);
+            assert_eq!(buffer.text().to_string(), expected);
+            assert_eq!(buffer.selection().head, final_caret);
+            buffer.undo();
+            assert_eq!(buffer.text().to_string(), text);
+        }
     }
     #[test]
     fn selected_lines_exclude_terminal_line_and_outdent_restores_text_and_direction() {

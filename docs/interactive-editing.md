@@ -55,3 +55,9 @@ selection direction and form one undo step.
 Plugin settings `tab_width` (1–16, default 4) and `use_tabs` (default false) control
 inserted text. Columns are logical Unicode scalar columns with tabs expanded to
 configured stops; they are not font- or glyph-width measurements.
+
+Enter preserves the leading whitespace before the caret and adds an indentation
+unit after `(`, `[`, or `{`. Before a matching close, it inserts an indented blank
+line and places the caret inside. Existing whitespace before the close is
+replaced so it does not accumulate. These initial rules are lexical; strings,
+comments, and language-specific continuation alignment are not parsed.

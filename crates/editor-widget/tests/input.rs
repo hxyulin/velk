@@ -262,3 +262,35 @@ fn tab_and_shift_tab_use_the_indentation_plugin_inside_the_editor() {
     );
     assert_eq!(text(&mut runtime, &editor), "    one\n    two\nthree");
 }
+
+#[test]
+fn enter_uses_indentation_and_keeps_the_caret_inside_expanded_brackets() {
+    let (mut runtime, editor, mut ui) = setup();
+    runtime.update(|cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_editing_providers(std::collections::BTreeMap::from([(
+                velk_editing::Role::Indentation,
+                std::sync::Arc::new(IndentationProvider)
+                    as std::sync::Arc<dyn velk_editing::Provider>,
+            )]));
+            editor.set_text("{}");
+            editor.execute(velk_editor_widget::EditCommand::SetCaret {
+                position: 1,
+                extend: false,
+            });
+        })
+    });
+    key(
+        &mut runtime,
+        &mut ui,
+        KeyboardKey::Enter,
+        Modifiers::default(),
+    );
+    assert_eq!(text(&mut runtime, &editor), "{\n    \n}");
+    input(
+        &mut runtime,
+        &mut ui,
+        TextInputEvent::Insert("inside".into()),
+    );
+    assert_eq!(text(&mut runtime, &editor), "{\n    inside\n}");
+}
