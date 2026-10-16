@@ -50,8 +50,7 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
                 Request::Diagnostics => Ok(Response::Diagnostics {
                     documents: if present.load(std::sync::atomic::Ordering::Acquire) {
                         vec![velk_plugin_host::host::DiagnosticDocument {
-                            id: 7,
-                            revision: 9,
+                            target: velk_commands::DiagnosticTarget::Buffer { id: 7, revision: 9 },
                             title: "main.rs".into(),
                             diagnostics: vec![velk_plugin_host::host::Diagnostic {
                                 start: 3,
@@ -130,7 +129,7 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
                 velk_panels::encode(&velk_panels::Request::Invoke {
                     panel: "problems".into(),
                     revision,
-                    node: "7-0".into(),
+                    node: "buffer-7-0".into(),
                     action: "reveal".into(),
                 })?,
             )
@@ -139,7 +138,7 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
             panic!()
         };
         assert!(
-            matches!(&snapshot.effects[..], [velk_panels::Effect::RevealBuffer { location }] if location.id == 7 && location.revision == 9 && location.position == 3)
+            matches!(&snapshot.effects[..], [velk_panels::Effect::RevealDiagnostic { location }] if matches!(location.target, velk_commands::DiagnosticTarget::Buffer { id: 7, revision: 9 }) && location.position == 3)
         );
         let context = velk_commands::Context {
             input: None,
@@ -164,7 +163,7 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
                 assert!(matches!(outcome, velk_commands::Outcome::ShowPanel { .. }));
             } else {
                 assert!(
-                    matches!(outcome, velk_commands::Outcome::RevealBuffer { location } if location.id == 7 && location.position == 3)
+                    matches!(outcome, velk_commands::Outcome::RevealDiagnostic { location } if matches!(location.target, velk_commands::DiagnosticTarget::Buffer { id: 7, .. }) && location.position == 3)
                 );
             }
         }

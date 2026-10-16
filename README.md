@@ -143,7 +143,7 @@ separate editor stacks.
 The bundled pack contains:
 
 - `velk.files`: a lazy, watched workspace file tree.
-- `velk.problems`: a live [Problems panel and diagnostic navigation](plugins/problems/README.md) across open buffers.
+- `velk.problems`: a live [Problems panel and diagnostic navigation](plugins/problems/README.md) across workspace files.
 - `velk.search.literal`: Unicode-aware literal search in the active buffer.
 - `velk.terminal`: a terminal session with an owned PTY and Ghostty VT processing.
 - `velk.markdown`: bundled, replaceable CommonMark provider for documentation surfaces.
@@ -207,9 +207,9 @@ Current limitations include:
 - Language integration focuses on Rust. Completion is explicitly invoked and
   plain-text only; snippets, automatic suggestions, and server command execution
   are not yet implemented.
-- Language-server clients are shared by workspace and configuration. Problems
-  currently exposes diagnostics for open documents; retaining results for unopened
-  files is still future work.
+- Language-server clients and diagnostic publications are shared by workspace.
+  Problems includes unopened files when the server publishes them; Velk does not
+  independently scan every file or implement pull diagnostics yet.
 - Disk conflicts are detected during saves, but automatic reload and interactive
   conflict resolution are still future work.
 - Accessibility exposes the editor role and label, but does not yet publish

@@ -351,6 +351,7 @@ impl Document {
             return;
         }
         match outcome {
+            Outcome::RevealDiagnostic { location } => self.reveal_diagnostic(location, cx),
             Outcome::RevealBuffer { location } => self.reveal_plugin_buffer(location, cx),
             Outcome::ShowPanel { panel } => {
                 if let Some((provider, _)) = guard.owner {

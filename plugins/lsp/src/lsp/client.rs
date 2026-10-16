@@ -18,6 +18,7 @@ struct Key {
 #[derive(Default)]
 pub struct Client {
     state: Mutex<State>,
+    host: Mutex<Option<velk_plugin_sdk::Host>>,
 }
 #[derive(Default)]
 struct State {
@@ -75,6 +76,9 @@ impl Drop for Connection {
     }
 }
 impl Client {
+    pub fn attach_host(&self, host: velk_plugin_sdk::Host) {
+        *self.host.lock().unwrap() = Some(host);
+    }
     pub fn retire_idle(&self) {
         let idle = {
             let mut state = self.state.lock().unwrap();
@@ -165,6 +169,9 @@ impl Client {
                 let (send, receive) = mpsc::channel(256);
                 let (stop, stopped) = watch::channel(false);
                 let configuration = key.clone();
+                let documents: Documents = Arc::default();
+                let published_documents = documents.clone();
+                let host = self.host.lock().unwrap().clone();
                 let thread = std::thread::Builder::new()
                     .name("velk-lsp-workspace".into())
                     .spawn(move || {
@@ -172,13 +179,20 @@ impl Client {
                             .enable_all()
                             .build()
                         {
-                            runtime.block_on(workspace(configuration, receive, stopped));
+                            runtime.block_on(workspace(
+                                configuration,
+                                receive,
+                                stopped,
+                                host,
+                                id,
+                                published_documents,
+                            ));
                         }
                     })
                     .map_err(|e| e.to_string())?;
                 state.workers.push(Worker {
                     active: Arc::default(),
-                    documents: Arc::default(),
+                    documents,
                     id,
                     key,
                     send,
@@ -224,8 +238,16 @@ impl Connection {
             .map_err(|_| "LSP workspace stopped".into())
     }
     pub async fn request(&mut self, id: u64, method: &str, params: Value) -> Result<(), String> {
-        self.send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+        match self
+            .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
             .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => match self.read().await {
+                Err(cause) => Err(cause),
+                Ok(_) => Err(error),
+            },
+        }
     }
     pub async fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
         self.send(json!({"jsonrpc":"2.0", "method":method, "params":params}))
@@ -265,8 +287,26 @@ async fn workspace(
     key: Key,
     mut receive: mpsc::Receiver<Control>,
     mut stopped: watch::Receiver<bool>,
+    host: Option<velk_plugin_sdk::Host>,
+    client: u64,
+    documents: Documents,
 ) {
     let mut attachments = BTreeMap::<u64, Attachment>::new();
+    // Queue the first attachment before attempting spawn, so startup failures
+    // always reach its event receiver rather than racing a closed control queue.
+    let Some(Control::Attach { id, send }) = (tokio::select! {
+        control = receive.recv() => control,
+        _ = stopped.changed() => None,
+    }) else {
+        return;
+    };
+    attachments.insert(
+        id,
+        Attachment {
+            send,
+            document: None,
+        },
+    );
     let mut connection = match transport::Connection::spawn(
         &key.executable,
         &key.arguments,
@@ -278,6 +318,9 @@ async fn workspace(
             // Attach was queued before this worker started. Report the actual
             // spawn error to every attachment already waiting for initialization.
             receive.close();
+            for attachment in attachments.values() {
+                let _ = attachment.send.try_send(Err(error.clone()));
+            }
             while let Some(control) = receive.recv().await {
                 match control {
                     Control::Attach { send, .. } => {
@@ -298,6 +341,9 @@ async fn workspace(
         &mut attachments,
         &mut receive,
         &mut stopped,
+        &host,
+        client,
+        &documents,
     )
     .await;
     if let Err(error) = result {
@@ -313,6 +359,9 @@ async fn workspace(
         }
     }
     attachments.clear();
+    if let Some(host) = &host {
+        let _ = host.request(velk_plugin_sdk::host::Request::ClearDiagnostics { client });
+    }
     connection.shutdown().await;
 }
 async fn multiplex(
@@ -320,7 +369,11 @@ async fn multiplex(
     attachments: &mut BTreeMap<u64, Attachment>,
     receive: &mut mpsc::Receiver<Control>,
     stopped: &mut watch::Receiver<bool>,
+    host: &Option<velk_plugin_sdk::Host>,
+    client: u64,
+    documents: &Documents,
 ) -> Result<(), String> {
+    let mut encoding = Encoding::Utf16;
     let mut initialized = false;
     let mut initialize_sent = false;
     let mut initialization = None::<Value>;
@@ -396,6 +449,9 @@ async fn multiplex(
             message = connection.read() => {
                 let mut message = message?;
                 if message["method"] == "textDocument/publishDiagnostics" {
+                    if let Some(host) = host {
+                        publish_diagnostics(host, client, &message, encoding, attachments, documents, &connection.root_uri).await?;
+                    }
                     let uri = message["params"]["uri"].as_str().unwrap_or("");
                     if let Some(attachment) = attachments.values().find(|a| a.document.as_ref().is_some_and(|(path,_)| path == uri)) {
                         let base = attachment.document.as_ref().unwrap().1;
@@ -408,6 +464,9 @@ async fn multiplex(
                 } else if message.get("method").is_some() {
                     connection.handle_server_request(&message).await?;
                 } else if message.get("id") == Some(&json!(1)) {
+                    if let Ok(result) = serde_json::from_value::<InitializeResult>(message["result"].clone()) {
+                        encoding = Encoding::negotiate(result.capabilities.position_encoding.as_ref())?;
+                    }
                     initialization = Some(message.clone());
                     for (id,local) in waiting.drain(..) {
                         if let Some(attachment) = attachments.get(&id) { let mut result = message.clone(); result["id"] = local; deliver(attachment,result)?; }
@@ -445,5 +504,213 @@ fn translate_versions(value: &mut Value, attachments: &BTreeMap<u64, Attachment>
             }
         }
         _ => {}
+    }
+}
+
+async fn publish_diagnostics(
+    host: &velk_plugin_sdk::Host,
+    client: u64,
+    message: &Value,
+    encoding: Encoding,
+    attachments: &BTreeMap<u64, Attachment>,
+    documents: &Documents,
+    root_uri: &str,
+) -> Result<(), String> {
+    use velk_plugin_sdk::host::DiagnosticPublication;
+    let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(message["params"].clone())
+    else {
+        return Ok(());
+    };
+    let Ok(path) = Url::parse(params.uri.as_str()).and_then(|uri| {
+        uri.to_file_path()
+            .map_err(|_| url::ParseError::RelativeUrlWithoutBase)
+    }) else {
+        return Ok(());
+    };
+    let root = Url::parse(root_uri)
+        .ok()
+        .and_then(|uri| uri.to_file_path().ok());
+    let snapshot = attachments.iter().find_map(|(id, attachment)| {
+        let (uri, base) = attachment.document.as_ref()?;
+        if uri != params.uri.as_str() {
+            return None;
+        }
+        let (snapshot, local) = documents.lock().unwrap().get(id)?.clone();
+        (params.version == local.checked_add(*base)).then_some(snapshot)
+    });
+    // Versioned publications require their exact attached snapshot. Unversioned
+    // workspace checks describe disk contents, never an arbitrary dirty revision.
+    if params.version.is_some() && snapshot.is_none() {
+        return Ok(());
+    }
+    let disk_path = path;
+    let (path, disk) = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let path = disk_path.canonicalize().unwrap_or(disk_path);
+        let disk = (|| {
+            if root.as_ref().is_none_or(|root| !path.starts_with(root)) {
+                return None;
+            }
+            if !std::fs::metadata(&path).ok()?.is_file() {
+                return None;
+            }
+            let file = std::fs::File::open(&path).ok()?;
+            if !file.metadata().ok()?.is_file() {
+                return None;
+            }
+            let mut text = String::new();
+            file.take(velk_plugin_sdk::host::MAX_FILE_BYTES as u64 + 1)
+                .read_to_string(&mut text)
+                .ok()?;
+            (text.len() <= velk_plugin_sdk::host::MAX_FILE_BYTES)
+                .then(|| text.replace("\r\n", "\n").replace('\r', "\n"))
+        })();
+        (path, disk)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let root = Url::parse(root_uri)
+        .ok()
+        .and_then(|uri| uri.to_file_path().ok());
+    if root.is_none_or(|root| !path.starts_with(root)) {
+        return Ok(());
+    }
+    let revision = snapshot.as_ref().map(|s| s.revision);
+    let text = match snapshot {
+        Some(snapshot) => snapshot.text.to_string(),
+        None => match disk.as_ref() {
+            Some(text) => text.clone(),
+            None if params.diagnostics.is_empty() => String::new(),
+            None => return Ok(()),
+        },
+    };
+    if text.len() > velk_plugin_sdk::host::MAX_FILE_BYTES {
+        return Ok(());
+    }
+    let rope = ropey::Rope::from_str(&text);
+    let truncated = params.diagnostics.len() > 1000;
+    let diagnostics = params
+        .diagnostics
+        .into_iter()
+        .take(1000)
+        .filter_map(|d| {
+            let range = encoding.decode_range(&rope, d.range)?;
+            let line = rope.char_to_line(range.start);
+            Some(velk_plugin_sdk::host::Diagnostic {
+                start: range.start,
+                end: range.end,
+                line,
+                column: range.start - rope.line_to_char(line),
+                severity: match d.severity {
+                    Some(lsp_types::DiagnosticSeverity::ERROR) => {
+                        velk_plugin_sdk::host::Severity::Error
+                    }
+                    Some(lsp_types::DiagnosticSeverity::WARNING) => {
+                        velk_plugin_sdk::host::Severity::Warning
+                    }
+                    Some(lsp_types::DiagnosticSeverity::HINT) => {
+                        velk_plugin_sdk::host::Severity::Hint
+                    }
+                    _ => velk_plugin_sdk::host::Severity::Information,
+                },
+                message: d.message.chars().take(1000).collect(),
+                source: d.source,
+                code: d.code.map(|code| match code {
+                    lsp_types::NumberOrString::Number(n) => n.to_string(),
+                    lsp_types::NumberOrString::String(s) => s,
+                }),
+            })
+        })
+        .collect();
+    let request = bounded_publication(
+        client,
+        DiagnosticPublication {
+            path,
+            revision,
+            disk_matches: disk.as_ref() == Some(&text),
+            truncated,
+            text,
+            diagnostics,
+        },
+    )?;
+    if let Some(request) = request {
+        host.request(request)?;
+    }
+    Ok(())
+}
+
+fn bounded_publication(
+    client: u64,
+    publication: velk_plugin_sdk::host::DiagnosticPublication,
+) -> Result<Option<velk_plugin_sdk::host::Request>, String> {
+    use velk_plugin_sdk::host::Request;
+    let mut request = Request::PublishDiagnostics {
+        client,
+        publication,
+    };
+    loop {
+        if serde_json::to_vec(&request)
+            .map_err(|e| e.to_string())?
+            .len()
+            <= velk_plugin_sdk::api::MAX_INPUT_BYTES
+        {
+            return Ok(Some(request));
+        }
+        let Request::PublishDiagnostics { publication, .. } = &mut request else {
+            unreachable!()
+        };
+        if publication.diagnostics.len() <= 1 {
+            return Ok(None);
+        }
+        publication
+            .diagnostics
+            .truncate(publication.diagnostics.len() / 2);
+        publication.truncated = true;
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    #[test]
+    fn publications_fit_the_native_encoded_budget_and_report_truncation() {
+        use velk_plugin_sdk::host::*;
+        let publication = DiagnosticPublication {
+            path: "/project/file.rs".into(),
+            revision: None,
+            disk_matches: true,
+            text: "x".repeat(600_000),
+            truncated: false,
+            diagnostics: vec![
+                Diagnostic {
+                    start: 0,
+                    end: 1,
+                    line: 0,
+                    column: 0,
+                    severity: Severity::Error,
+                    message: "warning".repeat(80),
+                    source: None,
+                    code: None
+                };
+                1000
+            ],
+        };
+        let request = bounded_publication(1, publication).unwrap().unwrap();
+        assert!(
+            serde_json::to_vec(&request).unwrap().len() <= velk_plugin_sdk::api::MAX_INPUT_BYTES
+        );
+        let Request::PublishDiagnostics {
+            mut publication, ..
+        } = request
+        else {
+            panic!()
+        };
+        assert!(publication.truncated);
+        assert!(!publication.diagnostics.is_empty());
+        publication.text = "\\".repeat(velk_plugin_sdk::api::MAX_INPUT_BYTES);
+        assert!(
+            bounded_publication(1, publication).unwrap().is_none(),
+            "oversized encoded source must not terminate the workspace client"
+        );
     }
 }

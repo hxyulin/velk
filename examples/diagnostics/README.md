@@ -10,9 +10,10 @@ cargo xtask run --release -- examples/diagnostics/src/lib.rs
 ```
 
 Load the **Diagnostics** plugin if it is not enabled. Use **Diagnostics: Show
-Problems** in the command palette. Open `types.rs` and `ownership.rs` as well to
-try cross-buffer navigation with `F8` and `Shift+F8`. The editor currently lists
-diagnostics for open documents; allow rust-analyzer time to check the project.
+Problems** in the command palette. Leave `types.rs` and `ownership.rs` unopened:
+after rust-analyzer checks the project, their errors should appear alongside
+`lib.rs`. Click a row, or use `F8` and `Shift+F8`, to open the corresponding file
+and navigate to the result. Closing its buffer should preserve saved-file results.
 
 The files demonstrate an unresolved function, mismatched return and argument
 types, use after move, and conflicting borrows. Fix an error and save to watch the

@@ -597,6 +597,9 @@ impl Document {
                         if this.panels.error.is_none() {
                             for effect in effects {
                                 match effect {
+                                    Effect::RevealDiagnostic { location } => {
+                                        this.reveal_diagnostic(location, cx)
+                                    }
                                     Effect::RevealBuffer { location } => {
                                         this.reveal_plugin_buffer(location, cx)
                                     }

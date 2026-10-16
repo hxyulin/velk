@@ -186,6 +186,12 @@ closed targets before switching buffers. Navigation preserves unsaved text,
 records the origin in jump history, and restores editor focus. This result also
 supports untitled buffers and avoids reconstructing file paths from labels.
 
+`Outcome::RevealDiagnostic` accepts a `DiagnosticLocation` with either an exact
+buffer target or a path/content fingerprint and a Unicode-scalar offset. File
+targets use the normal asynchronous open flow and reject changed contents before
+selecting an existing buffer or opening a new one. Panel effects support the same
+location through `Effect::RevealDiagnostic`.
+
 The bundled Diagnostics plugin declares Show Problems, Next Diagnostic (`F8`),
 and Previous Diagnostic (`Shift+F8`). Navigation includes every severity, follows
 document title then source position, and wraps. Duplicate diagnostics at the

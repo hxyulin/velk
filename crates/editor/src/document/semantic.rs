@@ -500,7 +500,10 @@ mod tests {
                 };
                 assert!(!truncated);
                 assert_eq!(documents.len(), 1);
-                assert_eq!(documents[0].id, 1);
+                assert!(matches!(
+                    documents[0].target,
+                    velk_commands::DiagnosticTarget::Buffer { id: 1, .. }
+                ));
                 assert_eq!(documents[0].diagnostics[0].message, "belongs to first");
                 let original = d
                     .inactive

@@ -28,6 +28,24 @@ impl Endpoint {
         };
         let directory = matches!(request, Request::ReadDirectory { .. });
         match request {
+            Request::PublishDiagnostics {
+                client,
+                publication,
+            } => {
+                self.bridge.publish_diagnostics(
+                    &self.plugin,
+                    self.generation,
+                    client,
+                    self.active.clone(),
+                    publication,
+                )?;
+                Ok(Response::Accepted)
+            }
+            Request::ClearDiagnostics { client } => {
+                self.bridge
+                    .clear_diagnostics(&self.plugin, self.generation, client);
+                Ok(Response::Accepted)
+            }
             Request::Workspace => self
                 .workspace()
                 .map(|workspace| Response::Workspace { workspace }),

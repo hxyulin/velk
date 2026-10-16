@@ -44,7 +44,7 @@ impl Document {
             ))),
         }
     }
-    fn host_buffer(&self, id: u64) -> Result<&BufferState, String> {
+    pub(super) fn host_buffer(&self, id: u64) -> Result<&BufferState, String> {
         self.buffer
             .as_ref()
             .filter(|b| b.id == id)
@@ -86,7 +86,86 @@ impl Document {
                 .take(limit)
                 .collect()
         };
+        let publications = self
+            .plugins
+            .as_ref()
+            .map(|p| p.client.diagnostic_publications())
+            .unwrap_or_default();
+        for publication in &publications {
+            let open = self.buffer.iter().chain(self.inactive.values()).find(|b| {
+                b.file
+                    .as_ref()
+                    .is_some_and(|f| f.path() == publication.path)
+            });
+            let target = if let Some(buffer) = open {
+                let editor = buffer.editor.read(cx);
+                let model = editor.buffer();
+                if publication
+                    .revision
+                    .is_some_and(|revision| revision != model.revision())
+                    || !model
+                        .text()
+                        .chunks()
+                        .flat_map(str::bytes)
+                        .eq(publication.text.bytes())
+                {
+                    continue;
+                }
+                velk_commands::DiagnosticTarget::Buffer {
+                    id: buffer.id,
+                    revision: model.revision(),
+                }
+            } else {
+                if !publication.disk_matches {
+                    continue;
+                }
+                velk_commands::DiagnosticTarget::File {
+                    path: publication.path.clone(),
+                    text_hash: velk_commands::text_hash(publication.text.bytes()),
+                }
+            };
+            truncated |= publication.truncated;
+            let mut diagnostics = publication.diagnostics.clone();
+            if diagnostics.len() > remaining {
+                diagnostics.truncate(remaining);
+                truncated = true;
+            }
+            remaining -= diagnostics.len();
+            if let Some(buffer) = open {
+                let editor = buffer.editor.read(cx);
+                let model = editor.buffer();
+                diagnostics.retain_mut(|diagnostic| {
+                    let Some(range) = model.grapheme_range(diagnostic.start..diagnostic.end) else {
+                        return false;
+                    };
+                    diagnostic.start = range.start;
+                    diagnostic.end = range.end;
+                    diagnostic.line = model.text().char_to_line(range.start);
+                    diagnostic.column = range.start - model.text().line_to_char(diagnostic.line);
+                    true
+                });
+            }
+            for diagnostic in &mut diagnostics {
+                diagnostic.message = clean(&diagnostic.message, 512);
+                diagnostic.source = diagnostic.source.as_deref().map(|s| clean(s, 64));
+                diagnostic.code = diagnostic.code.as_deref().map(|s| clean(s, 64));
+            }
+            if !diagnostics.is_empty() {
+                documents.push(host::DiagnosticDocument {
+                    target,
+                    title: clean(&publication.path.to_string_lossy(), 256),
+                    diagnostics,
+                });
+            }
+        }
         for buffer in self.buffer.iter().chain(self.inactive.values()) {
+            if buffer
+                .file
+                .as_ref()
+                .is_some_and(|file| publications.iter().any(|p| p.path == file.path()))
+            {
+                continue;
+            }
             let Some(state) = &buffer.semantic else {
                 continue;
             };
@@ -129,8 +208,10 @@ impl Document {
             }
             if !diagnostics.is_empty() {
                 documents.push(host::DiagnosticDocument {
-                    id: buffer.id,
-                    revision: model.revision(),
+                    target: velk_commands::DiagnosticTarget::Buffer {
+                        id: buffer.id,
+                        revision: model.revision(),
+                    },
                     title: clean(&buffer.path.to_string_lossy(), 256),
                     diagnostics,
                 });
@@ -139,6 +220,25 @@ impl Document {
         Response::Diagnostics {
             documents,
             truncated,
+        }
+    }
+    pub(super) fn reveal_diagnostic(
+        &mut self,
+        location: velk_commands::DiagnosticLocation,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match location.target {
+            velk_commands::DiagnosticTarget::Buffer { id, revision } => self.reveal_plugin_buffer(
+                velk_commands::BufferLocation {
+                    id,
+                    revision,
+                    position: location.position,
+                },
+                cx,
+            ),
+            velk_commands::DiagnosticTarget::File { path, text_hash } => {
+                self.open_diagnostic(path, text_hash, location.position, cx)
+            }
         }
     }
     pub(super) fn reveal_plugin_buffer(
@@ -219,7 +319,10 @@ impl Document {
                     text: text.to_string(),
                 });
             }
-            Request::ReadFile { .. } | Request::ReadDirectory { .. } => {
+            Request::PublishDiagnostics { .. }
+            | Request::ClearDiagnostics { .. }
+            | Request::ReadFile { .. }
+            | Request::ReadDirectory { .. } => {
                 return Err("project I/O must run off the UI".into());
             }
             _ => {}
@@ -349,6 +452,69 @@ mod tests {
                 text: text.into(),
             }],
         }
+    }
+    #[test]
+    fn disk_diagnostic_navigation_opens_unopened_files_and_rejects_changed_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unopened.txt");
+        std::fs::write(&path, "aéx\r\nz").unwrap();
+        let hash = velk_commands::text_hash("aéx\nz".bytes());
+        let mut runtime = rxui::Runtime::new();
+        let executor = Arc::new(QueuedExecutor::default());
+        runtime.configure_tasks(executor.clone(), || {}).unwrap();
+        let document = runtime.update(|cx| cx.new(|_| Document::empty(1)));
+        runtime
+            .update(|cx| document.update(cx, |d, cx| d.open_diagnostic(path.clone(), hash, 2, cx)));
+        executor.complete(&mut runtime);
+        runtime.update(|cx| {
+            document.update(cx, |d, cx| {
+                assert_eq!(d.ids().len(), 1);
+                assert_eq!(d.buffer.editor.read(cx).caret_position(), 2);
+                d.buffer.editor.update(cx, |editor, _| {
+                    editor.execute(velk_editor_model::EditCommand::Insert("changed"))
+                });
+                d.host_request(
+                    Request::NewBuffer {
+                        text: String::new(),
+                    },
+                    None,
+                    cx,
+                )
+                .unwrap();
+                d.open_diagnostic(path.clone(), hash, 2, cx);
+            })
+        });
+        executor.complete(&mut runtime);
+        runtime.update(|cx| {
+            document.update(cx, |d, _cx| {
+                assert_eq!(
+                    d.buffer.id, 2,
+                    "stale disk results must not select a dirty target"
+                );
+                assert!(
+                    d.window_status
+                        .as_ref()
+                        .is_some_and(|s| s.contains("changed"))
+                        || d.buffer
+                            .status
+                            .as_ref()
+                            .is_some_and(|s| s.contains("changed"))
+                );
+            })
+        });
+        let changed = directory.path().join("changed.txt");
+        std::fs::write(&changed, "changed on disk").unwrap();
+        runtime.update(|cx| {
+            document.update(cx, |d, cx| d.open_diagnostic(changed.clone(), hash, 2, cx))
+        });
+        executor.complete(&mut runtime);
+        runtime.update(|cx| {
+            assert_eq!(
+                document.read(cx).ids().len(),
+                2,
+                "stale disk results must not open a buffer"
+            )
+        });
     }
     #[test]
     fn host_buffers_preserve_unsaved_text_identity_history_and_close_confirmation() {

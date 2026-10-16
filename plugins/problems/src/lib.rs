@@ -1,7 +1,7 @@
 use velk_panels::{Content, Effect, Node, Panel, Reply, Request, Slot, Snapshot};
 use velk_plugin_sdk::{
     CapabilityDeclaration, Host, Plugin, Registrar,
-    commands::{self, BufferLocation, Outcome},
+    commands::{self, DiagnosticLocation, DiagnosticTarget, Outcome},
     hooks,
     host::{self, DiagnosticDocument, Severity},
 };
@@ -28,6 +28,15 @@ fn display(text: &str, limit: usize) -> String {
         result
     }
 }
+fn document_key(document: &DiagnosticDocument) -> String {
+    match &document.target {
+        DiagnosticTarget::Buffer { id, .. } => format!("buffer-{id}"),
+        DiagnosticTarget::File { path, .. } => format!(
+            "file-{}",
+            commands::text_hash(path.as_os_str().as_encoded_bytes().iter().copied())
+        ),
+    }
+}
 impl Problems {
     fn read(&self) -> Result<(Vec<DiagnosticDocument>, bool), String> {
         match self
@@ -40,7 +49,17 @@ impl Problems {
                 mut documents,
                 truncated,
             } => {
-                documents.sort_by(|a, b| (&a.title, a.id).cmp(&(&b.title, b.id)));
+                let mut merged: Vec<DiagnosticDocument> = Vec::new();
+                for document in documents.drain(..) {
+                    if let Some(existing) = merged.iter_mut().find(|d| d.target == document.target)
+                    {
+                        existing.diagnostics.extend(document.diagnostics);
+                    } else {
+                        merged.push(document);
+                    }
+                }
+                documents = merged;
+                documents.sort_by(|a, b| a.title.cmp(&b.title));
                 for document in &mut documents {
                     document.diagnostics.sort_by_key(|d| (d.start, d.end));
                 }
@@ -53,8 +72,9 @@ impl Problems {
         let mut nodes = Vec::new();
         let count: usize = self.documents.iter().map(|d| d.diagnostics.len()).sum();
         for document in &self.documents {
+            let key = document_key(document);
             nodes.push(Node {
-                id: format!("buffer-{}", document.id),
+                id: key.clone(),
                 label: display(
                     &format!("{} ({})", document.title, document.diagnostics.len()),
                     256,
@@ -78,7 +98,7 @@ impl Problems {
                     .collect::<Vec<_>>()
                     .join(":");
                 nodes.push(Node {
-                    id: format!("{}-{index}", document.id),
+                    id: format!("{key}-{index}"),
                     label: display(
                         &format!(
                             "{severity} {}:{} {}{}",
@@ -114,7 +134,7 @@ impl Problems {
                 slot: Slot::Bottom,
                 revision: self.revision,
                 content: if nodes.is_empty() {
-                    Content::Text("No current diagnostics in open buffers.".into())
+                    Content::Text("No current workspace diagnostics.".into())
                 } else {
                     Content::Tree(nodes)
                 },
@@ -162,16 +182,15 @@ impl Problems {
                             .diagnostics
                             .iter()
                             .enumerate()
-                            .find(|(i, _)| node == format!("{}-{i}", document.id))
-                            .map(|(_, d)| BufferLocation {
-                                id: document.id,
-                                revision: document.revision,
+                            .find(|(i, _)| node == format!("{}-{i}", document_key(document)))
+                            .map(|(_, d)| DiagnosticLocation {
+                                target: document.target.clone(),
                                 position: d.start,
                             })
                     })
                     .ok_or("unknown diagnostic row")?;
                 Ok(Reply::Ready {
-                    snapshot: self.snapshot(vec![Effect::RevealBuffer { location }]),
+                    snapshot: self.snapshot(vec![Effect::RevealDiagnostic { location }]),
                 })
             }
             Request::Cancel { .. } => Ok(Reply::Cancelled),
@@ -211,16 +230,17 @@ fn navigate(
             document.diagnostics.iter().map(move |d| {
                 (
                     index,
-                    BufferLocation {
-                        id: document.id,
-                        revision: document.revision,
+                    DiagnosticLocation {
+                        target: document.target.clone(),
                         position: d.start,
                     },
                 )
             })
         })
         .collect();
-    let current = documents.iter().position(|d| Some(d.id) == active);
+    let current = documents.iter().position(
+        |d| matches!(d.target, DiagnosticTarget::Buffer { id, .. } if Some(id) == active),
+    );
     let location = if backwards {
         locations
             .iter()
@@ -238,11 +258,11 @@ fn navigate(
             .or_else(|| locations.first())
     };
     match location {
-        Some((_, location)) => Outcome::RevealBuffer {
+        Some((_, location)) => Outcome::RevealDiagnostic {
             location: location.clone(),
         },
         None => Outcome::Message {
-            text: "No current diagnostics in open buffers".into(),
+            text: "No current workspace diagnostics".into(),
         },
     }
 }
@@ -266,7 +286,7 @@ impl Plugin for Problems {
         ),
     ];
     fn describe(&mut self) -> String {
-        "Problems panel and diagnostic navigation across open buffers.".into()
+        "Problems panel and diagnostic navigation across the workspace.".into()
     }
     fn attach_host(&mut self, host: Host) {
         self.host = Some(host);
@@ -329,8 +349,7 @@ mod tests {
     use super::*;
     fn document(id: u64, positions: &[usize]) -> DiagnosticDocument {
         DiagnosticDocument {
-            id,
-            revision: 7,
+            target: DiagnosticTarget::Buffer { id, revision: 7 },
             title: format!("file-{id}"),
             diagnostics: positions
                 .iter()
@@ -348,11 +367,14 @@ mod tests {
         }
     }
     fn target(outcome: Outcome) -> (u64, usize) {
-        let Outcome::RevealBuffer { location } = outcome else {
+        let Outcome::RevealDiagnostic { location } = outcome else {
             panic!("expected navigation")
         };
-        assert_eq!(location.revision, 7);
-        (location.id, location.position)
+        let DiagnosticTarget::Buffer { id, revision } = location.target else {
+            panic!()
+        };
+        assert_eq!(revision, 7);
+        (id, location.position)
     }
     #[test]
     fn navigation_skips_duplicate_positions_crosses_buffers_and_wraps() {
@@ -390,17 +412,16 @@ mod tests {
             node: node.into(),
             action: "reveal".into(),
         };
-        assert!(plugin.panel(request(2, "8-0")).is_err());
+        assert!(plugin.panel(request(2, "buffer-8-0")).is_err());
         assert!(plugin.panel(request(3, "unknown")).is_err());
-        let Reply::Ready { snapshot } = plugin.panel(request(3, "8-0")).unwrap() else {
+        let Reply::Ready { snapshot } = plugin.panel(request(3, "buffer-8-0")).unwrap() else {
             panic!()
         };
         assert_eq!(
             snapshot.effects,
-            vec![Effect::RevealBuffer {
-                location: BufferLocation {
-                    id: 8,
-                    revision: 7,
+            vec![Effect::RevealDiagnostic {
+                location: DiagnosticLocation {
+                    target: DiagnosticTarget::Buffer { id: 8, revision: 7 },
                     position: 1
                 }
             }]

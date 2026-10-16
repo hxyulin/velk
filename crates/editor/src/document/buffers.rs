@@ -10,6 +10,7 @@ use velk_editor_widget::{Editor, Language};
 pub(super) struct OpenRequest {
     path: PathBuf,
     position: Option<velk_commands::Position>,
+    diagnostic: Option<(u64, usize)>,
     origin: Option<(velk_editor_model::navigation::Anchor, u64)>,
 }
 enum Opened {
@@ -412,6 +413,7 @@ impl Document {
             OpenRequest {
                 path,
                 position: None,
+                diagnostic: None,
                 origin: None,
             },
             cx,
@@ -426,12 +428,52 @@ impl Document {
             OpenRequest {
                 path: location.path,
                 position: Some(location.position),
+                diagnostic: None,
                 origin: self
                     .navigation_anchor(cx)
                     .map(|anchor| (anchor, self.buffer.editor.read(cx).buffer().revision())),
             },
             cx,
         );
+    }
+    pub(super) fn open_diagnostic(
+        &mut self,
+        path: PathBuf,
+        text_hash: u64,
+        position: usize,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.open_request(
+            OpenRequest {
+                path,
+                position: None,
+                diagnostic: Some((text_hash, position)),
+                origin: self
+                    .navigation_anchor(cx)
+                    .map(|anchor| (anchor, self.buffer.editor.read(cx).buffer().revision())),
+            },
+            cx,
+        );
+    }
+    fn diagnostic_position(
+        &self,
+        text: &ropey::Rope,
+        diagnostic: Option<(u64, usize)>,
+    ) -> Result<Option<velk_commands::Position>, String> {
+        let Some((hash, offset)) = diagnostic else {
+            return Ok(None);
+        };
+        if velk_commands::text_hash(text.chunks().flat_map(str::bytes)) != hash
+            || offset > text.len_chars()
+        {
+            return Err("Diagnostic target changed; refresh results and try again".into());
+        }
+        let line = text.char_to_line(offset);
+        Ok(Some(velk_commands::Position {
+            line: line as u32,
+            column: (offset - text.line_to_char(line)) as u32,
+            encoding: velk_commands::Encoding::Utf32,
+        }))
     }
     fn navigate_position(
         &mut self,
@@ -490,6 +532,7 @@ impl Document {
         let OpenRequest {
             path,
             position,
+            diagnostic,
             origin,
         } = request;
         let open: Vec<_> = self
@@ -525,42 +568,67 @@ impl Document {
                         "Navigation cancelled because its source changed".into(),
                     ));
                 } else {
-                    match result {
-                        Ok(Ok(Opened::Existing(id))) => {
-                            this.select_buffer(id, cx);
-                            if this.buffer.as_ref().is_some_and(|b| b.id == id) {
-                                this.navigate_position(
-                                    position,
-                                    origin.map(|(anchor, _)| anchor),
-                                    cx,
-                                );
+                    'navigation: {
+                        match result {
+                            Ok(Ok(Opened::Existing(id))) => {
+                                let resolved = this.host_buffer(id).and_then(|b| {
+                                    this.diagnostic_position(
+                                        b.editor.read(cx).buffer().text(),
+                                        diagnostic,
+                                    )
+                                });
+                                let position = match resolved {
+                                    Ok(value) => value.or(position),
+                                    Err(error) => {
+                                        this.notice(Some(error));
+                                        break 'navigation;
+                                    }
+                                };
+                                this.select_buffer(id, cx);
+                                if this.buffer.as_ref().is_some_and(|b| b.id == id) {
+                                    this.navigate_position(
+                                        position,
+                                        origin.map(|(anchor, _)| anchor),
+                                        cx,
+                                    );
+                                }
                             }
-                        }
-                        Ok(Ok(Opened::Loaded(loaded))) => {
-                            let (file, buffer, path) = *loaded;
-                            let mut editor = Editor::from_buffer(buffer);
-                            match editor.set_language(Language::for_path(&path)) {
-                                Ok(()) => {
-                                    let canonical = file.path().to_path_buf();
-                                    this.add_buffer(file, editor, path, cx);
-                                    if this
-                                        .buffer
-                                        .as_ref()
-                                        .and_then(|b| b.file.as_ref())
-                                        .is_some_and(|f| f.path() == canonical)
-                                    {
-                                        this.navigate_position(
-                                            position,
-                                            origin.map(|(anchor, _)| anchor),
-                                            cx,
-                                        );
+                            Ok(Ok(Opened::Loaded(loaded))) => {
+                                let (file, buffer, path) = *loaded;
+                                let position =
+                                    match this.diagnostic_position(buffer.text(), diagnostic) {
+                                        Ok(value) => value.or(position),
+                                        Err(error) => {
+                                            this.notice(Some(error));
+                                            break 'navigation;
+                                        }
+                                    };
+                                let mut editor = Editor::from_buffer(buffer);
+                                match editor.set_language(Language::for_path(&path)) {
+                                    Ok(()) => {
+                                        let canonical = file.path().to_path_buf();
+                                        this.add_buffer(file, editor, path, cx);
+                                        if this
+                                            .buffer
+                                            .as_ref()
+                                            .and_then(|b| b.file.as_ref())
+                                            .is_some_and(|f| f.path() == canonical)
+                                        {
+                                            this.navigate_position(
+                                                position,
+                                                origin.map(|(anchor, _)| anchor),
+                                                cx,
+                                            );
+                                        }
+                                    }
+                                    Err(error) => {
+                                        this.notice(Some(format!("Open failed: {error}")))
                                     }
                                 }
-                                Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                             }
+                            Ok(Err(error)) => this.notice(Some(format!("Open failed: {error}"))),
+                            Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                         }
-                        Ok(Err(error)) => this.notice(Some(format!("Open failed: {error}"))),
-                        Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                     }
                 }
                 if let Some(next) = this.pending_opens.pop_front() {

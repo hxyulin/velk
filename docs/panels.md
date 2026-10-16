@@ -156,7 +156,7 @@ open-file effect, unloads with outstanding work, verifies stale-handle rejection
 observes a filesystem invalidation, and reads host-owned snapshots after unload.
 
 The bundled `velk.problems` provider contributes a bottom Problems tree through
-this same contract. Rows group current diagnostics by open buffer; leaf actions
-reveal revision-checked buffer locations. Its Show Problems command selects only
+this same contract. Rows group workspace diagnostics by document; leaf actions
+use `RevealDiagnostic` for revision-checked buffers or content-checked file opens. Its Show Problems command selects only
 its own panel without reopening other closed slots. See
 [the Diagnostics plugin](../plugins/problems/README.md).

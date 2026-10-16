@@ -190,9 +190,31 @@ pub struct BufferLocation {
     pub revision: u64,
     pub position: usize,
 }
+/// Diagnostics from an exact open revision or a checked disk snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiagnosticTarget {
+    Buffer { id: u64, revision: u64 },
+    File { path: PathBuf, text_hash: u64 },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticLocation {
+    pub target: DiagnosticTarget,
+    /// Unicode scalar offset in the published text.
+    pub position: usize,
+}
+/// Stable content fingerprint for stale navigation checks, not a security boundary.
+pub fn text_hash(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes.into_iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Outcome {
+    RevealDiagnostic {
+        location: DiagnosticLocation,
+    },
     RevealBuffer {
         location: BufferLocation,
     },

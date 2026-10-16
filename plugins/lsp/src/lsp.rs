@@ -185,9 +185,9 @@ async fn drive(
                     // incremental edit advances the version without copying text.
                     let change = change.unwrap_or_else(|| json!({"range":encoding.range(&document.text,0..0),"text":""}));
                     version = version.checked_add(1).ok_or("LSP document version overflow")?;
-                    connection.notify("textDocument/didChange", json!({"textDocument":{"uri":document_uri,"version":version},"contentChanges":[change]})).await?;
                     document = next;
                     connection.record(&document, version);
+                    connection.notify("textDocument/didChange", json!({"textDocument":{"uri":document_uri,"version":version},"contentChanges":[change]})).await?;
                     diagnostic_context.clear();
                 }
                 Some(Input::Saved(saved)) => {

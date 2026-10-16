@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub const WORKSPACE_READ: &str = "workspace.read";
 pub const PROJECT_READ: &str = "filesystem.project.read";
+pub const DIAGNOSTICS_PUBLISH: &str = "editor.diagnostics.publish";
 pub const DIAGNOSTICS_READ: &str = "editor.diagnostics.read";
 pub const BUFFER_READ: &str = "editor.buffer.read";
 pub const BUFFER_WRITE: &str = "editor.buffer.write";
@@ -61,7 +62,15 @@ pub enum Request {
         after: Option<PathBuf>,
     },
     Buffers,
-    /// Current diagnostics for open buffers; stale revisions are omitted.
+    /// Replace one client's publication for a file. Empty diagnostics clear it.
+    PublishDiagnostics {
+        client: u64,
+        publication: DiagnosticPublication,
+    },
+    ClearDiagnostics {
+        client: u64,
+    },
+    /// Current workspace diagnostics, omitting stale open revisions and disk content.
     Diagnostics,
     ReadBuffer {
         id: u64,
@@ -99,6 +108,7 @@ impl Request {
         match self {
             Self::Workspace => WORKSPACE_READ,
             Self::Diagnostics => DIAGNOSTICS_READ,
+            Self::PublishDiagnostics { .. } | Self::ClearDiagnostics { .. } => DIAGNOSTICS_PUBLISH,
             Self::ReadFile { .. } | Self::ReadDirectory { .. } => PROJECT_READ,
             Self::Buffers | Self::ReadBuffer { .. } => BUFFER_READ,
             Self::ApplyEdit { .. } | Self::EditBuffer { .. } => BUFFER_WRITE,
@@ -107,6 +117,19 @@ impl Request {
     }
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::PublishDiagnostics { publication, .. } => {
+                let length = publication.text.chars().count();
+                if !publication.path.is_absolute()
+                    || publication.text.len() > MAX_FILE_BYTES
+                    || publication.diagnostics.len() > 1000
+                    || publication
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.start > d.end || d.end > length || d.message.len() > 4096)
+                {
+                    return Err("invalid or oversized diagnostic publication".into());
+                }
+            }
             Self::OpenBuffer { path } if !path.is_absolute() => {
                 return Err("opening a buffer requires an absolute path".into());
             }
@@ -153,11 +176,22 @@ pub enum Response {
     Accepted,
 }
 
-/// A versioned Unicode-scalar location in an open buffer, including untitled buffers.
+/// One provider/client publication, independent of a buffer's lifetime.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticPublication {
+    pub path: PathBuf,
+    /// Host revision for versioned open-document results; None means disk text.
+    pub revision: Option<u64>,
+    pub text: String,
+    /// Whether the publication also describes the saved file.
+    pub disk_matches: bool,
+    pub truncated: bool,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticDocument {
-    pub id: u64,
-    pub revision: u64,
+    pub target: crate::commands::DiagnosticTarget,
     pub title: String,
     pub diagnostics: Vec<Diagnostic>,
 }

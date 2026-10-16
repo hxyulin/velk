@@ -192,6 +192,10 @@ pub struct Client {
     next_session: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 impl Client {
+    /// Latest publications, including empty replacements that clear earlier results.
+    pub fn diagnostic_publications(&self) -> Vec<std::sync::Arc<host::DiagnosticPublication>> {
+        self.host.diagnostics()
+    }
     /// Publish the authoritative UI-owned workspace context for worker-side file reads.
     pub fn set_workspace(&self, workspace: host::Workspace) {
         *self.host.workspace.lock().unwrap() = Some(workspace);

@@ -47,6 +47,7 @@ def offset(text, position):
 log({"pid": os.getpid()})
 uri, text, version, held = None, "", 0, None
 documents = {}
+workspace_published = False
 while (message := read()) is not None:
     method, params = message.get("method"), (message.get("params") or {})
     target = params.get("textDocument", {}).get("uri")
@@ -75,6 +76,13 @@ while (message := read()) is not None:
         document = params["textDocument"]
         uri, text, version = document["uri"], document["text"], document["version"]
         send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": version, "diagnostics": [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "current"}]}})
+        if mode == "workspace" and not workspace_published:
+            workspace_published = True
+            unopened = uri.rsplit("/", 1)[0] + "/unopened.rs"
+            send({"method": "textDocument/publishDiagnostics", "params": {"uri": unopened, "diagnostics": [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 9}}, "severity": 1, "message": "unopened workspace error"}]}})
+    elif method == "textDocument/didSave" and mode == "workspace":
+        unopened = uri.rsplit("/", 1)[0] + "/unopened.rs"
+        send({"method": "textDocument/publishDiagnostics", "params": {"uri": unopened, "diagnostics": []}})
     elif method == "textDocument/didChange":
         version = params["textDocument"]["version"]
         for change in params["contentChanges"]:

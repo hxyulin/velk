@@ -41,9 +41,16 @@ precedence. The client is language-neutral, but Velk currently bundles only a Ru
 language definition and editor routing.
 
 The native library stays resident because process-wide signal handlers may
-outlive a client. Problems currently lists open-document diagnostics; workspace
-connection sharing does not yet retain diagnostics for unopened files.
+outlive a client. Every file publication also enters the host's workspace
+diagnostic store, including unopened files. Publications replace earlier results
+for the same client and path; empty publications clear them. Failure or retirement
+clears the client's results. Unversioned publications use saved file contents,
+while versioned publications require the exact attached document version.
 
 Language-server stderr is drained into the host diagnostics service. The host owns
 filtering, colors, and output; external stderr text is recorded at INFO with source
 `velk_plugin_lsp::server`. Long lines are truncated to 4 KiB.
+
+Workspace collection respects the native 1 MiB encoded request limit. Diagnostic
+lists are truncated with an explicit marker when necessary; a file publication
+whose source snapshot cannot fit is omitted without stopping the server.

@@ -20,6 +20,10 @@ impl Plugin for Lsp {
             "editor.buffer.read",
             "Send document contents and changes to language servers.",
         ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "editor.diagnostics.publish",
+            "Publish workspace diagnostics, including files without open buffers.",
+        ),
         velk_plugin_sdk::CapabilityDeclaration::optional(
             "editor.buffer.write",
             "Propose formatting, refactoring and completion edits for the host to validate.",
@@ -28,6 +32,9 @@ impl Plugin for Lsp {
 
     // Tokio process signal handlers can outlive their reactor on Unix.
     const RESIDENT_CODE: bool = true;
+    fn attach_host(&mut self, host: velk_plugin_sdk::Host) {
+        self.client.attach_host(host);
+    }
     fn commands() -> Vec<velk_plugin_sdk::commands::Declaration> {
         use velk_plugin_sdk::commands::{Declaration, Handler};
         let mut declarations:Vec<_> = [

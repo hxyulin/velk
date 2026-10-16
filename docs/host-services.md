@@ -12,7 +12,8 @@ There is no process-global current plugin, including in multi-plugin packs.
 | --- | --- |
 | `workspace.read` | `Workspace`: current working directory and selected project root |
 | `filesystem.project.read` | `ReadFile`, `ReadDirectory`: disk contents inside the project |
-| `editor.diagnostics.read` | `Diagnostics`: current revision-matched diagnostics across open buffers |
+| `editor.diagnostics.publish` | `PublishDiagnostics`, `ClearDiagnostics`: replace/clear this instance's workspace publications |
+| `editor.diagnostics.read` | `Diagnostics`: current buffer and saved-file workspace results |
 | `editor.buffer.read` | `Buffers`, `ReadBuffer`: metadata and current unsaved text |
 | `editor.buffer.write` | `EditBuffer`, `ApplyEdit`: versioned document edits |
 | `editor.buffer.manage` | `OpenBuffer`, `NewBuffer`, `SelectBuffer`, `SaveBuffer`, `CloseBuffer` |
@@ -122,14 +123,30 @@ See [buffer events and autosave](buffer-events.md) for post-commit subscriptions
 
 ## Diagnostic reads
 
-`Diagnostics` returns owned `DiagnosticDocument` records keyed by session buffer
-ID and revision. Each diagnostic includes a Unicode-scalar range, zero-based
-logical line and scalar column, severity, message, source, and code. Ranges are
-aligned to grapheme boundaries so navigation does not get stuck inside a combining
-sequence. The host
-retains the latest semantic diagnostics per buffer. Closed documents, failed or
-stopped services, and results whose revision differs from current text are
-omitted; editing invalidates results immediately, before the backend responds.
+`Diagnostics` returns owned `DiagnosticDocument` records. Each target is either
+an exact open buffer ID/revision or a file path/content fingerprint; unopened
+files never receive invented buffer revisions. Diagnostics include Unicode-scalar
+ranges, zero-based line/column, severity, message, source, and code. Open ranges
+are aligned to grapheme boundaries. Editing invalidates revision-matched results
+immediately; disk publications are omitted from buffers with different contents.
+
+`PublishDiagnostics` replaces one publication keyed by calling plugin generation,
+client ID, and absolute path. Empty publications clear that path;
+`ClearDiagnostics` removes that client's publications. The calling instance
+cannot clear another instance's results. Publications include source text (at
+most 1 MiB) for stale checks, at most 1,000 diagnostics, and whether the source
+also matches disk. The store bounds retained publication payloads to 64 MiB and
+4,096 paths. The native request's 1 MiB encoded limit also applies. The LSP
+adapter truncates diagnostic lists to fit and omits a publication when its source
+snapshot alone cannot fit, without stopping the workspace client. These requests
+run directly on the host bridge without waiting for the UI. Readers share retained snapshots rather than copying source text on each
+panel poll. Plugin retirement, client failure, and client retirement clear results.
+
+Closing a buffer keeps results that describe saved text. Navigation rechecks the
+exact buffer revision or loaded file fingerprint, preserves dirty buffers,
+and uses normal asynchronous opening, deduplication, and jump history. A disk
+result can remain visible until the next publication after an external change;
+its old position is rejected if the file contents changed before navigation.
 
 A response contains at most 1,000 diagnostics across the window and reports
 `truncated` when more exist. Display strings are bounded to 512 characters for

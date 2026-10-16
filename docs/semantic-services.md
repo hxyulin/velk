@@ -375,7 +375,10 @@ a stalled document receiver fails the client rather than silently dropping a
 command response. Initialization, close and provider retirement remain cancellable
 while another document is attaching.
 
-This change establishes shared connection ownership. The Problems read service
-still exports current open-document diagnostics. Publications for unopened files
-need a workspace diagnostic store and path-based navigation rather than assigning
-an invented buffer revision.
+The shared connection also publishes every file's diagnostics to the host-owned
+workspace store through `editor.diagnostics.publish`. Versioned results require
+the exact attached snapshot; unversioned results describe disk contents. Empty
+publications clear a path, and client failure or retirement clears its results.
+Saved-file results survive buffer closure. Problems can open an unopened target
+through the normal navigation flow, checking its content fingerprint before
+moving the caret. See [host diagnostic services](host-services.md#diagnostic-reads).

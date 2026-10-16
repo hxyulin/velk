@@ -30,6 +30,8 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
     };
     let source = temp.path().join("file 世界.rs");
     std::fs::write(&source, "fn café() {}\n").map_err(|e| e.to_string())?;
+    std::fs::write(temp.path().join("unopened.rs"), "fn broken() {}\n")
+        .map_err(|e| e.to_string())?;
     for mode in [
         "normal",
         "workspace",
@@ -69,7 +71,7 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
         )?;
     }
     println!(
-        "LSP plugin smoke passed: native async diagnostics/hover, declared navigation/Rust commands, cancellation, save, unload during requests/initialization, runtime exit with live clients, process reaping, latest-document reattachment, resident image reuse, independent Markdown, namespaced Rust definition dependency/unload/reload, no server without its profile or transport."
+        "LSP plugin smoke passed: unopened-file workspace publications/empty clearing/provider retirement, native async diagnostics/hover, declared navigation/Rust commands, cancellation, save, unload during requests/initialization, runtime exit with live clients, process reaping, latest-document reattachment, resident image reuse, independent Markdown, namespaced Rust definition dependency/unload/reload, no server without its profile or transport."
     );
     Ok(())
 }
@@ -172,6 +174,16 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
             assert_eq!(loaded.loaded, 3);
             if mode == "workspace" {
                 until(&service.events, |e| matches!(e, Event::Diagnostics { .. })).await?;
+                let unopened = path.parent().unwrap().join("unopened.rs").canonicalize().map_err(|e|e.to_string())?;
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !client.diagnostic_publications().iter().any(|p| p.path == unopened) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.map_err(|_| "unopened workspace diagnostics were dropped")?;
+                let publication = client.diagnostic_publications().into_iter().find(|p| p.path == unopened).unwrap();
+                assert_eq!(publication.revision, None);
+                assert!(publication.disk_matches);
+                assert_eq!(publication.diagnostics[0].message, "unopened workspace error");
                 let other = path.parent().unwrap().join("second.rs");
                 let second = client.semantic_service()?;
                 second.update(snapshot(&other, 9, initial));
@@ -184,12 +196,20 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 second.command(PositionRequest { id:1, revision:9, position:4 }, serde_json::json!({"method":"textDocument/definition","result":"locations","capability":"/definitionProvider"}),None)?;
                 let Event::Command { result: Ok(velk_commands::Outcome::Locations { locations }), .. } = until(&second.events, |e|matches!(e, Event::Command { .. })).await? else { panic!("shared definition failed") };
                 assert_eq!(locations[0].path, other);
+                assert!(client.diagnostic_publications().iter().any(|p| p.path == unopened), "closing a buffer must not discard workspace diagnostics");
+                second.saved(snapshot(&other, 9, initial));
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while client.diagnostic_publications().iter().any(|p| p.path == unopened && !p.diagnostics.is_empty()) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.map_err(|_| "empty diagnostic publication did not clear workspace results")?;
                 second.shutdown();
                 logged(log, |messages| messages.iter().filter(|v| v["method"] == "textDocument/didClose").count() == 2).await?;
                 assert!(!messages(log).iter().any(|v|v["method"] == "shutdown"));
                 client.unload("velk.language-server.rust-analyzer".into())?.recv().await.map_err(|e|e.to_string())??;
                 logged(log, |messages|messages.iter().any(|v|v["method"] == "exit")).await?;
                 assert_reaped(log);
+                assert!(client.diagnostic_publications().is_empty(), "retiring a workspace client clears its results");
                 return Ok::<_,String>(());
             }
 
