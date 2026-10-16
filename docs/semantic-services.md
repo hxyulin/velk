@@ -80,8 +80,17 @@ It is never staged as a bundled plugin. It proves custom names, binary payloads,
 ordered notifications, dropped acknowledgements, reply ownership, contained
 errors/panics, library-copy cleanup, and stale handles after unload/reload. SDK
 unit tests reject duplicate/malformed names and wrong contract/version/layout
-queries. The internal ABI and current contract versions remain 1; rebuild the
-editor and bundled plugins together after this internal layout change.
+queries. The root native ABI and semantic-session contract remain version 1 during
+internal development; rebuild the editor and bundled plugins together.
+
+## Plugin commands
+
+The [command contract](plugin-commands.md) extends semantic sessions with
+position-bound command requests and neutral outcomes. Standard navigation is
+declared by the LSP plugin; Rust parent-module and macro-expansion actions are
+declared by the Rust Analyzer definition plugin. The host never interprets their
+protocol payloads. Command results have a separate slot from hover/diagnostics,
+and requests are cancelled on source edits and timed out after ten seconds.
 
 ## Public boundary
 
@@ -280,7 +289,7 @@ provider implicitly. The parser is not retained as a
 built-in fallback. See the README's local-plugin workflow for load/unload commands,
 ABI v1, limits, and the cooperative native-code lifecycle contract.
 
-Completion, navigation, formatting, inlay hints,
+Completion, formatting, inlay hints,
 code actions, pull diagnostics, file-watch registration, and automatic server
 restart are deferred. Input modifiers, indentation, and pairing behavior are
 unchanged.

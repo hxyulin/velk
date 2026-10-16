@@ -60,7 +60,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
             .iter()
             .filter(|hook| hook.name.starts_with("test."))
             .count(),
-        5
+        6
     );
     assert!(
         registered
@@ -72,6 +72,25 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
             .iter()
             .any(|h| h.name == "test.notice" && h.kind == velk_plugin_host::hook_kind::EVENT)
     );
+    assert_eq!(metadata.commands.len(), 1);
+    let command = manager.bind_hook("test.hooks", "test.command")?;
+    let context = velk_commands::Context {
+        path: Some("/tmp/source.rs".into()),
+        language: Some("rust".into()),
+        revision: Some(7),
+        position: Some(12),
+    };
+    let result: velk_commands::Outcome = serde_json::from_slice(
+        &manager.call_hook(&command, &serde_json::to_vec(&context).unwrap())?,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        velk_commands::Outcome::Message {
+            text: "7:12".into()
+        }
+    );
+    assert!(manager.call_hook(&command, b"invalid-json").is_err());
     let echo = manager.bind_hook("test.hooks", "test.echo")?;
     let state = manager.bind_hook("test.hooks", "test.state")?;
     assert_eq!(
@@ -102,6 +121,7 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     assert!(metadata.readme.contains("世界"));
     assert!(manager.call_hook(&metadata_hook, b"").is_err());
     assert!(manager.call_hook(&echo, b"").is_err());
+    assert!(manager.call_hook(&command, b"invalid-json").is_err());
     unsafe {
         manager.load()?;
     }

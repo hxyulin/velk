@@ -72,6 +72,11 @@ pub(super) unsafe extern "C" fn input(instance: *mut c_void, raw: *const Semanti
         };
         let service = unsafe { &(*instance.cast::<OwnedSession>()).service };
         match input {
+            model::Input::Command { request, payload } => {
+                if service.command(request, payload).is_err() {
+                    return INVALID;
+                }
+            }
             model::Input::Document(d) => service.update(d),
             model::Input::Saved(d) => service.saved(d),
             model::Input::Hover(r) => service.hover(r),

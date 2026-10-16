@@ -2,7 +2,7 @@
 //! mutates the parent process environment or reaches normal editor arguments.
 use super::*;
 use std::time::Duration;
-use velk_semantic::{DocumentSnapshot, Event, Events, HoverRequest, Status};
+use velk_semantic::{DocumentSnapshot, Event, Events, PositionRequest, Status};
 
 pub(super) fn run(root: &Path, output: &Path) -> Result<(), String> {
     run_with_format(root, output, false)
@@ -62,7 +62,7 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
         )?;
     }
     println!(
-        "LSP plugin smoke passed: native async diagnostics/hover, cancellation, save, unload during requests/initialization, process reaping, latest-document reattachment, resident image reuse, independent Markdown, namespaced Rust definition dependency/unload/reload, no server without its profile or transport."
+        "LSP plugin smoke passed: native async diagnostics/hover, declared navigation/Rust commands, cancellation, save, unload during requests/initialization, process reaping, latest-document reattachment, resident image reuse, independent Markdown, namespaced Rust definition dependency/unload/reload, no server without its profile or transport."
     );
     Ok(())
 }
@@ -191,6 +191,13 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
             assert!(
                 matches!(first,Event::Diagnostics{diagnostics,..} if diagnostics[0].range==(3..7))
             );
+            for (id, declaration) in loaded.plugins.iter().flat_map(|p| &p.metadata.commands).enumerate() {
+                let velk_commands::Handler::Semantic { payload } = &declaration.handler else { continue; };
+                let request = PositionRequest { id:1000+id as u64, revision:0, position:4 };
+                service.command(request, payload.clone())?;
+                let result = until(&service.events, |e| matches!(e, Event::Command { .. })).await?;
+                assert!(matches!(result, Event::Command { request:reply, result:Ok(_) } if reply == request));
+            }
             for revision in 1..=99 {
                 service.update(snapshot(
                     path,
@@ -202,7 +209,7 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 matches!(e, Event::Diagnostics { revision: 99, .. })
             })
             .await?;
-            service.hover(HoverRequest {
+            service.hover(PositionRequest {
                 id: 1,
                 revision: 99,
                 position: 4,
@@ -215,7 +222,7 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
             })
             .await?;
             service.cancel_hover();
-            service.hover(HoverRequest {
+            service.hover(PositionRequest {
                 id: 2,
                 revision: 99,
                 position: 5,
@@ -278,7 +285,7 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
             );
             // First hover in the new server is deliberately held. Unload must cancel
             // it and finish shutdown before returning, with no stale event afterward.
-            service.hover(HoverRequest {
+            service.hover(PositionRequest {
                 id: 3,
                 revision: 100,
                 position: 4,

@@ -19,6 +19,11 @@ pub(super) struct Hook {
     bytes: Option<BytesApi>,
     event: Option<EventApi>,
 }
+impl HookHandle {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
 impl Generation {
     unsafe fn table<T: Copy>(
         &self,
@@ -83,14 +88,17 @@ impl Generation {
                 event: None,
             };
             macro_rules! typed {
-                ($ty:ty,$kind:expr) => {{
-                    if info.version != 1
+                ($ty:ty,$kind:expr) => {
+                    typed!($ty, $kind, 1)
+                };
+                ($ty:ty,$kind:expr,$version:expr) => {{
+                    if info.version != $version
                         || info.kind != $kind
                         || info.table_size != std::mem::size_of::<$ty>()
                     {
                         return Err(format!("incompatible hook contract: {name}"));
                     }
-                    unsafe { self.table::<$ty>(index, &contract, 1)? }
+                    unsafe { self.table::<$ty>(index, &contract, $version)? }
                 }};
             }
             match contract.as_str() {
@@ -111,7 +119,7 @@ impl Generation {
                     self.language = Some(typed!(LanguageApi, CONTRIBUTION))
                 }
                 SEMANTIC_CONTRACT if name == SEMANTIC_HOOK => {
-                    self.semantic = Some(typed!(SemanticApi, SERVICE))
+                    self.semantic = Some(typed!(SemanticApi, SERVICE, 1))
                 }
                 BYTES_CONTRACT => hook.bytes = Some(typed!(BytesApi, REQUEST)),
                 EVENT_CONTRACT => hook.event = Some(typed!(EventApi, EVENT)),

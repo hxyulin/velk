@@ -22,6 +22,16 @@ impl Plugin for Probe {
         ),
     ];
     const VERSION: &'static str = "1";
+    fn commands() -> Vec<velk_plugin_sdk::commands::Declaration> {
+        vec![velk_plugin_sdk::commands::Declaration {
+            id: "test.show-context".into(),
+            title: "Show command context".into(),
+            language: None,
+            handler: velk_plugin_sdk::commands::Handler::Request {
+                hook: "test.command".into(),
+            },
+        }]
+    }
     fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
         vec![velk_plugin_sdk::settings::Definition {
             key: "message".into(),
@@ -43,6 +53,20 @@ impl Plugin for Probe {
         "Named registry probe".into()
     }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+        reg.provide(
+            velk_plugin_sdk::hooks::CommandHandler {
+                name: "test.command",
+            },
+            |_: &mut Self, context: velk_plugin_sdk::commands::Context| {
+                Ok(velk_plugin_sdk::commands::Outcome::Message {
+                    text: format!(
+                        "{}:{}",
+                        context.revision.unwrap_or_default(),
+                        context.position.unwrap_or_default()
+                    ),
+                })
+            },
+        )?;
         reg.provide(Request("test.echo"), |_: &mut Self, input: &[u8]| {
             Ok(input.to_vec())
         })?;

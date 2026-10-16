@@ -19,6 +19,16 @@ impl Plugin for RustAnalyzer {
             "Read an explicitly configured language-server configuration file.",
         ),
     ];
+    fn commands() -> Vec<velk_plugin_sdk::commands::Declaration> {
+        use velk_plugin_sdk::commands::{Declaration, Handler};
+        [
+            ("parent-module", "Rust: Go to parent module", "experimental/parentModule", "locations", Some("/experimental/parentModule")),
+            ("expand-macro", "Rust: Expand macro", "rust-analyzer/expandMacro", "macro_expansion", None),
+        ].into_iter().map(|(id, title, method, result, capability)| Declaration {
+            id:format!("{}.{}", Self::ID, id), title:title.into(), language:Some("rust".into()),
+            handler:Handler::Semantic { payload:serde_json::json!({"method":method,"result":result,"capability":capability}) },
+        }).collect()
+    }
     fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
         use velk_plugin_sdk::settings::{Definition, Kind};
         vec![Definition {

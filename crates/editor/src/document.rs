@@ -5,6 +5,7 @@ mod icons;
 mod maintenance;
 mod palette;
 mod panels;
+mod plugin_commands;
 mod plugins;
 mod plugins_page;
 pub(crate) mod reload;
@@ -54,7 +55,9 @@ pub struct Document {
     overwrite_approved: bool,
     saving_as: bool,
     opening: Option<Task>,
-    pending_opens: std::collections::VecDeque<PathBuf>,
+    pending_opens: std::collections::VecDeque<buffers::OpenRequest>,
+    command_task: Option<Task>,
+    command_result: Option<plugin_commands::ResultView>,
     pub window: Option<WindowHandle>,
     reload: Option<Task>,
     diagnostics: Option<Task>,
@@ -167,6 +170,8 @@ impl Document {
             saving_as: false,
             opening: None,
             pending_opens: Default::default(),
+            command_task: None,
+            command_result: None,
             window: None,
             reload: None,
             diagnostics: None,
@@ -714,7 +719,7 @@ impl View for Document {
         let (toggle_palette, palette) = self.command_palette(
             cx,
             if self.palette.open {
-                vec![
+                let mut entries = vec![
                     palette::Entry::new("velk.file.save", save.clone(), palette::primary("S")),
                     palette::Entry::new("velk.file.new", new_file.clone(), palette::primary("N")),
                     palette::Entry::new(
@@ -791,7 +796,9 @@ impl View for Document {
                     palette::Entry::new("velk.layout.quiet", layout_quiet.clone(), ""),
                     palette::Entry::new("velk.layout.rail", layout_rail.clone(), ""),
                     palette::Entry::new("velk.layout.tiled", layout_tiled.clone(), ""),
-                ]
+                ];
+                entries.extend(self.plugin_command_entries(cx));
+                entries
             } else {
                 Vec::new()
             },
@@ -826,6 +833,7 @@ impl View for Document {
             .on_command(toggle_settings)
             .on_command(find)
             .children(palette)
+            .children(self.command_result_modal(cx))
             .children(plugin_menu)
             .children(settings_menu)
             .children(self.reloading().then(|| {

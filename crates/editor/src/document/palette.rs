@@ -23,28 +23,41 @@ pub(super) struct State {
 
 #[derive(Clone)]
 pub(super) struct Entry {
-    // Stable names keep presentation separate from identity; a future plugin
-    // command provider can supply equivalent data without exposing Rust types.
-    id: &'static str,
+    id: String,
     label: String,
     shortcut: String,
     enabled: bool,
-    invoke: Rc<dyn Fn(&mut AppContext<'_>)>,
+    invoke: Invocation,
+}
+#[derive(Clone)]
+enum Invocation {
+    Host(Rc<dyn Fn(&mut AppContext<'_>)>),
+    Plugin(super::plugin_commands::Invoke),
 }
 impl Entry {
+    pub fn plugin(invocation: super::plugin_commands::Invoke, enabled: bool) -> Self {
+        Self {
+            id: format!("{}:{}", invocation.plugin, invocation.command.id),
+            label: invocation.command.title.clone(),
+            shortcut: String::new(),
+            enabled,
+            invoke: Invocation::Plugin(invocation),
+        }
+    }
+
     pub fn new<C: Command>(
         id: &'static str,
         action: CommandAction<C>,
         shortcut: impl Into<String>,
     ) -> Self {
         Self {
-            id,
+            id: id.into(),
             label: action.caption().into(),
             shortcut: shortcut.into(),
             enabled: action.is_enabled(),
-            invoke: Rc::new(move |cx| {
+            invoke: Invocation::Host(Rc::new(move |cx| {
                 let _ = action.invoke(cx);
-            }),
+            })),
         }
     }
 }
@@ -106,7 +119,13 @@ impl Document {
             return;
         }
         self.set_palette(false, cx);
-        let invoke = entry.invoke.clone();
+        let invoke = match entry.invoke.clone() {
+            Invocation::Plugin(invocation) => {
+                self.invoke_plugin_command(invocation, cx);
+                return;
+            }
+            Invocation::Host(invoke) => invoke,
+        };
         // Release the Document borrow before invoking its shared command action.
         // No UI event can interleave before this deferred update is processed.
         cx.defer(move |cx| invoke(cx));
@@ -213,7 +232,7 @@ impl Document {
                 },
                 entry.shortcut
             );
-            let key = entry.id;
+            let key = entry.id.clone();
             let enabled = entry.enabled;
             content = content.child(
                 button(caption)

@@ -121,7 +121,10 @@ The bundled pack contains:
 
 Plugins declare a display name, a short description, a Markdown README, and
 required or optional capabilities with explanations. The plugin manager exposes
-this metadata alongside plugin state and controls.
+this metadata alongside plugin state and controls. Plugins can also declare
+[command palette actions](docs/plugin-commands.md); bundled actions include
+definition/type/implementation navigation, references, Rust parent modules, and
+macro expansion.
 
 **Native plugins are trusted code running inside the editor process.** Capability
 declarations describe what a plugin needs; they are not currently a sandbox or
@@ -154,7 +157,7 @@ release-tested.
 Current limitations include:
 
 - Language integration focuses on Rust. Completion, formatting, code actions,
-  and navigation commands are not yet implemented.
+  and workspace edits are not yet implemented.
 - Language-server sessions are currently per buffer rather than shared across
   an entire workspace.
 - Disk conflicts are detected during saves, but automatic reload and interactive
@@ -172,7 +175,7 @@ Current limitations include:
   [window reloading](docs/reloading.md)
 - [Plugin API and shared contracts](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
   [plugin settings](docs/plugin-settings.md)
-- [Semantic services and Rust LSP](docs/semantic-services.md)
+- [Plugin commands](docs/plugin-commands.md) and [semantic services and Rust LSP](docs/semantic-services.md)
 - [Core and component boundaries](docs/core.md)
 - [Files](docs/files.md), [search](docs/search.md), and [terminal](docs/terminal.md)
 - [Profiling and performance tooling](docs/profiling.md)
@@ -182,8 +185,8 @@ Current limitations include:
 Build and try the editor before making a change. The workspace separates the
 application shell (`crates/editor`), UI-independent document state (`crates/core`),
 editor commands and presentation data (`crates/editor-model`), RXUI editor widget
-(`crates/editor-widget`), syntax and semantic services, markup
-contracts, and the native plugin API, SDK, and host. Bundled feature implementations live under
+(`crates/editor-widget`), shared command data (`crates/commands`), syntax and
+semantic services, markup contracts, and the native plugin API, SDK, and host. Bundled feature implementations live under
 `plugins/`; development commands live in `xtask/`.
 
 Install [prek](https://prek.j178.dev/) and enable the repository hooks:

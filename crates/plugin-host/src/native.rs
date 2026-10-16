@@ -102,6 +102,21 @@ impl Generation {
                     name: loaded.info.id.clone(),
                     ..Default::default()
                 });
+        for command in &loaded.info.metadata.commands {
+            if let velk_plugin_contracts::commands::Handler::Request { hook } = &command.handler
+                && !loaded.hooks.iter().any(|h| {
+                    h.info.name == *hook
+                        && h.info.contract == BYTES_CONTRACT
+                        && h.info.version == 1
+                        && h.info.kind == REQUEST
+                })
+            {
+                return Err(format!(
+                    "command {} requires a request hook: {hook}",
+                    command.id
+                ));
+            }
+        }
         loaded.configure_settings(settings)?;
         Ok(loaded)
     }

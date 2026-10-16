@@ -122,6 +122,15 @@ choosing another provider. Rendering errors also fall back to source in the UI.
 The list keeps the short plain-text summary instead of displaying Markdown source.
 There is no arbitrary CSS or HTML styling API; the host theme controls appearance.
 
+## Command declarations
+
+Plugins declare command palette actions through `Plugin::commands()`. The shared
+`commands` types are re-exported by the SDK and plugin contracts; they live in
+`velk-commands` without UI or transport dependencies. Commands route to a named
+plugin request handler or the active document's semantic backend. See the
+[command guide](plugin-commands.md) for authoring, navigation outcomes, bundled
+LSP/Rust actions, and lifecycle rules.
+
 ## Optional documentation model
 
 `velk-markup` is a compact styled-text contract for the editor's documentation
@@ -155,6 +164,7 @@ The SDK automatically reserves `velk.plugin.metadata.v1` as a standard
 {
   "name": "Example Plugin",
   "readme": "# Example\n\nFull **Markdown** documentation.",
+  "commands": [],
   "capabilities": [
     {
       "id": "editor.buffer.read",

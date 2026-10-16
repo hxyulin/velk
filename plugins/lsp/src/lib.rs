@@ -22,6 +22,18 @@ impl Plugin for Lsp {
 
     // Tokio process signal handlers can outlive their reactor on Unix.
     const RESIDENT_CODE: bool = true;
+    fn commands() -> Vec<velk_plugin_sdk::commands::Declaration> {
+        use velk_plugin_sdk::commands::{Declaration, Handler};
+        [
+            ("definition", "Go to definition", "textDocument/definition", "/definitionProvider"),
+            ("type-definition", "Go to type definition", "textDocument/typeDefinition", "/typeDefinitionProvider"),
+            ("implementation", "Go to implementation", "textDocument/implementation", "/implementationProvider"),
+            ("references", "Find references", "textDocument/references", "/referencesProvider"),
+        ].into_iter().map(|(id, title, method, capability)| Declaration {
+            id:format!("velk.lsp.{id}"), title:title.into(), language:None,
+            handler:Handler::Semantic { payload:serde_json::json!({"method":method,"result":"locations","capability":capability}) },
+        }).collect()
+    }
     fn describe(&mut self) -> String {
         "Generic LSP transport".into()
     }

@@ -7,16 +7,17 @@ use velk_editor_model::{
     Annotations, HoverCard, HoverSource, HoverTarget, LinePattern, OverlayKind, OverlayPlacement,
     SpanStyle, StyledRange, TextOverlay, Underline,
 };
-use velk_semantic::{DocumentSnapshot, Event, HoverRequest, Service, Severity, Status};
+use velk_semantic::{DocumentSnapshot, Event, PositionRequest, Service, Severity, Status};
 
 pub(super) struct State {
     pub service: Arc<Service>,
     pub revision: u64,
     pub status: Status,
     pub count: usize,
-    pub hover: Option<HoverRequest>,
+    pub hover: Option<PositionRequest>,
+    pub command: Option<super::plugin_commands::Pending>,
     pub target: Option<HoverTarget>,
-    pub next_hover: u64,
+    pub next_request: u64,
     pub task: Option<Task>,
     pub render_task: Option<Task>,
     pub renderer: Arc<dyn velk_markup::Renderer>,
@@ -42,8 +43,9 @@ impl Document {
             status: Status::Starting,
             count: 0,
             hover: None,
+            command: None,
             target: None,
-            next_hover: 1,
+            next_request: 1,
             task: None,
             render_task: None,
             renderer,
@@ -83,12 +85,12 @@ impl Document {
             state.hover = None;
             state.notice = None;
             if let Some(target) = target {
-                let request = HoverRequest {
-                    id: state.next_hover,
+                let request = PositionRequest {
+                    id: state.next_request,
                     revision: target.revision,
                     position: target.position,
                 };
-                state.next_hover += 1;
+                state.next_request += 1;
                 state.hover = Some(request);
                 state.service.hover(request);
             }
@@ -144,7 +146,7 @@ impl Document {
         }
     }
     #[tracing::instrument(level = "debug", skip_all)]
-    fn semantic_event(&mut self, event: Event, cx: &mut Context<'_, Self>) {
+    pub(super) fn semantic_event(&mut self, event: Event, cx: &mut Context<'_, Self>) {
         let Some(active) = self.buffer.as_mut() else {
             return;
         };
@@ -153,8 +155,32 @@ impl Document {
             return;
         };
         match event {
+            Event::Command { request, result } => {
+                let Some(pending) = state.command.take() else {
+                    return;
+                };
+                if pending.request != request {
+                    state.command = Some(pending);
+                    return;
+                }
+                let editor = active.editor.read(cx);
+                let valid = !self.background_buffer
+                    && editor.buffer().revision() == request.revision
+                    && editor.buffer().selection().head == request.position;
+                drop(editor);
+                if valid && self.command_owner_loaded(&pending.plugin, pending.generation) {
+                    match result {
+                        Ok(outcome) => self.apply_command_outcome(outcome, cx),
+                        Err(error) => self.notice(Some(error)),
+                    }
+                }
+            }
+
             Event::Status(status) => {
                 tracing::debug!(?status, "semantic status");
+                if !matches!(status, Status::Ready(_)) {
+                    state.command = None;
+                }
                 if matches!(status, Status::Failed(_) | Status::Stopped) {
                     state.count = 0;
                     state.hover = None;
@@ -522,8 +548,9 @@ mod tests {
                     }),
                     count: 0,
                     hover: None,
+                    command: None,
                     target: None,
-                    next_hover: 1,
+                    next_request: 1,
                     task: None,
                     render_task: None,
                     renderer: Arc::new(velk_markup::PlainText),
@@ -642,8 +669,9 @@ mod tests {
                     }),
                     count: 0,
                     hover: None,
+                    command: None,
                     target: None,
-                    next_hover: 1,
+                    next_request: 1,
                     task: None,
                     render_task: None,
                     renderer: Arc::new(PluginRenderer {
@@ -717,7 +745,7 @@ mod tests {
         runtime.update(|cx| {
             let editor = cx.new(|_| editor);
             let document = cx.new(|cx| Document::new(editor.clone(), file, path, cx));
-            let request = HoverRequest {
+            let request = PositionRequest {
                 id: 2,
                 revision: 0,
                 position: 0,
@@ -729,8 +757,9 @@ mod tests {
                     status: Status::Ready(Default::default()),
                     count: 0,
                     hover: Some(request),
+                    command: None,
                     target: None,
-                    next_hover: 3,
+                    next_request: 3,
                     task: None,
                     render_task: None,
                     renderer: Arc::new(velk_markup::PlainText),
@@ -750,7 +779,7 @@ mod tests {
             document.update(cx, |d, cx| {
                 d.semantic_event(
                     Event::Hover {
-                        request: HoverRequest { id: 1, ..request },
+                        request: PositionRequest { id: 1, ..request },
                         hover: None,
                     },
                     cx,

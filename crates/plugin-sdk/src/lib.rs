@@ -9,12 +9,14 @@ pub use velk_semantic as semantic;
 pub mod hooks {
     #[cfg(feature = "markup")]
     pub use crate::ffi::registry::RenderMarkdown;
-    pub use crate::ffi::registry::{Event, LanguageDefinition, Request, SemanticSessions};
+    pub use crate::ffi::registry::{
+        CommandHandler, Event, LanguageDefinition, Request, SemanticSessions,
+    };
 }
 mod metadata;
 pub use velk_plugin_contracts as contracts;
 pub use velk_plugin_contracts::{
-    Capability, CapabilityDeclaration, LanguageServer, PluginMetadata, settings,
+    Capability, CapabilityDeclaration, LanguageServer, PluginMetadata, commands, settings,
 };
 
 pub trait Plugin: Default + 'static {
@@ -27,6 +29,9 @@ pub trait Plugin: Default + 'static {
     /// Declared access requirements, not enforced grants for native code.
     const CAPABILITIES: &'static [CapabilityDeclaration] = &[];
     const RESIDENT_CODE: bool = false;
+    fn commands() -> Vec<commands::Declaration> {
+        Vec::new()
+    }
     fn settings() -> Vec<settings::Definition> {
         Vec::new()
     }

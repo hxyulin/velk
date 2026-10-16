@@ -1,11 +1,12 @@
 //! LSP adapter. Wire types, URIs, encoding negotiation, and child processes stay
 //! here; the editor and other semantic backends do not depend on them.
+mod commands;
 mod positions;
 mod transport;
 use self::{positions::Encoding, transport::Connection};
 use crate::{
-    Backend, BackendFuture, Capabilities, Diagnostic, DocumentSnapshot, Event, Hover, HoverRequest,
-    Input, Session, Severity, Status, text::difference,
+    Backend, BackendFuture, Capabilities, Diagnostic, DocumentSnapshot, Event, Hover, Input,
+    PositionRequest, Session, Severity, Status, text::difference,
 };
 use lsp_types::{
     HoverContents, InitializeResult, MarkedString, PublishDiagnosticsParams,
@@ -113,6 +114,8 @@ async fn drive(
     .await
     .map_err(|_| "LSP initialization timed out".to_string())??;
     drop(initialize_trace);
+    let server_capabilities =
+        serde_json::to_value(&initialized.capabilities).map_err(|e| e.to_string())?;
     let encoding = Encoding::negotiate(initialized.capabilities.position_encoding.as_ref())?;
     let capabilities = Capabilities {
         diagnostics: true,
@@ -142,7 +145,8 @@ async fn drive(
     session
         .events()
         .publish(Event::Status(Status::Ready(capabilities)));
-    let mut pending: Option<(u64, HoverRequest, Instant)> = None;
+    let mut command: Option<(u64, PositionRequest, commands::Request, Instant)> = None;
+    let mut pending: Option<(u64, PositionRequest, Instant)> = None;
     let mut hover_trace = None;
     let mut next_id = 2u64;
     let mut tick = interval(Duration::from_millis(250));
@@ -157,6 +161,7 @@ async fn drive(
                     if next.path != document.path || next.language != document.language { return Err("semantic service document identity changed".into()); }
                     if next.revision <= document.revision { continue; }
                     cancel_hover(connection, session, &mut pending, None).await?;
+                    cancel_command(connection, session, &mut command, "Source changed; command cancelled").await?;
                     if sync == TextDocumentSyncKind::NONE {
                         return Err("language server does not support document changes".into());
                     }
@@ -180,6 +185,20 @@ async fn drive(
                             connection.notify("textDocument/didSave", params).await?;
                         }
                     }
+                }
+                Some(Input::Command { request, payload }) => {
+                    if request.revision != document.revision || request.position > document.text.len_chars() {
+                        session.events().publish(Event::Command { request, result:Err("command source is stale".into()) }); continue;
+                    }
+                    let spec = match commands::Request::decode(payload, &server_capabilities) {
+                        Ok(spec) => spec,
+                        Err(error) => { session.events().publish(Event::Command { request, result:Err(error) }); continue; }
+                    };
+                    if command.is_some() { session.events().publish(Event::Command { request, result:Err("another command is running".into()) }); continue; }
+                    if next_id >= i32::MAX as u64 { return Err("LSP request ID space exhausted".into()); }
+                    let id = next_id; next_id += 1;
+                    connection.request(id, &spec.method, spec.params(&document_uri, encoding.position(&document.text, request.position))).await?;
+                    command = Some((id, request, spec, Instant::now()+Duration::from_secs(10)));
                 }
                 Some(Input::CancelHover) => {
                     cancel_hover(connection, session, &mut pending, None).await?;
@@ -214,6 +233,11 @@ async fn drive(
                             session.events().publish(Event::Diagnostics { revision:document.revision, diagnostics });
                         }
                     } else { connection.handle_server_request(&message).await?; }
+                } else if command.as_ref().is_some_and(|(id,_,_,_)| message.get("id") == Some(&json!(id))) {
+                    let (_, request, spec, _) = command.take().unwrap();
+                    let result = if let Some(error) = message.get("error") { Err(format!("Command failed: {error}")) }
+                        else { spec.outcome(message["result"].clone(), encoding) };
+                    session.events().publish(Event::Command { request, result });
                 } else if let Some((id,request,_)) = pending {
                     if message.get("id") != Some(&json!(id)) { continue; }
                     pending = None;
@@ -235,6 +259,9 @@ async fn drive(
                 }
             },
             _ = tick.tick() => {
+                if command.as_ref().is_some_and(|(_,_,_,deadline)| Instant::now() >= *deadline) {
+                    cancel_command(connection, session, &mut command, "Command timed out").await?;
+                }
                 if pending.is_some_and(|(_,_,deadline)| Instant::now() >= deadline) {
                     cancel_hover(connection, session, &mut pending, Some("Hover request timed out")).await?;
                 }
@@ -245,7 +272,7 @@ async fn drive(
 async fn cancel_hover(
     connection: &mut Connection,
     session: &Session,
-    pending: &mut Option<(u64, HoverRequest, Instant)>,
+    pending: &mut Option<(u64, PositionRequest, Instant)>,
     reason: Option<&str>,
 ) -> Result<(), String> {
     if let Some((id, request, _)) = pending.take() {
@@ -286,6 +313,24 @@ fn hover_text(contents: HoverContents) -> (String, bool) {
             true,
         ),
     }
+}
+
+async fn cancel_command(
+    connection: &mut Connection,
+    session: &Session,
+    pending: &mut Option<(u64, PositionRequest, commands::Request, Instant)>,
+    reason: &str,
+) -> Result<(), String> {
+    if let Some((id, request, _, _)) = pending.take() {
+        connection
+            .notify("$/cancelRequest", json!({"id":id}))
+            .await?;
+        session.events().publish(Event::Command {
+            request,
+            result: Err(reason.into()),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]

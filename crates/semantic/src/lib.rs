@@ -15,7 +15,7 @@ pub struct DocumentSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HoverRequest {
+pub struct PositionRequest {
     pub id: u64,
     pub revision: u64,
     /// Unicode scalar offset, independent of any backend's encoding.
@@ -50,7 +50,7 @@ pub enum Status {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hover {
-    pub request: HoverRequest,
+    pub request: PositionRequest,
     pub range: Option<Range<usize>>,
     /// Plain text or raw Markdown for the presentation layer to render.
     pub contents: String,
@@ -58,24 +58,32 @@ pub struct Hover {
 }
 #[derive(Clone, Debug)]
 pub enum Event {
+    Command {
+        request: PositionRequest,
+        result: Result<velk_commands::Outcome, String>,
+    },
     Status(Status),
     Diagnostics {
         revision: u64,
         diagnostics: Vec<Diagnostic>,
     },
     Hover {
-        request: HoverRequest,
+        request: PositionRequest,
         hover: Option<Hover>,
     },
     RequestFailed {
-        request: HoverRequest,
+        request: PositionRequest,
         message: String,
     },
 }
 #[derive(Clone, Debug)]
 pub enum Input {
+    Command {
+        request: PositionRequest,
+        payload: serde_json::Value,
+    },
     Document(DocumentSnapshot),
-    Hover(HoverRequest),
+    Hover(PositionRequest),
     CancelHover,
     Saved(DocumentSnapshot),
 }
@@ -90,7 +98,8 @@ pub trait Backend: Send + 'static {
 
 pub struct Session {
     documents: Receiver<DocumentSnapshot>,
-    hovers: Receiver<Option<HoverRequest>>,
+    hovers: Receiver<Option<PositionRequest>>,
+    commands: Receiver<Input>,
     saves: Receiver<DocumentSnapshot>,
     wake: Receiver<()>,
     stop: Receiver<()>,
@@ -113,6 +122,9 @@ impl Session {
         if let Ok(saved) = self.saves.try_recv() {
             return Some(Input::Saved(saved));
         }
+        if let Ok(command) = self.commands.try_recv() {
+            return Some(command);
+        }
         self.hovers
             .try_recv()
             .ok()
@@ -129,6 +141,9 @@ impl Session {
             if let Ok(saved) = self.saves.try_recv() {
                 return Some(Input::Saved(saved));
             }
+            if let Ok(command) = self.commands.try_recv() {
+                return Some(command);
+            }
             if let Ok(hover) = self.hovers.try_recv() {
                 return Some(hover.map_or(Input::CancelHover, Input::Hover));
             }
@@ -140,6 +155,13 @@ impl Session {
     pub async fn cancelled(&self) {
         let _ = self.stop.recv().await;
     }
+    /// Retire position-sensitive work when replacing a provider. Document/save
+    /// snapshots remain available for reattachment; commands are never replayed.
+    pub fn clear_requests(&self) {
+        while self.commands.try_recv().is_ok() {}
+        while self.hovers.try_recv().is_ok() {}
+        self.events.clear();
+    }
     pub fn events(&self) -> EventSink {
         self.events.clone()
     }
@@ -149,6 +171,7 @@ impl Session {
 /// status or hover results. Sending never waits for a UI consumer.
 #[derive(Clone)]
 pub struct EventSink {
+    command_busy: Arc<std::sync::atomic::AtomicBool>,
     observer: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     status: Sender<Event>,
     status_pending: Receiver<Event>,
@@ -156,24 +179,34 @@ pub struct EventSink {
     diagnostics_pending: Receiver<Event>,
     hover: Sender<Event>,
     hover_pending: Receiver<Event>,
+    command: Sender<Event>,
+    command_pending: Receiver<Event>,
     wake: Sender<()>,
 }
 impl EventSink {
     /// Discard results from a retired provider before attaching a new generation.
     pub fn clear(&self) {
+        self.command_busy
+            .store(false, std::sync::atomic::Ordering::Release);
         while self.status_pending.try_recv().is_ok() {}
         while self.diagnostics_pending.try_recv().is_ok() {}
         while self.hover_pending.try_recv().is_ok() {}
+        while self.command_pending.try_recv().is_ok() {}
     }
     pub fn close(&self) {
         self.wake.close();
     }
     pub fn publish(&self, event: Event) {
         if let Some(observer) = &self.observer {
+            if matches!(event, Event::Command { .. }) {
+                self.command_busy
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
             observer(event);
             return;
         }
         match event {
+            Event::Command { .. } => latest(&self.command, &self.command_pending, event),
             Event::Status(_) => latest(&self.status, &self.status_pending, event),
             Event::Diagnostics { .. } => {
                 latest(&self.diagnostics, &self.diagnostics_pending, event)
@@ -186,15 +219,22 @@ impl EventSink {
 /// Single-consumer event stream. Clones share queues rather than broadcasting.
 #[derive(Clone)]
 pub struct Events {
+    command_busy: Arc<std::sync::atomic::AtomicBool>,
     status: Receiver<Event>,
     diagnostics: Receiver<Event>,
     hover: Receiver<Event>,
+    command: Receiver<Event>,
     wake: Receiver<()>,
 }
 impl Events {
     pub async fn recv(&self) -> Result<Event, async_channel::RecvError> {
         loop {
             if let Ok(event) = self.status.try_recv() {
+                return Ok(event);
+            }
+            if let Ok(event) = self.command.try_recv() {
+                self.command_busy
+                    .store(false, std::sync::atomic::Ordering::Release);
                 return Ok(event);
             }
             if let Ok(event) = self.diagnostics.try_recv() {
@@ -209,10 +249,12 @@ impl Events {
 }
 
 pub struct Service {
+    command_busy: Arc<std::sync::atomic::AtomicBool>,
+    commands: Sender<Input>,
     documents: Sender<DocumentSnapshot>,
     documents_pending: Receiver<DocumentSnapshot>,
-    hovers: Sender<Option<HoverRequest>>,
-    hovers_pending: Receiver<Option<HoverRequest>>,
+    hovers: Sender<Option<PositionRequest>>,
+    hovers_pending: Receiver<Option<PositionRequest>>,
     saves: Sender<DocumentSnapshot>,
     saves_pending: Receiver<DocumentSnapshot>,
     wake: Sender<()>,
@@ -277,6 +319,9 @@ impl Service {
         notify: Option<Arc<dyn Fn() + Send + Sync>>,
         observer: Option<Arc<dyn Fn(Event) + Send + Sync>>,
     ) -> (Arc<Self>, Session) {
+        let command_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (commands, command_pending) = async_channel::bounded(1);
+        let (command, command_results) = async_channel::bounded(1);
         let (documents, documents_pending) = async_channel::bounded(1);
         let (hovers, hovers_pending) = async_channel::bounded(1);
         let (saves, saves_pending) = async_channel::bounded(1);
@@ -287,12 +332,17 @@ impl Service {
         let (hover, hover_pending) = async_channel::bounded(1);
         let (event_wake, event_pending) = async_channel::bounded(1);
         let events = Events {
+            command_busy: command_busy.clone(),
+            command: command_results.clone(),
             status: status_pending.clone(),
             diagnostics: diagnostics_pending.clone(),
             hover: hover_pending.clone(),
             wake: event_pending,
         };
         let sink = EventSink {
+            command_busy: command_busy.clone(),
+            command,
+            command_pending: command_results,
             observer,
             status,
             status_pending,
@@ -303,6 +353,7 @@ impl Service {
             wake: event_wake,
         };
         let session = Session {
+            commands: command_pending,
             documents: documents_pending.clone(),
             hovers: hovers_pending.clone(),
             saves: saves_pending.clone(),
@@ -311,6 +362,8 @@ impl Service {
             events: sink.clone(),
         };
         let service = Arc::new(Self {
+            command_busy,
+            commands,
             documents,
             documents_pending,
             hovers,
@@ -351,7 +404,41 @@ impl Service {
         latest(&self.documents, &self.documents_pending, document);
         self.signal();
     }
-    pub fn hover(&self, request: HoverRequest) {
+    /// One command may be outstanding until its result is consumed. Explicit
+    /// actions are never silently replaced by hover traffic or later commands.
+    pub fn command(
+        &self,
+        request: PositionRequest,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
+        if serde_json::to_vec(&payload)
+            .map_err(|e| e.to_string())?
+            .len()
+            > 16 * 1024
+        {
+            return Err("command payload exceeds 16 KiB".into());
+        }
+        if self
+            .command_busy
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err("a command is already running".into());
+        }
+        if let Err(error) = self.commands.try_send(Input::Command { request, payload }) {
+            self.command_busy
+                .store(false, std::sync::atomic::Ordering::Release);
+            return Err(format!("command queue unavailable: {error}"));
+        }
+        self.signal();
+        Ok(())
+    }
+    pub fn hover(&self, request: PositionRequest) {
         latest(&self.hovers, &self.hovers_pending, Some(request));
         self.signal();
     }
@@ -505,5 +592,56 @@ mod tests {
             .await
             .unwrap();
         });
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn commands_keep_their_result_until_consumed_and_do_not_share_hover_slots() {
+        let (service, session) = Service::external(|| {});
+        let request = PositionRequest {
+            id: 1,
+            revision: 0,
+            position: 0,
+        };
+        service
+            .command(request, serde_json::json!({"operation":"test"}))
+            .unwrap();
+        assert!(service.command(request, serde_json::Value::Null).is_err());
+        assert!(matches!(session.try_next(), Some(Input::Command { .. })));
+        session.events().publish(Event::Command {
+            request,
+            result: Ok(velk_commands::Outcome::Message {
+                text: "kept".into(),
+            }),
+        });
+        for _ in 0..100 {
+            session.events().publish(Event::Hover {
+                request,
+                hover: None,
+            });
+            session.events().publish(Event::Diagnostics {
+                revision: 0,
+                diagnostics: vec![],
+            });
+        }
+        assert!(service.command(request, serde_json::Value::Null).is_err());
+        loop {
+            if let Event::Command { result, .. } = service.events.recv().await.unwrap() {
+                assert!(
+                    matches!(result, Ok(velk_commands::Outcome::Message { text }) if text == "kept")
+                );
+                break;
+            }
+        }
+        service.command(request, serde_json::Value::Null).unwrap();
+        assert!(matches!(session.try_next(), Some(Input::Command { .. })));
+        session.clear_requests();
+        service.command(request, serde_json::Value::Null).unwrap();
+        session.clear_requests();
+        assert!(session.try_next().is_none());
+        service.command(request, serde_json::Value::Null).unwrap();
     }
 }

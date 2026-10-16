@@ -1,7 +1,7 @@
 use ropey::Rope;
 use std::{path::Path, time::Duration};
 use velk_plugin_lsp::lsp::LspBackend;
-use velk_semantic::{DocumentSnapshot, Event, HoverRequest, Service, Status};
+use velk_semantic::{DocumentSnapshot, Event, PositionRequest, Service, Status};
 
 fn backend(log: &Path, mode: &str) -> LspBackend {
     LspBackend {
@@ -89,7 +89,7 @@ async fn lsp_sync_hover_cancellation_diagnostics_save_and_shutdown_work_end_to_e
         unreachable!()
     };
     assert_eq!(diagnostics[0].message, "current");
-    service.hover(HoverRequest {
+    service.hover(PositionRequest {
         id: 1,
         revision: 99,
         position: 4,
@@ -108,7 +108,7 @@ async fn lsp_sync_hover_cancellation_diagnostics_save_and_shutdown_work_end_to_e
     })
     .await
     .unwrap();
-    service.hover(HoverRequest {
+    service.hover(PositionRequest {
         id: 2,
         revision: 99,
         position: 5,
@@ -117,7 +117,7 @@ async fn lsp_sync_hover_cancellation_diagnostics_save_and_shutdown_work_end_to_e
         matches!(
             e,
             Event::Hover {
-                request: HoverRequest { id: 2, .. },
+                request: PositionRequest { id: 2, .. },
                 ..
             }
         )
@@ -203,7 +203,7 @@ async fn hover_deadline_reports_failure_and_drop_cancels_stalled_initialization(
                 matches!(e, Event::Status(Status::Ready(_)))
             })
             .await;
-            service.hover(HoverRequest {
+            service.hover(PositionRequest {
                 id: 1,
                 revision: 0,
                 position: 4,
@@ -284,7 +284,7 @@ async fn real_rust_analyzer_hover_uses_unsaved_document() {
     service.update(document(&path, 1, updated));
     let mut found = false;
     for id in 1..=30 {
-        service.hover(HoverRequest {
+        service.hover(PositionRequest {
             id,
             revision: 1,
             position: 17,
@@ -313,4 +313,122 @@ async fn real_rust_analyzer_hover_uses_unsaved_document() {
     drop(service);
     until(&events, |e| matches!(e, Event::Status(Status::Stopped))).await;
     assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn declared_navigation_and_rust_commands_cross_the_backend_with_negotiated_positions() {
+    use velk_plugin_sdk::{
+        Plugin,
+        commands::{Encoding, Handler, Outcome},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("command 世界.rs");
+    let logfile = dir.path().join("commands.jsonl");
+    let service = Service::start(backend(&logfile, "normal")).unwrap();
+    service.update(document(&path, 9, "a𐐀界 target"));
+    until(&service.events, |e| {
+        matches!(e, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let commands = velk_plugin_lsp::Lsp::commands()
+        .into_iter()
+        .chain(velk_plugin_rust_analyzer::RustAnalyzer::commands());
+    for (id, command) in commands.enumerate() {
+        let Handler::Semantic { payload } = command.handler else {
+            panic!("expected semantic command");
+        };
+        let request = PositionRequest {
+            id: id as u64,
+            revision: 9,
+            position: 3,
+        };
+        service.command(request, payload).unwrap();
+        let Event::Command {
+            request: reply,
+            result,
+        } = until(&service.events, |e| matches!(e, Event::Command { .. })).await
+        else {
+            unreachable!()
+        };
+        assert_eq!(reply, request);
+        match result.unwrap() {
+            Outcome::Locations { locations } => {
+                assert_eq!(locations[0].path, path);
+                assert_eq!(locations[0].position.encoding, Encoding::Utf16);
+                assert_eq!(locations[0].position.column, 4);
+            }
+            Outcome::Document { text, .. } => assert_eq!(text, "fn expanded() {}"),
+            _ => panic!("unexpected command result"),
+        }
+    }
+    service.command(PositionRequest { id:99, revision:9, position:3 }, serde_json::json!({"method":"textDocument/declaration","result":"locations","capability":"/declarationProvider"})).unwrap();
+    assert!(matches!(
+        until(&service.events, |e| matches!(e, Event::Command { .. })).await,
+        Event::Command { result: Err(_), .. }
+    ));
+    service.shutdown_and_join().unwrap();
+    let messages = log(&logfile);
+    let request = messages
+        .iter()
+        .find(|m| m["method"] == "textDocument/definition")
+        .unwrap();
+    assert_eq!(request["params"]["position"]["character"], 4);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["method"] == "textDocument/references"
+                && m["params"]["context"]["includeDeclaration"] == true)
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|m| m["method"] == "textDocument/declaration")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn source_changes_cancel_commands_without_interfering_with_hover() {
+    let dir = tempfile::tempdir().unwrap();
+    let logfile = dir.path().join("cancel.jsonl");
+    let path = dir.path().join("source.rs");
+    let service = Service::start(backend(&logfile, "hold-command")).unwrap();
+    service.update(document(&path, 0, "source"));
+    until(&service.events, |e| {
+        matches!(e, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let request = PositionRequest {
+        id: 30,
+        revision: 0,
+        position: 1,
+    };
+    service.command(request, serde_json::json!({"method":"textDocument/definition","result":"locations","capability":"/definitionProvider"})).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !log(&logfile)
+            .iter()
+            .any(|m| m["method"] == "textDocument/definition")
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    service.hover(PositionRequest { id: 31, ..request });
+    service.cancel_hover();
+    assert!(service.command(request, serde_json::json!({})).is_err());
+    service.update(document(&path, 1, "changed"));
+    assert!(
+        matches!(until(&service.events, |e| matches!(e, Event::Command { .. })).await, Event::Command { request:r, result:Err(message) } if r == request && message.contains("cancelled"))
+    );
+    service.shutdown_and_join().unwrap();
+    let messages = log(&logfile);
+    let id = &messages
+        .iter()
+        .find(|m| m["method"] == "textDocument/definition")
+        .unwrap()["id"];
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["method"] == "$/cancelRequest" && &m["params"]["id"] == id)
+    );
 }

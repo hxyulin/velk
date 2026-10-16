@@ -7,6 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+velk-commands.workspace = true
+ropey.workspace = true
 velk-core.workspace = true
 
 [lints]

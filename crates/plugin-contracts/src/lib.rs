@@ -8,3 +8,5 @@ pub mod settings;
 pub use id::{PluginId, parse_plugin_id};
 pub use language_server::LanguageServer;
 pub use metadata::{Capability, CapabilityDeclaration, PluginMetadata};
+
+pub use velk_commands as commands;

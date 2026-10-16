@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/plugin-contracts", "crates/core", "crates/editor-model", "crates/panels", "plugins/files", "plugins/terminal", "crates/diagnostics", "crates/velk", "crates/editor", "crates/search", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/builtin", "plugins/markdown", "plugins/search", "plugins/lsp", "plugins/rust-analyzer", "xtask"]
+members = ["crates/commands", "crates/plugin-contracts", "crates/core", "crates/editor-model", "crates/panels", "plugins/files", "plugins/terminal", "crates/diagnostics", "crates/velk", "crates/editor", "crates/search", "crates/editor-widget", "crates/syntax", "crates/semantic", "crates/markup", "crates/plugin-api", "crates/plugin-sdk", "crates/plugin-host", "plugins/builtin", "plugins/markdown", "plugins/search", "plugins/lsp", "plugins/rust-analyzer", "xtask"]
 default-members = ["crates/editor"]
 resolver = "3"
 
@@ -10,6 +10,8 @@ rust-version = "1.99.0"
 publish = false
 
 [workspace.dependencies]
+velk-plugin-rust-analyzer = { path = "plugins/rust-analyzer" }
+velk-commands = { path = "crates/commands" }
 velk-plugin-contracts = { path = "crates/plugin-contracts" }
 velk-core = { path = "crates/core" }
 velk-editor-model = { path = "crates/editor-model" }

@@ -52,6 +52,8 @@ while (message := read()) is not None:
                 time.sleep(60)
         send({"id": message["id"], "result": {"capabilities": {
             "positionEncoding": "utf-16", "hoverProvider": True,
+            "definitionProvider": True, "typeDefinitionProvider": True, "implementationProvider": True, "referencesProvider": True,
+            "experimental": {"parentModule": True},
             "textDocumentSync": {"openClose": True, "change": 2, "save": {"includeText": True}}
         }}})
         send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "rust-analyzer"}]}})
@@ -71,6 +73,18 @@ while (message := read()) is not None:
         log({"reconstructed": text, "version": version})
         for diagnostic_version in [version - 1, version]:
             send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": diagnostic_version, "diagnostics": [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 7}}, "severity": 2, "message": "current" if diagnostic_version == version else "stale"}]}})
+    elif method in ["textDocument/definition", "textDocument/typeDefinition", "textDocument/implementation", "textDocument/references", "experimental/parentModule"]:
+        if mode == "hold-command":
+            continue
+        target = {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 7}}
+        if method == "textDocument/typeDefinition":
+            send({"id": message["id"], "result": [{"targetUri": uri, "targetRange": target, "targetSelectionRange": target}]})
+        elif method == "textDocument/definition":
+            send({"id": message["id"], "result": {"uri": uri, "range": target}})
+        else:
+            send({"id": message["id"], "result": [{"uri": uri, "range": target}]})
+    elif method == "rust-analyzer/expandMacro":
+        send({"id": message["id"], "result": {"name": "example!", "expansion": "fn expanded() {}"}})
     elif method == "textDocument/hover":
         if mode == "timeout":
             continue

@@ -12,7 +12,7 @@ pub(super) enum Operation {
 pub(super) struct State {
     pub(super) client: Client,
     markdown_provider: String,
-    task: Option<Task>,
+    pub(super) task: Option<Task>,
     pub status: String,
     pub(super) loaded: Vec<velk_plugin_host::PluginInfo>,
     /// Last info seen per ID this session, so unloaded plugins keep a description.

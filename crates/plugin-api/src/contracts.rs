@@ -28,6 +28,8 @@ pub const DOCUMENT: u32 = 1;
 pub const SAVED: u32 = 2;
 pub const HOVER: u32 = 3;
 pub const CANCEL_HOVER: u32 = 4;
+pub const COMMAND: u32 = 5;
+pub const COMMAND_RESULT: u32 = 5;
 pub const STATUS: u32 = 1;
 pub const DIAGNOSTICS: u32 = 2;
 pub const HOVER_RESULT: u32 = 3;
@@ -53,6 +55,7 @@ pub struct SemanticDocument {
 }
 #[repr(C)]
 pub struct SemanticInput {
+    pub payload: Bytes,
     pub kind: u32,
     pub document: *const SemanticDocument,
     pub request: SemanticRequest,
@@ -68,6 +71,7 @@ pub struct SemanticDiagnostic {
 }
 #[repr(C)]
 pub struct SemanticEvent {
+    pub payload: Bytes,
     pub kind: u32,
     pub status: u32,
     pub capabilities: u32,

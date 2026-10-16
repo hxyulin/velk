@@ -38,6 +38,7 @@ pub struct Capability {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginMetadata {
+    pub commands: Vec<velk_commands::Declaration>,
     pub name: String,
     pub readme: String,
     pub capabilities: Vec<Capability>,
@@ -47,6 +48,16 @@ pub struct PluginMetadata {
 impl PluginMetadata {
     pub fn validate(&self) -> Result<(), String> {
         crate::settings::validate_schema(&self.settings)?;
+        if self.commands.len() > 128 {
+            return Err("too many plugin commands".into());
+        }
+        let mut commands = std::collections::BTreeSet::new();
+        for command in &self.commands {
+            command.validate()?;
+            if !commands.insert(&command.id) {
+                return Err("duplicate plugin command".into());
+            }
+        }
         if self.name.trim().is_empty()
             || self.name.len() > 256
             || self.name.chars().any(char::is_control)

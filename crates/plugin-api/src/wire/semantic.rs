@@ -8,15 +8,15 @@ fn bytes(s: &str) -> Bytes {
         length: s.len(),
     }
 }
-fn request(r: model::HoverRequest) -> SemanticRequest {
+fn request(r: model::PositionRequest) -> SemanticRequest {
     SemanticRequest {
         id: r.id,
         revision: r.revision,
         position: r.position,
     }
 }
-fn hover_request(r: SemanticRequest) -> model::HoverRequest {
-    model::HoverRequest {
+fn hover_request(r: SemanticRequest) -> model::PositionRequest {
+    model::PositionRequest {
         id: r.id,
         revision: r.revision,
         position: r.position,
@@ -60,11 +60,25 @@ pub fn with_input<R>(
     call: impl FnOnce(&SemanticInput) -> R,
 ) -> Result<R, String> {
     let mut raw = SemanticInput {
+        payload: bytes(""),
         kind: CANCEL_HOVER,
         document: std::ptr::null(),
         request: Default::default(),
     };
     match input {
+        model::Input::Command {
+            request: r,
+            payload,
+        } => {
+            let payload = serde_json::to_string(payload).map_err(|e| e.to_string())?;
+            if payload.len() > 16 * 1024 {
+                return Err("command payload exceeds 16 KiB".into());
+            }
+            raw.kind = COMMAND;
+            raw.request = request(*r);
+            raw.payload = bytes(&payload);
+            Ok(call(&raw))
+        }
         model::Input::Document(d) | model::Input::Saved(d) => {
             #[cfg(unix)]
             let path = {
@@ -113,6 +127,11 @@ pub fn with_input<R>(
 /// All nested views must be readable and valid for this call. Output is owned.
 pub unsafe fn decode_input(raw: &SemanticInput) -> Result<model::Input, String> {
     Ok(match raw.kind {
+        COMMAND => model::Input::Command {
+            request: hover_request(raw.request),
+            payload: serde_json::from_str(unsafe { text(&raw.payload, 16 * 1024)? })
+                .map_err(|e| e.to_string())?,
+        },
         DOCUMENT | SAVED => {
             // SAFETY: input document is live for this call and copied before return.
             let d = unsafe { raw.document.as_ref() }.ok_or("null semantic document")?;
@@ -147,6 +166,7 @@ pub fn with_event<R>(
     call: impl FnOnce(&SemanticEvent) -> R,
 ) -> Result<R, String> {
     let mut raw = SemanticEvent {
+        payload: bytes(""),
         kind: STATUS,
         status: 0,
         capabilities: 0,
@@ -162,6 +182,19 @@ pub fn with_event<R>(
         diagnostic_count: 0,
     };
     match event {
+        model::Event::Command { request: r, result } => {
+            if let Ok(outcome) = result {
+                outcome.validate()?;
+            }
+            let payload = serde_json::to_string(result).map_err(|e| e.to_string())?;
+            if payload.len() > MAX_OUTPUT_BYTES {
+                return Err("command output exceeds ABI limit".into());
+            }
+            raw.kind = COMMAND_RESULT;
+            raw.request = request(*r);
+            raw.payload = bytes(&payload);
+            return Ok(call(&raw));
+        }
         model::Event::Status(s) => match s {
             model::Status::Starting => raw.status = STARTING,
             model::Status::Ready(c) => {
@@ -239,6 +272,18 @@ pub fn with_event<R>(
 /// `raw` and all its nonempty views must be valid for this call.
 pub unsafe fn decode_event(raw: &SemanticEvent) -> Result<model::Event, String> {
     Ok(match raw.kind {
+        COMMAND_RESULT => {
+            let result: Result<velk_commands::Outcome, String> =
+                serde_json::from_str(unsafe { text(&raw.payload, MAX_OUTPUT_BYTES)? })
+                    .map_err(|e| e.to_string())?;
+            if let Ok(outcome) = &result {
+                outcome.validate()?;
+            }
+            model::Event::Command {
+                request: hover_request(raw.request),
+                result,
+            }
+        }
         STATUS => model::Event::Status(match raw.status {
             STARTING => model::Status::Starting,
             READY if raw.capabilities & !3 == 0 => model::Status::Ready(model::Capabilities {
@@ -334,7 +379,7 @@ mod tests {
             revision: 73,
             text: ropey::Rope::from_str("fn café() { /* 👩‍💻 */ }"),
         };
-        let r = model::HoverRequest {
+        let r = model::PositionRequest {
             id: 12,
             revision: 73,
             position: 4,
@@ -344,6 +389,10 @@ mod tests {
             model::Input::Saved(d),
             model::Input::Hover(r),
             model::Input::CancelHover,
+            model::Input::Command {
+                request: r,
+                payload: serde_json::json!({"method":"test/command"}),
+            },
         ] {
             let decoded = with_input(&input, |raw| unsafe { decode_input(raw) })
                 .unwrap()
@@ -356,6 +405,19 @@ mod tests {
                     assert_eq!(a.revision, b.revision);
                 }
                 (model::Input::Hover(a), model::Input::Hover(b)) => assert_eq!(*a, b),
+                (
+                    model::Input::Command {
+                        request: a,
+                        payload: p,
+                    },
+                    model::Input::Command {
+                        request: b,
+                        payload: q,
+                    },
+                ) => {
+                    assert_eq!(*a, b);
+                    assert_eq!(*p, q);
+                }
                 (model::Input::CancelHover, model::Input::CancelHover) => {}
                 _ => panic!("input kind changed"),
             }
@@ -396,6 +458,18 @@ mod tests {
                 request: r,
                 message: "cancelled".into(),
             },
+            model::Event::Command {
+                request: r,
+                result: Ok(velk_commands::Outcome::Document {
+                    title: "Expansion".into(),
+                    text: "owned 世界".into(),
+                    language: Some("rust".into()),
+                }),
+            },
+            model::Event::Command {
+                request: r,
+                result: Err("unsupported command".into()),
+            },
         ];
         let copied: Vec<_> = events
             .iter()
@@ -424,6 +498,12 @@ mod tests {
             };
             assert!(unsafe { decode_event(&raw) }.is_err());
             raw.diagnostic_count = 1;
+            assert!(unsafe { decode_event(&raw) }.is_err());
+            raw.kind = COMMAND_RESULT;
+            raw.payload = Bytes {
+                data: std::ptr::null(),
+                length: 1,
+            };
             assert!(unsafe { decode_event(&raw) }.is_err());
             raw.kind = STATUS;
             raw.status = READY;

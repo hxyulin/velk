@@ -335,6 +335,27 @@ pub(super) unsafe extern "C" fn get<P: Plugin>(
     })
 }
 
+/// Typed command handler over the existing bounded JSON request contract.
+pub struct CommandHandler<N> {
+    pub name: N,
+}
+impl<P, F, N> Provider<P, F> for CommandHandler<N>
+where
+    P: Plugin,
+    N: AsRef<str>,
+    F: FnMut(&mut P, crate::commands::Context) -> Result<crate::commands::Outcome, String>
+        + 'static,
+{
+    fn install(self, reg: &mut Registrar<P>, mut handler: F) -> Result<(), String> {
+        reg.provide(Request(self.name), move |plugin: &mut P, input: &[u8]| {
+            let context = serde_json::from_slice(input).map_err(|e| e.to_string())?;
+            let outcome = handler(plugin, context)?;
+            outcome.validate()?;
+            serde_json::to_vec(&outcome).map_err(|e| e.to_string())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

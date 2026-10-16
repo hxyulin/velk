@@ -6,6 +6,11 @@ use rxui::{Element, Subscription, prelude::*};
 use std::path::PathBuf;
 use velk_editor_widget::{Editor, Language};
 
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct OpenRequest {
+    path: PathBuf,
+    position: Option<velk_commands::Position>,
+}
 enum Opened {
     Existing(u64),
     Loaded(Box<(FileState, velk_core::Buffer, PathBuf)>),
@@ -381,6 +386,52 @@ impl Document {
         }
     }
     pub(super) fn open_path(&mut self, path: PathBuf, cx: &mut Context<'_, Self>) {
+        self.open_request(
+            OpenRequest {
+                path,
+                position: None,
+            },
+            cx,
+        );
+    }
+    pub(super) fn open_location(
+        &mut self,
+        location: velk_commands::Location,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.open_request(
+            OpenRequest {
+                path: location.path,
+                position: Some(location.position),
+            },
+            cx,
+        );
+    }
+    fn navigate_position(
+        &mut self,
+        position: Option<velk_commands::Position>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(position) = position else {
+            return;
+        };
+        let Some(active) = self.buffer.as_ref() else {
+            return;
+        };
+        let offset =
+            velk_editor_model::resolve_position(position, active.editor.read(cx).buffer().text());
+        match offset {
+            Some(position) => active.editor.update(cx, |editor, _| {
+                editor.execute(velk_editor_widget::EditCommand::SetCaret {
+                    position,
+                    extend: false,
+                });
+            }),
+            None => self.notice(Some("Navigation target is outside the document".into())),
+        }
+        self.restore_focus_pending = true;
+    }
+    fn open_request(&mut self, request: OpenRequest, cx: &mut Context<'_, Self>) {
         if self.lifecycle.close_intent().is_some() || self.reloading() {
             return;
         }
@@ -393,11 +444,12 @@ impl Document {
         if self.opening.is_some() {
             if self.pending_opens.len() >= 32 {
                 self.notice(Some("Too many queued file opens; please wait".into()));
-            } else if !self.pending_opens.contains(&path) {
-                self.pending_opens.push_back(path);
+            } else if !self.pending_opens.contains(&request) {
+                self.pending_opens.push_back(request);
             }
             return;
         }
+        let OpenRequest { path, position } = request;
         let open: Vec<_> = self
             .buffer
             .iter()
@@ -417,15 +469,31 @@ impl Document {
                 let (file, buffer) = FileState::read(&resolved)?;
                 Ok::<_, std::io::Error>(Opened::Loaded(Box::new((file, buffer, path))))
             },
-            |this, result, cx| {
+            move |this, result, cx| {
                 this.opening = None;
                 match result {
-                    Ok(Ok(Opened::Existing(id))) => this.select_buffer(id, cx),
+                    Ok(Ok(Opened::Existing(id))) => {
+                        this.select_buffer(id, cx);
+                        if this.buffer.as_ref().is_some_and(|b| b.id == id) {
+                            this.navigate_position(position, cx);
+                        }
+                    }
                     Ok(Ok(Opened::Loaded(loaded))) => {
                         let (file, buffer, path) = *loaded;
                         let mut editor = Editor::from_buffer(buffer);
                         match editor.set_language(Language::for_path(&path)) {
-                            Ok(()) => this.add_buffer(file, editor, path, cx),
+                            Ok(()) => {
+                                let canonical = file.path().to_path_buf();
+                                this.add_buffer(file, editor, path, cx);
+                                if this
+                                    .buffer
+                                    .as_ref()
+                                    .and_then(|b| b.file.as_ref())
+                                    .is_some_and(|f| f.path() == canonical)
+                                {
+                                    this.navigate_position(position, cx);
+                                }
+                            }
                             Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                         }
                     }
@@ -433,7 +501,7 @@ impl Document {
                     Err(error) => this.notice(Some(format!("Open failed: {error}"))),
                 }
                 if let Some(next) = this.pending_opens.pop_front() {
-                    this.open_path(next, cx);
+                    this.open_request(next, cx);
                 }
             },
         ) {

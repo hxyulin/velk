@@ -3970,6 +3970,14 @@ name = "velk"
 version = "0.0.0-dev"
 
 [[package]]
+name = "velk-commands"
+version = "0.0.0-dev"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "velk-core"
 version = "0.0.0-dev"
 dependencies = [
@@ -4007,6 +4015,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "velk-commands",
  "velk-core",
  "velk-diagnostics",
  "velk-editor-model",
@@ -4023,6 +4032,8 @@ dependencies = [
 name = "velk-editor-model"
 version = "0.0.0-dev"
 dependencies = [
+ "ropey",
+ "velk-commands",
  "velk-core",
 ]
 
@@ -4060,6 +4071,8 @@ name = "velk-plugin-api"
 version = "0.0.0-dev"
 dependencies = [
  "ropey",
+ "serde_json",
+ "velk-commands",
  "velk-plugin-contracts",
  "velk-semantic",
 ]
@@ -4083,6 +4096,7 @@ version = "0.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
+ "velk-commands",
 ]
 
 [[package]]
@@ -4120,10 +4134,12 @@ version = "0.0.0-dev"
 dependencies = [
  "lsp-types",
  "ropey",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "url",
+ "velk-plugin-rust-analyzer",
  "velk-plugin-sdk",
  "velk-semantic",
 ]
@@ -4195,8 +4211,10 @@ version = "0.0.0-dev"
 dependencies = [
  "async-channel",
  "ropey",
+ "serde_json",
  "tempfile",
  "tokio",
+ "velk-commands",
 ]
 
 [[package]]
@@ -5075,6 +5093,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "velk-commands",
  "velk-diagnostics",
  "velk-markup",
  "velk-panels",

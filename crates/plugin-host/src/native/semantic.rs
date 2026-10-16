@@ -110,7 +110,7 @@ impl Manager {
                         self.quarantine_semantic_provider(&provider);
                     }
                 }
-                doc.session.events().clear();
+                doc.session.clear_requests();
                 doc.session
                     .events()
                     .publish(SemanticEvent::Status(Status::Stopped));
@@ -157,7 +157,7 @@ impl Manager {
                     } else {
                         true
                     };
-                    doc.session.events().clear();
+                    doc.session.clear_requests();
                     let result = if !retired {
                         Err("previous semantic session failed shutdown; restart required".into())
                     } else {
@@ -257,7 +257,7 @@ impl Manager {
                     failed_providers.push(provider);
                 }
                 doc.attempted = None;
-                doc.session.events().clear();
+                doc.session.clear_requests();
                 doc.session
                     .events()
                     .publish(SemanticEvent::Status(Status::Stopped));
