@@ -2,7 +2,7 @@
 
 Select **Vim** in Settings > Keymap provider to enable this opt-in keymap.
 Each buffer starts in Normal mode and keeps its own mode and pending command.
-The status bar shows `NORMAL`, `INSERT`, `VISUAL`, `V-LINE`, and pending counts or prefixes.
+The status bar shows `NORMAL`, `INSERT`, `VISUAL`, `V-LINE`, `V-BLOCK`, and pending counts or prefixes.
 
 | Keys | Action |
 | --- | --- |
@@ -15,6 +15,8 @@ The status bar shows `NORMAL`, `INSERT`, `VISUAL`, `V-LINE`, and pending counts 
 | `Escape`, `Ctrl+[` | Return to Normal mode; cancel pending input |
 | `x`, `dd` | Delete characters or whole lines |
 | `u`, `Ctrl+r` | Undo or redo |
+| `Ctrl+v`, `Ctrl+q` | Enter or leave Visual Block mode |
+| `I`, `A` in Visual Block | Insert before or append after each row selection |
 | `v`, `V` | Enter characterwise or linewise Visual mode; repeat the same key to exit |
 | Motions in Visual mode | Extend the selection, including the character under the cursor |
 | `o` in Visual mode | Swap the anchor and cursor |
@@ -37,7 +39,35 @@ it literally. Pointer selection or an external edit ends Visual mode so stale
 anchors cannot affect later edits. Selection state is local to the buffer and
 is reset on provider replacement or deselection.
 
-This is an initial subset, not full Vim emulation. Visual Block, multiple cursors, registers,
+Visual Block uses **logical grapheme columns**. Tabs count as one column,
+matching the existing logical movement model; proportional and wide glyphs do not
+form a pixel-aligned rectangle. Short rows clip to their end without adding
+virtual spaces or padding. A block may cover at most 4,096 logical rows. Each row
+has an independent range and caret; the active endpoint controls scrolling while
+selecting. Block insert/change begins with the first row as the primary caret.
+
+`c`, `I`, and `A` enter Insert mode with a caret on every selected row. Keyboard
+text, IME commits, Tab, and Enter apply to all row carets in one transaction per
+edit. Backspace/Delete also operate on every caret and stop at line boundaries.
+Escape keeps the primary caret and returns to Normal mode. Navigation and
+undo/redo finish multi-caret insertion. Pointer selection or external edits clear
+the extra carets. Multi-caret typing uses literal text; indentation and pairing
+providers currently participate in single-caret editing only. IME preedit is
+shown at the primary caret, and its commit is inserted at every caret.
+
+Native Copy joins selected rows with newlines. Native paste distributes one line
+per row when line and caret counts match; otherwise it inserts the full text at
+each row. It replaces a selected block and returns to Normal mode, or keeps
+existing Insert-mode carets active. Multi-row insertion is limited to 4 MiB of
+total inserted UTF-8 text per transaction. An oversized selection or edit is
+rejected without partially changing the document.
+
+The keymap claims `Ctrl+v` and `Ctrl+q` while the editor is focused in Normal or
+Visual modes, ahead of application paste/quit shortcuts. It releases those keys
+in Insert mode. Menu and other native clipboard actions retain their standard
+behavior. The mode and selections remain local to each buffer.
+
+This is an initial subset, not full Vim emulation. Registers,
 yank/put, operator–motion combinations (`dw`, `d$`), text objects, command-line
 mode, repeat (`.`), Vim insert-session undo grouping, block cursors, and automatic
 indentation for `o`/`O` are not implemented. Word characters use Unicode identifier

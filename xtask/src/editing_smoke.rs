@@ -138,12 +138,38 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     assert!(modal.evaluate(&mut document, input("V"))?);
     assert_eq!(modal.input_state().label, "V-LINE");
     assert_eq!(document.selected_text(), document.text().to_string());
+    assert!(modal.evaluate(&mut document, input("Escape"))?);
+    let mut block = velk_editor_model::editing::Session::default();
+    block.set_providers(std::collections::BTreeMap::from([(
+        Role::Keymap,
+        manager.editing_provider("velk.vim", Role::Keymap)?,
+    )]));
+    let mut rectangle = velk_core::Buffer::new("abcd\nefgh");
+    rectangle.set_caret(1, false);
+    assert!(block.evaluate(&mut rectangle, input(""))?);
+    let control = Intent::Key(velk_editing::input::Key {
+        key: "v".into(),
+        text: false,
+        control: true,
+        alt: false,
+        meta: false,
+        state: Default::default(),
+    });
+    assert!(block.evaluate(&mut rectangle, control)?);
+    for key in ["l", "j", "c"] {
+        assert!(block.evaluate(&mut rectangle, input(key))?);
+    }
+    assert!(block.has_multiple_carets());
+    assert!(block.edit_command(&mut rectangle, &velk_editor_model::EditCommand::Insert("X"))?);
+    assert_eq!(rectangle.text().to_string(), "aXd\neXh");
+    assert!(block.evaluate(&mut rectangle, input("Escape"))?);
+    assert!(!block.has_multiple_carets());
     manager.unload("velk.vim");
     assert!(!modal.evaluate(&mut document, input("x"))?);
     assert!(modal.input_state().label.is_empty());
     manager.unload_all();
     println!(
-        "Editing provider smoke passed: pack={pack}, native Vim modes/visual selections/motions/state retirement, indentation/newlines/autopairs, undo, settings and stale lease fallback"
+        "Editing provider smoke passed: pack={pack}, native Vim modes/block selections/multiple carets/motions/state retirement, indentation/newlines/autopairs, undo, settings and stale lease fallback"
     );
     Ok(())
 }

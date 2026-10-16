@@ -115,6 +115,7 @@ impl ProjectedComposition {
             .map(|syntax| syntax.project(replaced.clone(), inserted));
         self.surface.0.selection = Selection { anchor: head, head };
         self.surface.0.caret = None;
+        self.surface.0.regions = None;
         self.surface.0.preedit = Some(replaced.start..replaced.start + inserted);
         self.surface.0.caret_visible = source.caret_visible && composition.cursor.is_some();
         self.surface.0.epoch = source.epoch;
@@ -234,6 +235,7 @@ mod tests {
             selection: e.buffer.selection(),
             caret: None,
             selected_line_break: false,
+            regions: None,
             composition: e.composition.clone(),
             preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),

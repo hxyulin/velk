@@ -519,3 +519,109 @@ fn capturing_keymap_failure_does_not_insert_commands_and_deselection_restores_ty
     input(&mut runtime, &mut ui, TextInputEvent::Insert("x".into()));
     assert_eq!(text(&mut runtime, &editor), "x");
 }
+
+struct ShortcutHost {
+    editor: Entity<Editor>,
+    parent_calls: usize,
+}
+impl View for ShortcutHost {
+    fn view(&self, cx: &mut ViewContext<'_, Self>) -> impl IntoElement {
+        let control = Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        column()
+            .fill_width()
+            .fill_height()
+            .on_command(
+                cx.command(rxui::standard_commands::Paste, |this, _, _| {
+                    this.parent_calls += 1
+                })
+                .shortcut(Shortcut::new(KeyboardKey::Character("v".into()), control)),
+            )
+            .on_command(
+                cx.command(rxui::standard_commands::Quit, |this, _, _| {
+                    this.parent_calls += 1
+                })
+                .shortcut(Shortcut::new(KeyboardKey::Character("q".into()), control)),
+            )
+            .child(self.editor.clone().into_element())
+    }
+}
+#[test]
+fn keymap_claims_control_shortcuts_in_its_focused_scope_and_releases_them_in_insert_mode() {
+    let mut runtime = Runtime::new();
+    let editor = runtime.update(|cx| {
+        cx.new(|_| {
+            let mut editor = Editor::new("abc");
+            editor.set_editing_providers(std::collections::BTreeMap::from([(
+                velk_plugin_sdk::editing::Role::Keymap,
+                std::sync::Arc::new(VimProvider)
+                    as std::sync::Arc<dyn velk_plugin_sdk::editing::Provider>,
+            )]));
+            editor
+        })
+    });
+    let host = runtime.update(|cx| {
+        cx.new(|_| ShortcutHost {
+            editor: editor.clone(),
+            parent_calls: 0,
+        })
+    });
+    let mut ui = Ui::new(&mut runtime, host.clone()).unwrap();
+    ui.prepare(&mut runtime, [640., 480.], &mut Measure)
+        .unwrap();
+    let id = ui
+        .elements()
+        .find(|element| element.key == Some(&Key::from("editor-surface")))
+        .unwrap()
+        .id;
+    ui.focus(id);
+    for value in ["v", "q"] {
+        ui.key(
+            &mut runtime,
+            KeyEvent {
+                key: KeyboardKey::Character(value.into()),
+                modifiers: Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                pressed: true,
+                repeat: false,
+            },
+        )
+        .unwrap();
+        ui.prepare(&mut runtime, [640., 480.], &mut Measure)
+            .unwrap();
+    }
+    runtime.update(|cx| {
+        assert_eq!(host.read(cx).parent_calls, 0);
+        assert_eq!(editor.read(cx).input_mode(), Some("NORMAL"));
+    });
+    ui.text_input(
+        &mut runtime,
+        TextInputEvent::Insert("i".into()),
+        &mut Measure,
+    )
+    .unwrap();
+    ui.prepare(&mut runtime, [640., 480.], &mut Measure)
+        .unwrap();
+    for value in ["v", "q"] {
+        ui.key(
+            &mut runtime,
+            KeyEvent {
+                key: KeyboardKey::Character(value.into()),
+                modifiers: Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                pressed: true,
+                repeat: false,
+            },
+        )
+        .unwrap();
+        ui.prepare(&mut runtime, [640., 480.], &mut Measure)
+            .unwrap();
+    }
+    runtime.update(|cx| assert_eq!(host.read(cx).parent_calls, 2));
+}

@@ -9,6 +9,7 @@ pub struct Session {
     revision: u64,
     input: velk_editing::input::State,
     visual: Option<crate::input::VisualSelection>,
+    multiple: Option<crate::selections::SelectionSet>,
 }
 impl Session {
     pub fn set_providers(&mut self, providers: BTreeMap<Role, Arc<dyn Provider>>) {
@@ -23,6 +24,7 @@ impl Session {
         if !unchanged {
             self.input = Default::default();
             self.visual = None;
+            self.multiple = None;
         }
         self.providers = providers;
         self.pairs.clear();
@@ -38,6 +40,88 @@ impl Session {
             .as_ref()
             .map_or(buffer.selection().head, |selection| selection.head)
     }
+    pub fn selection_regions(
+        &self,
+    ) -> Option<std::sync::Arc<Vec<crate::selections::SelectionRegion>>> {
+        self.visual
+            .as_ref()
+            .and_then(|selection| selection.block.as_ref())
+            .or(self.multiple.as_ref())
+            .map(|set| set.regions.clone())
+    }
+    pub fn has_multiple_carets(&self) -> bool {
+        self.multiple.is_some()
+    }
+    pub fn has_selection(&self, buffer: &Buffer) -> bool {
+        self.selection_regions().map_or_else(
+            || !buffer.selection().is_empty(),
+            |regions| regions.iter().any(|region| !region.selection.is_empty()),
+        )
+    }
+    pub fn selected_text(&self, buffer: &Buffer) -> String {
+        self.visual
+            .as_ref()
+            .and_then(|selection| selection.block.as_ref())
+            .or(self.multiple.as_ref())
+            .map_or_else(|| buffer.selected_text(), |set| set.selected_text(buffer))
+    }
+    pub fn edit_command(
+        &mut self,
+        buffer: &mut Buffer,
+        command: &crate::EditCommand<'_>,
+    ) -> Result<bool, String> {
+        self.synchronize(buffer);
+        let block = self
+            .visual
+            .as_ref()
+            .and_then(|selection| selection.block.as_ref())
+            .is_some();
+        if !block && self.multiple.is_none() {
+            return Ok(false);
+        }
+        match command {
+            crate::EditCommand::Insert(text) | crate::EditCommand::Paste(text) => {
+                if block {
+                    let mut set = self.visual.as_ref().unwrap().block.clone().unwrap();
+                    set.primary = 0;
+                    if matches!(command, crate::EditCommand::Paste(_)) {
+                        set.paste(buffer, text)?;
+                    } else {
+                        set.replace(buffer, text)?;
+                    }
+                    self.visual = None;
+                    self.input = Default::default();
+                } else {
+                    let set = self.multiple.as_mut().unwrap();
+                    if matches!(command, crate::EditCommand::Paste(_)) {
+                        set.paste(buffer, text)?;
+                    } else {
+                        set.replace(buffer, text)?;
+                    }
+                }
+            }
+            crate::EditCommand::Backspace | crate::EditCommand::Delete => {
+                if block {
+                    let mut set = self.visual.as_ref().unwrap().block.clone().unwrap();
+                    set.primary = 0;
+                    set.replace(buffer, "")?;
+                    self.visual = None;
+                    self.input = Default::default();
+                } else {
+                    self.multiple
+                        .as_mut()
+                        .unwrap()
+                        .erase(buffer, matches!(command, crate::EditCommand::Backspace))?;
+                }
+            }
+            _ => {
+                self.multiple = None;
+                return Ok(false);
+            }
+        }
+        self.synchronize(buffer);
+        Ok(true)
+    }
     pub fn clear_pairs(&mut self) {
         self.pairs.clear();
     }
@@ -49,6 +133,9 @@ impl Session {
         {
             self.visual = None;
             self.input = Default::default();
+        }
+        if self.multiple.as_ref().is_some_and(|set| !set.valid(buffer)) {
+            self.multiple = None;
         }
         if buffer.revision() == self.revision {
             return;
@@ -85,6 +172,9 @@ impl Session {
     }
     pub fn evaluate(&mut self, buffer: &mut Buffer, mut intent: Intent) -> Result<bool, String> {
         self.synchronize(buffer);
+        if !matches!(intent, Intent::Key(_)) && self.multiple.is_some() {
+            return Ok(false);
+        }
         let Some(provider) = self.providers.get(&intent.role()) else {
             return Ok(false);
         };
@@ -128,7 +218,7 @@ impl Session {
         let decision = provider.evaluate(&request)?;
         decision.validate(&request)?;
         if let Decision::Input(response) = decision {
-            if self.input.clamp_caret && self.visual.is_none() {
+            if self.input.clamp_caret && self.visual.is_none() && self.multiple.is_none() {
                 buffer.clamp_caret_to_line_character();
             }
             for action in response.actions {
@@ -139,9 +229,9 @@ impl Session {
                 ) {
                     self.pairs.clear();
                 }
-                crate::input::apply_visual(buffer, action, &mut self.visual)?;
+                crate::input::apply_visual(buffer, action, &mut self.visual, &mut self.multiple)?;
             }
-            if response.state.clamp_caret && self.visual.is_none() {
+            if response.state.clamp_caret && self.visual.is_none() && self.multiple.is_none() {
                 buffer.clamp_caret_to_line_character();
             }
             self.input = response.state;
@@ -152,6 +242,7 @@ impl Session {
             if keymap {
                 self.input = Default::default();
                 self.visual = None;
+                self.multiple = None;
             }
             return Ok(false);
         };

@@ -14,7 +14,7 @@ pub use viewport::CpuViewportProbe;
 #[cfg(any(test, feature = "performance"))]
 pub use viewport::FrameMetrics;
 
-use rxui::{prelude::*, standard_commands as commands};
+use rxui::{Element, prelude::*, standard_commands as commands};
 use std::sync::Arc;
 #[cfg(any(test, feature = "performance"))]
 use std::time::Instant;
@@ -55,6 +55,9 @@ pub struct Editor {
     hover: hover::State,
 }
 
+struct KeymapShortcut<const SLOT: usize>;
+impl<const SLOT: usize> Command for KeymapShortcut<SLOT> {}
+
 impl Editor {
     pub fn set_editing_providers(
         &mut self,
@@ -65,6 +68,14 @@ impl Editor {
     }
     pub fn caret_position(&self) -> usize {
         self.editing.caret_position(&self.buffer)
+    }
+    pub fn selection_regions(
+        &self,
+    ) -> Option<Arc<Vec<velk_editor_model::selections::SelectionRegion>>> {
+        self.editing.selection_regions()
+    }
+    pub fn selected_text(&self) -> String {
+        self.editing.selected_text(&self.buffer)
     }
     pub fn input_mode(&self) -> Option<&str> {
         let label = &self.editing.input_state().label;
@@ -79,6 +90,28 @@ impl Editor {
             meta,
             state: Default::default(),
         }))
+    }
+    fn bind_keymap_shortcut<const SLOT: usize>(
+        &self,
+        surface: Element,
+        cx: &mut ViewContext<'_, Self>,
+    ) -> Element {
+        let Some(key) = self.editing.input_state().control_keys.get(SLOT).cloned() else {
+            return surface;
+        };
+        let shortcut = Shortcut::new(
+            KeyboardKey::Character(key.clone()),
+            Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        );
+        surface.on_command(
+            cx.command(KeymapShortcut::<SLOT>, move |this, _, _| {
+                this.keymap(&key, true, false, false, false);
+            })
+            .shortcut(shortcut),
+        )
     }
     fn interactive(&mut self, intent: velk_editing::Intent) -> bool {
         let preserve_selection = matches!(
@@ -118,7 +151,11 @@ impl Editor {
         {
             return;
         }
-        self.insert(text);
+        if source == rxui::TextInsertSource::Paste {
+            self.execute(EditCommand::Paste(text));
+        } else {
+            self.insert(text);
+        }
     }
     pub fn new(text: &str) -> Self {
         Self {
@@ -259,8 +296,22 @@ impl Editor {
         if matches!(command, EditCommand::Undo | EditCommand::Redo) {
             self.editing.clear_pairs();
         }
-        if !command.apply(&mut self.buffer) {
-            return false;
+        let was_visual = self.editing.has_visual_selection();
+        match self.editing.edit_command(&mut self.buffer, &command) {
+            Ok(true) => {
+                if was_visual && !self.editing.has_visual_selection() {
+                    self.keymap("", false, false, false, false);
+                }
+            }
+            Ok(false) => {
+                if !command.apply(&mut self.buffer) {
+                    return false;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "multi-selection edit failed");
+                return false;
+            }
         }
         self.composition = None;
         self.edited();
@@ -414,13 +465,12 @@ impl Editor {
         if intent.is_some_and(|intent| self.interactive(intent)) {
             event.prevent_default();
         } else if let Some(command) = key_command(key_name, modifiers, platform) {
-            command.apply(&mut self.buffer);
+            self.execute(command);
             #[cfg(any(test, feature = "performance"))]
             {
                 self.input_started = Some(input_started);
             }
             event.prevent_default();
-            self.edited();
         } else if !had_hover {
             cx.unchanged();
         }
@@ -503,11 +553,11 @@ impl View for Editor {
         let ime_geometry = self.geometry.clone();
         let copy = cx
             .command(commands::Copy, |this, _, cx| {
-                if let Err(error) = cx.write_clipboard_text(this.buffer.selected_text()) {
+                if let Err(error) = cx.write_clipboard_text(this.selected_text()) {
                     eprintln!("Velk clipboard: {error}");
                 }
             })
-            .enabled(!self.buffer.selection().is_empty())
+            .enabled(self.editing.has_selection(&self.buffer))
             .shortcut(Shortcut::primary("c"));
         let cut = cx
             .command(commands::Cut, |this, _, cx| {
@@ -515,16 +565,15 @@ impl View for Editor {
                 {
                     this.input_started = Some(Instant::now());
                 }
-                match cx.write_clipboard_text(this.buffer.selected_text()) {
+                match cx.write_clipboard_text(this.selected_text()) {
                     Ok(()) => {
                         this.composition = None;
-                        EditCommand::Delete.apply(&mut this.buffer);
-                        this.edited();
+                        this.execute(EditCommand::Delete);
                     }
                     Err(error) => eprintln!("Velk clipboard: {error}"),
                 }
             })
-            .enabled(!self.buffer.selection().is_empty() && self.composition.is_none())
+            .enabled(self.editing.has_selection(&self.buffer) && self.composition.is_none())
             .shortcut(Shortcut::primary("x"));
         let undo = cx
             .command(commands::Undo, |this, _, _| {
@@ -534,8 +583,7 @@ impl View for Editor {
                 }
                 this.note_input();
                 this.editing.clear_pairs();
-                EditCommand::Undo.apply(&mut this.buffer);
-                this.edited();
+                this.execute(EditCommand::Undo);
             })
             .enabled(self.buffer.can_undo() && self.composition.is_none())
             .shortcut(Shortcut::primary("z"));
@@ -547,8 +595,7 @@ impl View for Editor {
                 }
                 this.note_input();
                 this.editing.clear_pairs();
-                EditCommand::Redo.apply(&mut this.buffer);
-                this.edited();
+                this.execute(EditCommand::Redo);
             })
             .enabled(self.buffer.can_redo() && self.composition.is_none())
             .shortcut(Shortcut::primary("z").shift())
@@ -559,17 +606,17 @@ impl View for Editor {
                 {
                     this.input_started = Some(Instant::now());
                 }
-                EditCommand::SelectAll.apply(&mut this.buffer);
-                this.edited();
+                this.execute(EditCommand::SelectAll);
             })
             .enabled(self.composition.is_none())
             .shortcut(Shortcut::primary("a"));
-        let surface = rxui::custom(viewport::ViewportSurface(Surface {
+        let mut surface = rxui::custom(viewport::ViewportSurface(Surface {
             rope: self.buffer.text().clone(),
             revision: self.buffer.revision(),
             selection: self.buffer.selection(),
             caret: Some(self.caret_position()),
             selected_line_break: false,
+            regions: self.selection_regions(),
             composition: self.composition.clone(),
             preedit: None,
             geometry: self.geometry.clone(),
@@ -652,6 +699,9 @@ impl View for Editor {
         .on_command(undo)
         .on_command(redo)
         .on_command(select_all);
+        // RXUI resolves commands by type, so each declared shortcut has its own slot.
+        macro_rules! bind_keymap { ($($slot:literal),*) => { $(surface = self.bind_keymap_shortcut::<$slot>(surface, cx);)* }; }
+        bind_keymap!(0, 1, 2, 3, 4, 5, 6, 7);
         // Paste uses RXUI's default native clipboard handler, delivered through
         // on_text_insert with TextInsertSource::Paste.
         // A container root keeps native input and preparation on the same
@@ -851,6 +901,106 @@ mod responsiveness_tests {
                 assert!(e.caret_position() <= e.buffer.text().len_chars());
             });
         }
+    }
+    #[test]
+    fn visual_block_paints_every_row_caret_and_routes_multi_row_typing() {
+        let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
+        let mut editor = Editor::new("\n\n");
+        editor
+            .set_appearance(EditorAppearance {
+                foreground: [0., 1., 0., 1.],
+                selection: [1., 0., 0., 1.],
+                ..Default::default()
+            })
+            .unwrap();
+        editor.set_editing_providers(std::collections::BTreeMap::from([(
+            velk_editing::Role::Keymap,
+            Arc::new(Vim) as Arc<dyn velk_editing::Provider>,
+        )]));
+        let mut test = TestUi::new(&graphics, [640, 240], editor).unwrap();
+        test.painter_mut().fonts_mut().load_system_fonts();
+        let id = test.element("editor-surface").unwrap().unwrap().id;
+        test.parts().1.focus(id);
+        let block = || KeyEvent {
+            key: KeyboardKey::Character("q".into()),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        };
+        test.key(block()).unwrap();
+        for key in ["2", "j"] {
+            test.text_input(TextInputEvent::Insert(key.into())).unwrap();
+        }
+        let pixels = test.render().unwrap();
+        let rows = test.read(|e| {
+            assert_eq!(e.input_mode(), Some("V-BLOCK"));
+            assert_eq!(e.selection_regions().unwrap().len(), 3);
+            let geometry = e.geometry.borrow();
+            geometry
+                .lines
+                .iter()
+                .map(|line| {
+                    (geometry.origin[1] + crate::surface::PADDING + line.top - geometry.offset[1]
+                        + line.height / 2.) as usize
+                })
+                .collect::<Vec<_>>()
+        });
+        let green = |pixels: &[u8], row: usize| {
+            pixels[row * 640 * 4..(row + 1) * 640 * 4]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[1] > 200 && pixel[0] < 40 && pixel[2] < 40)
+                .count()
+        };
+        for row in &rows {
+            assert!(
+                green(&pixels, *row) > 0,
+                "each block row must paint a caret"
+            );
+        }
+        test.key(block()).unwrap();
+        let single = test.render().unwrap();
+        assert_eq!(green(&single, rows[0]), 0);
+        assert_eq!(green(&single, rows[1]), 0);
+        assert!(green(&single, rows[2]) > 0);
+        test.key(block()).unwrap();
+        for key in ["2", "k", "I", "Z"] {
+            test.text_input(TextInputEvent::Insert(key.into())).unwrap();
+        }
+        test.render().unwrap();
+        test.read(|e| {
+            assert_eq!(e.buffer.text().to_string(), "Z\nZ\nZ");
+            assert_eq!(e.selection_regions().unwrap().len(), 3);
+        });
+        test.key(KeyEvent {
+            key: KeyboardKey::Backspace,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+        test.render().unwrap();
+        test.read(|e| assert_eq!(e.buffer.text().to_string(), "\n\n"));
+        test.text_input(TextInputEvent::Paste("a\nb\nc".into()))
+            .unwrap();
+        test.render().unwrap();
+        test.read(|e| assert_eq!(e.buffer.text().to_string(), "a\nb\nc"));
+        test.key(KeyEvent {
+            key: KeyboardKey::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+        test.render().unwrap();
+        test.read(|e| {
+            assert!(e.selection_regions().is_none());
+            assert_eq!(e.input_mode(), Some("NORMAL"));
+        });
     }
     #[test]
     fn hover_remains_painted_during_text_selection() {

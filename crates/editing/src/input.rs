@@ -11,12 +11,25 @@ pub struct State {
     pub capture_text: bool,
     /// Keep the caret on a character rather than the insertion point after line text.
     pub clamp_caret: bool,
+    /// Up to eight Ctrl+character bindings owned by the focused editor.
+    pub control_keys: Vec<String>,
 }
 impl State {
     pub fn validate(&self) -> Result<(), String> {
         if self.label.len() > 64
             || self.label.chars().any(char::is_control)
             || self.data.len() > 4096
+            || self.control_keys.len() > 8
+            || self
+                .control_keys
+                .iter()
+                .any(|key| key.chars().count() != 1 || key.chars().any(char::is_control))
+            || self
+                .control_keys
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.control_keys.len()
         {
             return Err("invalid keymap state".into());
         }
@@ -56,6 +69,7 @@ pub enum Motion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectionKind {
+    Block,
     Character,
     Line,
 }
@@ -66,6 +80,7 @@ pub enum Action {
     SwapSelectionEnds,
     DeleteSelection,
     ChangeSelection,
+    InsertAtSelections { after: bool },
     Move { motion: Motion, count: usize },
     DeleteCharacters { count: usize },
     DeleteLines { count: usize },
@@ -85,7 +100,8 @@ impl Action {
             | Self::Select { .. }
             | Self::SwapSelectionEnds
             | Self::DeleteSelection
-            | Self::ChangeSelection => 1,
+            | Self::ChangeSelection
+            | Self::InsertAtSelections { .. } => 1,
         };
         if !(1..=10_000).contains(&count) {
             return Err("keymap count must be 1..=10000".into());
@@ -161,6 +177,21 @@ mod tests {
             },
         ] {
             assert!(Decision::Input(response).validate(&request).is_err());
+        }
+        for keys in [
+            vec!["v".into(); 2],
+            vec!["long".into()],
+            vec!["\n".into()],
+            (0..9).map(|n| n.to_string()).collect(),
+        ] {
+            assert!(
+                State {
+                    control_keys: keys,
+                    ..Default::default()
+                }
+                .validate()
+                .is_err()
+            );
         }
         let mut other = request.clone();
         other.intent = Intent::Type("x".into());

@@ -399,7 +399,19 @@ impl ViewportState {
         let length = slice.len_chars()
             - usize::from(slice.get_char(slice.len_chars().saturating_sub(1)) == Some('\n'));
         let range = start..start + slice.len_chars();
-        let selection = surface.selection;
+        let region = surface.regions.as_ref().and_then(|regions| {
+            let index = regions.partition_point(|region| region.caret < start);
+            regions
+                .get(index)
+                .filter(|region| surface.rope.char_to_line(region.caret) == line)
+        });
+        let selection = if surface.regions.is_some() {
+            region.map_or(Selection::default(), |region| region.selection)
+        } else {
+            surface.selection
+        };
+        let caret = region.map_or_else(|| surface.caret_position(), |region| region.caret);
+        let has_caret = surface.regions.is_none() || region.is_some();
         let composition = (composition_line(surface) == Some(line))
             .then(|| surface.composition.clone())
             .flatten();
@@ -411,6 +423,7 @@ impl ViewportState {
                 selection: Selection::default(),
                 caret: None,
                 selected_line_break: false,
+                regions: None,
                 composition: None,
                 preedit: None,
                 geometry: Rc::new(RefCell::new(Geometry::default())),
@@ -627,7 +640,7 @@ impl ViewportState {
             anchor: clamp(selection.anchor),
             head: clamp(selection.head),
         };
-        entry.surface.caret = surface.caret.map(clamp);
+        entry.surface.caret = Some(clamp(caret));
         entry.surface.selected_line_break = columns.end == length
             && slice.len_chars() > length
             && selection.range().contains(&(start + length));
@@ -641,9 +654,10 @@ impl ViewportState {
         });
         entry.surface.selection_color = surface.selection_color;
         entry.surface.caret_visible = surface.caret_visible
-            && surface.rope.char_to_line(surface.caret_position()) == line
-            && surface.caret_position() >= start + columns.start
-            && surface.caret_position() <= start + columns.end;
+            && has_caret
+            && surface.rope.char_to_line(caret) == line
+            && caret >= start + columns.start
+            && caret <= start + columns.end;
         entry.surface.epoch = surface.epoch;
         entry.used = self.frame;
         let shaped = entry.surface.shape(&mut entry.state, width, fonts)?;
@@ -1164,6 +1178,7 @@ impl CpuViewportProbe {
                 selection: Selection::default(),
                 caret: None,
                 selected_line_break: false,
+                regions: None,
                 composition: None,
                 preedit: None,
                 geometry: Rc::new(RefCell::new(Geometry::default())),
@@ -1223,6 +1238,7 @@ mod tests {
             selection: Selection::default(),
             caret: None,
             selected_line_break: false,
+            regions: None,
             composition: None,
             preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),

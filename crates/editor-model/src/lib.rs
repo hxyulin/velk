@@ -8,6 +8,7 @@ mod input;
 pub mod navigation;
 mod position;
 pub mod projection;
+pub mod selections;
 
 pub use annotations::{
     AnnotationError, Annotations, Color, EditorAppearance, HoverCard, LinePattern, OverlayKind,

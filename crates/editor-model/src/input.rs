@@ -1,20 +1,68 @@
+use crate::selections::{MAX_SELECTIONS, SelectionRegion, SelectionSet};
 use velk_core::{Buffer, Selection, TextEdit, Transaction};
 use velk_editing::input::{Action, Motion, SelectionKind};
 
+#[derive(Clone)]
 pub(super) struct VisualSelection {
     anchor: usize,
     pub head: usize,
     kind: SelectionKind,
     revision: u64,
     projected: Selection,
+    pub block: Option<SelectionSet>,
+    columns: Option<(usize, usize)>,
 }
 impl VisualSelection {
     pub fn valid(&self, buffer: &Buffer) -> bool {
         buffer.revision() == self.revision && buffer.selection() == self.projected
     }
-    fn project(&mut self, buffer: &mut Buffer) {
+    fn project(&mut self, buffer: &mut Buffer) -> Result<(), String> {
+        if self.kind == SelectionKind::Block {
+            let text = buffer.text();
+            let first = text.char_to_line(self.anchor.min(self.head));
+            let last = text.char_to_line(self.anchor.max(self.head));
+            if last - first >= MAX_SELECTIONS {
+                return Err("block exceeds 4096 rows".into());
+            }
+            let (anchor_column, head_column) = *self
+                .columns
+                .get_or_insert_with(|| (column(buffer, self.anchor), column(buffer, self.head)));
+            let left = anchor_column.min(head_column);
+            let right = anchor_column.max(head_column).saturating_add(1);
+            let regions = (first..=last)
+                .map(|line| {
+                    let start = at_column(buffer, line, left);
+                    let end = at_column(buffer, line, right);
+                    let caret = at_column(buffer, line, head_column);
+                    SelectionRegion {
+                        selection: if head_column >= anchor_column {
+                            Selection {
+                                anchor: start,
+                                head: end,
+                            }
+                        } else {
+                            Selection {
+                                anchor: end,
+                                head: start,
+                            }
+                        },
+                        caret,
+                    }
+                })
+                .collect();
+            let primary = text.char_to_line(self.head) - first;
+            let set = SelectionSet::new(buffer, regions, primary)?;
+            self.projected = set.regions[primary].selection;
+            self.revision = buffer.revision();
+            set.project(buffer);
+            self.block = Some(set);
+            return Ok(());
+        }
+        self.block = None;
+        self.columns = None;
         let forward = self.anchor <= self.head;
         let (start, end) = match self.kind {
+            SelectionKind::Block => unreachable!(),
             SelectionKind::Character => (
                 self.anchor.min(self.head),
                 buffer.next_grapheme_boundary(self.anchor.max(self.head)),
@@ -46,19 +94,61 @@ impl VisualSelection {
         };
         self.revision = buffer.revision();
         buffer.set_selection_preserving_column(self.projected);
+        Ok(())
     }
+}
+fn column(buffer: &Buffer, position: usize) -> usize {
+    let mut cursor = buffer
+        .text()
+        .line_to_char(buffer.text().char_to_line(position));
+    let mut column = 0;
+    while cursor < position {
+        cursor = buffer.next_grapheme_boundary(cursor);
+        column += 1;
+    }
+    column
+}
+fn at_column(buffer: &Buffer, line: usize, column: usize) -> usize {
+    let start = buffer.text().line_to_char(line);
+    let slice = buffer.text().line(line);
+    let end = start + slice.len_chars()
+        - usize::from(slice.get_char(slice.len_chars().saturating_sub(1)) == Some('\n'));
+    let mut cursor = start;
+    for _ in 0..column {
+        if cursor >= end {
+            break;
+        }
+        cursor = buffer.next_grapheme_boundary(cursor);
+    }
+    cursor.min(end)
 }
 
 pub(super) fn apply_visual(
     buffer: &mut Buffer,
     action: Action,
     visual: &mut Option<VisualSelection>,
+    multiple: &mut Option<SelectionSet>,
+) -> Result<(), String> {
+    let before = (visual.clone(), multiple.clone(), buffer.selection());
+    let result = apply_visual_inner(buffer, action, visual, multiple);
+    if result.is_err() {
+        *visual = before.0;
+        *multiple = before.1;
+        buffer.set_selection_preserving_column(before.2);
+    }
+    result
+}
+fn apply_visual_inner(
+    buffer: &mut Buffer,
+    action: Action,
+    visual: &mut Option<VisualSelection>,
+    multiple: &mut Option<SelectionSet>,
 ) -> Result<(), String> {
     match action {
         Action::Select { mode: Some(kind) } => {
             if let Some(selection) = visual {
                 selection.kind = kind;
-                selection.project(buffer);
+                selection.project(buffer)?;
             } else {
                 let head = buffer.selection().head;
                 let mut selection = VisualSelection {
@@ -67,8 +157,10 @@ pub(super) fn apply_visual(
                     kind,
                     revision: buffer.revision(),
                     projected: buffer.selection(),
+                    block: None,
+                    columns: None,
                 };
-                selection.project(buffer);
+                selection.project(buffer)?;
                 *visual = Some(selection);
             }
         }
@@ -76,12 +168,18 @@ pub(super) fn apply_visual(
             if let Some(selection) = visual.take() {
                 buffer.set_caret(selection.head, false);
             }
+            if let Some(set) = multiple.take() {
+                buffer.set_caret(set.regions[set.primary].caret, false);
+            }
         }
         Action::SwapSelectionEnds => {
             if let Some(selection) = visual {
                 std::mem::swap(&mut selection.anchor, &mut selection.head);
+                if let Some((anchor, head)) = &mut selection.columns {
+                    std::mem::swap(anchor, head);
+                }
                 buffer.set_caret(selection.head, false);
-                selection.project(buffer);
+                selection.project(buffer)?;
             }
         }
         Action::Move { motion, count } if visual.is_some() => {
@@ -91,12 +189,37 @@ pub(super) fn apply_visual(
                 head: selection.head,
             });
             move_caret(buffer, motion, count);
-            buffer.clamp_caret_to_line_character();
+            let vertical = matches!(motion, Motion::Up | Motion::Down);
+            if selection.kind != SelectionKind::Block || !vertical {
+                buffer.clamp_caret_to_line_character();
+            }
             selection.head = buffer.selection().head;
-            selection.project(buffer);
+            if !vertical && let Some((_, head)) = &mut selection.columns {
+                *head = column(buffer, selection.head);
+            }
+            selection.project(buffer)?;
+        }
+        Action::InsertAtSelections { after } => {
+            if let Some(selection) = visual.take() {
+                if let Some(mut set) = selection.block {
+                    set.primary = 0;
+                    set.collapse(buffer, after);
+                    *multiple = Some(set);
+                } else {
+                    buffer.set_caret(selection.head, false);
+                }
+            }
         }
         Action::DeleteSelection | Action::ChangeSelection => {
             if let Some(selection) = visual.take() {
+                if let Some(mut set) = selection.block {
+                    set.primary = 0;
+                    set.replace(buffer, "")?;
+                    if matches!(action, Action::ChangeSelection) {
+                        *multiple = Some(set);
+                    }
+                    return Ok(());
+                }
                 let mut range = buffer.selection().range();
                 let linewise = selection.kind == SelectionKind::Line;
                 let change = matches!(action, Action::ChangeSelection);
@@ -289,7 +412,8 @@ pub(super) fn apply(buffer: &mut Buffer, action: Action) -> Result<(), String> {
         Action::Select { .. }
         | Action::SwapSelectionEnds
         | Action::DeleteSelection
-        | Action::ChangeSelection => {
+        | Action::ChangeSelection
+        | Action::InsertAtSelections { .. } => {
             return Err("selection action requires a selection session".into());
         }
         Action::Move { motion, count } => move_caret(buffer, motion, count),

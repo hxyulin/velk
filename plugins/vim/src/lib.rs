@@ -48,10 +48,11 @@ enum Mode {
     Insert,
     Visual,
     VisualLine,
+    VisualBlock,
 }
 impl Mode {
     fn visual(self) -> bool {
-        matches!(self, Self::Visual | Self::VisualLine)
+        matches!(self, Self::Visual | Self::VisualLine | Self::VisualBlock)
     }
     fn label(self) -> &'static str {
         match self {
@@ -59,6 +60,7 @@ impl Mode {
             Self::Insert => "INSERT",
             Self::Visual => "VISUAL",
             Self::VisualLine => "V-LINE",
+            Self::VisualBlock => "V-BLOCK",
         }
     }
 }
@@ -82,6 +84,7 @@ impl EditingBehavior for Vim {
             handled = false;
         } else if !key.text && (key.key == "Escape" || key.control && key.key == "[") {
             if state.mode == Mode::Insert {
+                actions.push(Action::Select { mode: None });
                 actions.push(Action::Move {
                     motion: Motion::Left,
                     count: 1,
@@ -95,6 +98,16 @@ impl EditingBehavior for Vim {
             handled = false;
         } else if key.control {
             state.pending = None;
+            if matches!(key.key.as_str(), "v" | "q") {
+                state.mode = if state.mode == Mode::VisualBlock {
+                    Mode::Normal
+                } else {
+                    Mode::VisualBlock
+                };
+                actions.push(Action::Select {
+                    mode: (state.mode == Mode::VisualBlock).then_some(input::SelectionKind::Block),
+                });
+            }
             if key.key == "r" && !state.mode.visual() {
                 actions.push(Action::Redo {
                     count: state.count.max(1),
@@ -166,6 +179,7 @@ impl EditingBehavior for Vim {
                                 mode: match state.mode {
                                     Mode::Visual => Some(input::SelectionKind::Character),
                                     Mode::VisualLine => Some(input::SelectionKind::Line),
+                                    Mode::VisualBlock => Some(input::SelectionKind::Block),
                                     _ => None,
                                 },
                             });
@@ -176,6 +190,12 @@ impl EditingBehavior for Vim {
                         }
                         "c" if state.mode.visual() => {
                             actions.push(Action::ChangeSelection);
+                            state.mode = Mode::Insert;
+                        }
+                        "I" | "A" if state.mode == Mode::VisualBlock => {
+                            actions.push(Action::InsertAtSelections {
+                                after: key.key == "A",
+                            });
                             state.mode = Mode::Insert;
                         }
                         "o" if state.mode.visual() => actions.push(Action::SwapSelectionEnds),
@@ -259,6 +279,11 @@ impl EditingBehavior for Vim {
                 data: serde_json::to_string(&state).map_err(|e| e.to_string())?,
                 capture_text: state.mode != Mode::Insert,
                 clamp_caret: state.mode != Mode::Insert,
+                control_keys: if state.mode == Mode::Insert {
+                    vec![]
+                } else {
+                    vec!["v".into(), "q".into()]
+                },
             },
             actions,
         };
@@ -570,6 +595,133 @@ mod tests {
         session.synchronize(&buffer);
         assert!(!session.has_visual_selection());
         assert_eq!(session.caret_position(&buffer), buffer.selection().head);
+    }
+    #[test]
+    fn visual_block_projects_disjoint_rows_and_deletes_atomically() {
+        let mut buffer = Buffer::new("abcd\nefgh\nijkl");
+        buffer.set_caret(1, false);
+        let mut session = session(&mut buffer);
+        press(&mut session, &mut buffer, "v", true);
+        keys(&mut session, &mut buffer, "l2j");
+        assert_eq!(session.input_state().label, "V-BLOCK");
+        assert_eq!(session.selected_text(&buffer), "bc\nfg\njk");
+        let regions = session.selection_regions().unwrap();
+        assert_eq!(regions.len(), 3);
+        assert_eq!(session.caret_position(&buffer), 12);
+        assert!(
+            regions
+                .iter()
+                .all(|region| region.selection.range().len() == 2)
+        );
+        keys(&mut session, &mut buffer, "d");
+        assert_eq!(buffer.text().to_string(), "ad\neh\nil");
+        keys(&mut session, &mut buffer, "u");
+        assert_eq!(buffer.text().to_string(), "abcd\nefgh\nijkl");
+        assert!(!buffer.can_undo());
+    }
+    #[test]
+    fn block_columns_count_graphemes_clip_short_lines_and_treat_tabs_as_one_column() {
+        let mut buffer = Buffer::new("a\u{301}bc\nx\n\t界z");
+        buffer.set_caret(2, false);
+        let mut session = session(&mut buffer);
+        press(&mut session, &mut buffer, "q", true);
+        keys(&mut session, &mut buffer, "l2j");
+        assert_eq!(session.selected_text(&buffer), "bc\n\n界z");
+        let regions = session.selection_regions().unwrap();
+        assert!(regions[1].selection.is_empty());
+        keys(&mut session, &mut buffer, "o");
+        assert_eq!(session.selected_text(&buffer), "bc\n\n界z");
+        keys(&mut session, &mut buffer, "x");
+        assert_eq!(buffer.text().to_string(), "a\u{301}\nx\n\t");
+    }
+    #[test]
+    fn block_change_and_insert_apply_to_every_caret_and_escape_keeps_one() {
+        use velk_editor_model::EditCommand;
+        for (entry, expected) in [
+            ("c", "a!d\ne!h"),
+            ("I", "a!bcd\ne!fgh"),
+            ("A", "abc!d\nefg!h"),
+        ] {
+            let mut buffer = Buffer::new("abcd\nefgh");
+            buffer.set_caret(1, false);
+            let mut session = session(&mut buffer);
+            press(&mut session, &mut buffer, "v", true);
+            keys(&mut session, &mut buffer, "lj");
+            keys(&mut session, &mut buffer, entry);
+            assert_eq!(session.input_state().label, "INSERT");
+            assert!(session.has_multiple_carets());
+            assert!(!press(&mut session, &mut buffer, "!", false));
+            assert!(
+                session
+                    .edit_command(&mut buffer, &EditCommand::Insert("!"))
+                    .unwrap()
+            );
+            assert_eq!(buffer.text().to_string(), expected, "{entry}");
+            assert!(
+                session
+                    .edit_command(&mut buffer, &EditCommand::Backspace)
+                    .unwrap()
+            );
+            assert!(!buffer.text().to_string().contains('!'));
+            press(&mut session, &mut buffer, "Escape", false);
+            assert!(!session.has_multiple_carets());
+            assert!(session.selection_regions().is_none());
+            assert_eq!(session.input_state().label, "NORMAL");
+            keys(&mut session, &mut buffer, "u");
+            assert_eq!(buffer.text().to_string(), expected);
+        }
+    }
+    #[test]
+    fn block_paste_distributes_matching_rows_and_undo_restores_the_document() {
+        use velk_editor_model::EditCommand;
+        let mut buffer = Buffer::new("abcd\nefgh");
+        buffer.set_caret(1, false);
+        let mut session = session(&mut buffer);
+        press(&mut session, &mut buffer, "v", true);
+        keys(&mut session, &mut buffer, "lj");
+        assert!(
+            session
+                .edit_command(&mut buffer, &EditCommand::Paste("12\n34"))
+                .unwrap()
+        );
+        assert_eq!(buffer.text().to_string(), "a12d\ne34h");
+        buffer.undo();
+        assert_eq!(buffer.text().to_string(), "abcd\nefgh");
+        assert!(!buffer.can_undo());
+    }
+    #[test]
+    fn block_switching_cancellation_and_row_limits_preserve_the_original_selection() {
+        let mut buffer = Buffer::new("abc\ndef\nghi");
+        let mut session = session(&mut buffer);
+        press(&mut session, &mut buffer, "v", true);
+        keys(&mut session, &mut buffer, "lj");
+        keys(&mut session, &mut buffer, "v");
+        assert_eq!(session.input_state().label, "VISUAL");
+        assert!(session.selection_regions().is_none());
+        press(&mut session, &mut buffer, "q", true);
+        assert!(session.selection_regions().is_some());
+        press(&mut session, &mut buffer, "q", true);
+        assert!(buffer.selection().is_empty());
+        assert_eq!(session.input_state().label, "NORMAL");
+        let mut large = Buffer::new(&"x\n".repeat(4100));
+        let mut sl = self::session(&mut large);
+        press(&mut sl, &mut large, "v", true);
+        let before = large.selection();
+        let result = sl.evaluate(
+            &mut large,
+            Intent::Key(input::Key {
+                key: "G".into(),
+                text: true,
+                control: false,
+                alt: false,
+                meta: false,
+                state: Default::default(),
+            }),
+        );
+        assert!(result.is_err());
+        assert_eq!(large.selection(), before);
+        assert_eq!(sl.selection_regions().unwrap().len(), 1);
+        assert_eq!(sl.input_state().label, "V-BLOCK");
     }
     #[test]
     fn unknown_keys_and_escape_cancel_prefixes_and_large_lines_remain_navigable() {

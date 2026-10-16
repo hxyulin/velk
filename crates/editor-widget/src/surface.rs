@@ -324,6 +324,7 @@ pub(crate) struct Surface {
     pub selection: Selection,
     pub caret: Option<usize>,
     pub selected_line_break: bool,
+    pub regions: Option<Arc<Vec<velk_editor_model::selections::SelectionRegion>>>,
     pub composition: Option<Composition>,
     /// Already-projected preedit character range; it is not source selection.
     pub preedit: Option<Range<usize>>,
@@ -919,6 +920,7 @@ mod tests {
             selection: Selection::default(),
             caret: None,
             selected_line_break: false,
+            regions: None,
             composition: None,
             preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),
@@ -1033,6 +1035,7 @@ mod tests {
             selection: Selection::default(),
             caret: None,
             selected_line_break: false,
+            regions: None,
             composition: None,
             preedit: None,
             geometry: Rc::new(RefCell::new(Geometry::default())),

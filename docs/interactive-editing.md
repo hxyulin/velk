@@ -105,9 +105,38 @@ Clipboard commands use the projected Core selection, so native Copy includes the
 last selected grapheme. External text or selection changes invalidate modal
 anchors and restore Normal mode; they cannot leave a stale renderer position.
 
-Visual Block is deferred. It requires disjoint ranges, a column policy for tabs
-and short lines, and multiple caret rendering/editing. The current contiguous
-selection projection provides characterwise and linewise behavior only.
+### Block selections and multiple carets
+
+`SelectionKind::Block` projects the logical anchor/cursor rectangle into a
+revision-bound `SelectionSet` in the editor model. A set contains disjoint row
+ranges and their logical carets plus a primary index. Core retains the primary
+selection and the authoritative text/history; all row edits use a single Core
+transaction. Selection sets are view state and are not persisted in recovery.
+The first implementation uses grapheme columns, counts a tab as one column, and
+clips short rows at EOL. It does not add virtual spaces. Blocks are limited to
+4,096 rows, and inserted text across a multi-selection transaction to 4 MiB.
+
+`InsertAtSelections` creates row insertion carets at the start or end of each
+range; block change creates carets after deleting each range. Literal typing,
+paste, Backspace, and Delete use the shared set edit path. Matching multiline
+paste distributes its lines across rows. Undo/redo and navigation end multi-caret
+insertion. External revision or primary-selection changes invalidate the set.
+Per-row carets snap to final grapheme boundaries after text changes.
+
+The renderer receives an immutable, sorted region snapshot. It finds the region
+for each visible logical line and paints its selected range and caret through
+the existing line cache. Scroll reveal, status, and IME positioning use the primary
+caret. Invisible block rows do not force shaping or GPU preparation. During IME
+preedit only the primary composition is drawn; committing inserts at every caret.
+Indentation and pairing proposals currently remain single-caret operations;
+multi-caret Tab/Enter and text use their literal fallbacks.
+
+Keymap state may declare up to eight `control_keys`, each a single character.
+The editor binds these in its focused command scope so a provider can claim
+Ctrl chords before ancestor or application shortcuts. Vim claims Ctrl+V/Q in
+Normal and Visual modes and releases them in Insert mode. This avoids conflicts
+with application paste/quit without changing keyboard behavior in other controls.
+
 
 ## Bundled indentation
 

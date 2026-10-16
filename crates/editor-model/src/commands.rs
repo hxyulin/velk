@@ -5,6 +5,7 @@ use velk_core::Buffer;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditCommand<'a> {
     Insert(&'a str),
+    Paste(&'a str),
     ReplaceAll(&'a str),
     Backspace,
     Delete,
@@ -24,7 +25,7 @@ impl EditCommand<'_> {
     /// document boundary. An invalid selection range leaves the buffer unchanged.
     pub fn apply(self, buffer: &mut Buffer) -> bool {
         match self {
-            Self::Insert(text) => buffer.insert(text),
+            Self::Insert(text) | Self::Paste(text) => buffer.insert(text),
             Self::ReplaceAll(text) => {
                 buffer.select_all();
                 buffer.insert(text);
