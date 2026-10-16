@@ -1,5 +1,10 @@
 # Local Astrelis text preparation optimizations
 
+> Historical analysis: raw measurements, capture manifests, and rendered reports
+> are generated locally and are not tracked. Artifact filenames below identify
+> the original runs; the reported values describe those runs. See the
+> [profiling guide](../profiling.md#generated-artifacts) for new captures.
+
 This is a historical experiment report. The improvements are now integrated into
 Astrelis `main` at `4801b66`, and current Velk builds use RXUI's pinned Git backend
 without a local path override. See [the current dependency setup](../../README.md#workspace).
@@ -68,8 +73,8 @@ virtualization/chunking, rather than preparing every glyph of a visible logical 
 Small samples vary with machine state; the raw CSV includes all ordinary viewport
 cases and span counts, so improvements are not inferred from a selected fastest run.
 
-Raw results: [viewport before/after](astrelis-viewport.csv) and
-[fixed-font rich-text scaling](astrelis-rich.csv).
+Raw results: `astrelis-viewport.csv` and
+`astrelis-rich.csv`.
 
 ## Verification and commands
 

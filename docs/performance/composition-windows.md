@@ -1,7 +1,12 @@
 # Unicode and IME composition windows
 
+> Historical analysis: raw measurements, capture manifests, and rendered reports
+> are generated locally and are not tracked. Artifact filenames below identify
+> the original runs; the reported values describe those runs. See the
+> [profiling guide](../profiling.md#generated-artifacts) for new captures.
+
 2026-10-15, Apple M3 Pro, macOS 27.0.1, Rust 1.99.0, release builds.
-This follows [the responsiveness pass](responsiveness.md), Velk `5822a9b`.
+This follows [the responsiveness pass](responsiveness.md), Velk `d9b420f`.
 The follow-up [native redraw experiment](native-input-redraw.md) tests callback
 rendering, records its burst regression, and isolates remaining long-line edit cost.
 RXUI remains pinned to `fc331afca247579cde12a480ed01c687abb1ff5d`; the local
@@ -65,7 +70,7 @@ shaping even when an individual projected line takes that fallback.
 
 ## Paired interaction measurements
 
-The same updated `responsiveness` harness ran against a detached `5822a9b`
+The same updated `responsiveness` harness ran against a detached `d9b420f`
 checkout and the new implementation. There were three sequential before/after
 pairs, no native preview or concurrent build, at 1,200 × 800 logical units and
 raster scale one. GPU readback is excluded. Percentiles use nearest rank.
@@ -119,7 +124,7 @@ cadence, so this is a separate run, not a subtraction from CPU-only samples.
 
 All **8,904 raw samples**, including ordinary controls, first-preedit samples,
 GPU-wait samples, frame counts and cached-byte/visibility counters, are in
-[editor-composition-windows.csv](editor-composition-windows.csv).
+`editor-composition-windows.csv`.
 
 ## Native check and outstanding latency
 
@@ -140,7 +145,7 @@ input → request was 41.346 ms. This agrees with the earlier investigation's
 location of outliers outside text preparation; it does not establish their exact
 platform cause. No scheduling or presentation-policy experiment was retained.
 
-[Native smoke records](editor-composition-native.csv) contain the complete 133-frame
+`editor-composition-native.csv` contain the complete 133-frame
 interval, including startup/activation, idle blinks and eight input-bearing frames.
 They are exploratory, instrumented, automated events with no before/after pairing
 or controlled cadence. Widget profiling prints both the inner viewport record and
@@ -175,6 +180,6 @@ VELK_BENCH_CASE=long_line_emoji_ime VELK_BENCH_WARMUP=0 VELK_BENCH_SAMPLES=1 VEL
 ```
 
 For the paired baseline, copy the current benchmark file into a detached checkout
-at `5822a9b`, keep the same sibling Astrelis revision, and run the same commands.
+at `d9b420f`, keep the same sibling Astrelis revision, and run the same commands.
 The existing `[[bench]]` entry already registers this harness. Each fresh-process
 sample needs a separate command invocation; normal warm samples use default counts.

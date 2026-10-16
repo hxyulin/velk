@@ -42,6 +42,31 @@ and queue-wait samples are reported separately. In-flight async spans at the
 capture boundary are reported as incomplete, rather than assigned a fabricated
 duration.
 
+## Generated artifacts
+
+Keep benchmark CSVs, capture manifests, rendered reports, logs, traces, and
+profiler output local. These files depend on the machine, build, and interaction
+being measured; they are not source inputs. The repository ignores generated
+CSV, JSON, and HTML files under `docs/performance/`, as well as common trace,
+log, profiling, and Python cache outputs. Authored analysis notes, benchmark
+harnesses, scripts, and experiment patches remain versioned.
+
+Prefer Cargo's ignored `target/` directory or a system temporary directory for
+new results. For example:
+
+```sh
+mkdir -p target/performance
+cargo bench -p velk-editor-widget --bench responsiveness --locked \
+  > target/performance/responsiveness.csv
+python3 scripts/latency.py summary target/performance/responsiveness.csv
+```
+
+The historical notes in `docs/performance/` retain their interpretation and
+reported measurements, but their raw capture files and HTML reports are not
+stored in Git. Regenerate samples for the revision and hardware under test;
+exact timings and native interactions will vary. Share selected findings in
+review or an issue rather than committing a full capture.
+
 ## Coverage and interpretation
 
 The existing RXUI/Astrelis `profiling` instrumentation is connected through

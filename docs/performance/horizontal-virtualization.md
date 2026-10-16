@@ -1,5 +1,10 @@
 # Horizontal virtualization: fixed-grid text
 
+> Historical analysis: raw measurements, capture manifests, and rendered reports
+> are generated locally and are not tracked. Artifact filenames below identify
+> the original runs; the reported values describe those runs. See the
+> [profiling guide](../profiling.md#generated-artifacts) for new captures.
+
 Implemented on 2026-10-15, following the local Astrelis preparation pass. Astrelis
 commit `9c60dfdd2a2ec6800c701792eff8dd849c90ee48` is now published on
 [`perf/editor-text`](https://github.com/hxyulin/astrelis/tree/perf/editor-text).
@@ -46,7 +51,7 @@ Release viewport harness, Menlo at 16/24 units, 1,200 × 800 logical viewport, t
 sequential runs with no concurrent builds. Results include the Rope mutation where
 specified, extraction, projection, shaping, and interaction indexing; GPU work,
 frame submission, and display presentation are excluded. Values are ranges of the
-two medians. Raw per-run medians/p95 values are in [editor-horizontal.csv](editor-horizontal.csv).
+two medians. Raw per-run medians/p95 values are in `editor-horizontal.csv`.
 
 | Workload | Median range (ms) | Largest run p95 (ms) |
 | --- | ---: | ---: |
@@ -57,7 +62,7 @@ two medians. Raw per-run medians/p95 values are in [editor-horizontal.csv](edito
 | Full-line fallback: 1,000 styles and inline hints | 11.69–11.83 | 12.44 |
 
 The unchanged offscreen-edit fixture took 9.43–9.46 ms before horizontal windowing,
-as recorded by the preceding pass in [astrelis-viewport.csv](astrelis-viewport.csv)
+as recorded by the preceding pass in `astrelis-viewport.csv`
 (`variant=after`). This comparison uses earlier measurements on the same machine,
 not interleaved old/new runs. The warm middle-window median was below 0.001 ms;
 that is near microbenchmark timing resolution and is not a frame-rate claim.
@@ -80,7 +85,7 @@ resources. At the far end, individual ASCII text events prepared in roughly
 0.23–0.32 ms and retained 678–681 source bytes. These counters describe one retained
 source String per cached line, not total process memory or GPU atlas allocation.
 
-[Native raw spot checks](editor-horizontal-native.csv) contain both the initial
+`editor-horizontal-native.csv` contain both the initial
 validation and the final build after removing redundant caret-line preparation.
 They are not a controlled frame-rate or latency distribution. One final
 handler-to-prepare sample was 10.6 ms despite 0.31 ms of preparation; the initial

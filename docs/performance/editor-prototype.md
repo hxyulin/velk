@@ -1,5 +1,10 @@
 # Editor prototype performance
 
+> Historical analysis: raw measurements, capture manifests, and rendered reports
+> are generated locally and are not tracked. Artifact filenames below identify
+> the original runs; the reported values describe those runs. See the
+> [profiling guide](../profiling.md#generated-artifacts) for new captures.
+
 Measured on an Apple M3 Pro (macOS arm64), 2026-10-15, with Rust 1.99.0,
 optimized builds, RXUI pinned to `093d05d9a2fa5491c3cebe26be46b8720b4c6158`,
 and its pinned Astrelis dependency. The target is **120 Hz: 8.33 ms per frame**.
@@ -31,7 +36,7 @@ existing layout resources. Source ranges remain independent of viewport coordina
 cargo bench -p velk-editor-widget --bench viewport --features performance --locked
 ```
 
-Raw data: [editor-viewport.csv](editor-viewport.csv). The fixture repeats a
+Raw data: `editor-viewport.csv`. The fixture repeats a
 25-byte ASCII line and uses a 1200 × 800 logical-pixel viewport. The full-document
 reference and viewport edit both change a character in the first line, with the
 same font, size, line height, and disabled ligatures. Rich cases add one bold
@@ -84,7 +89,7 @@ line. `Editor::frame_metrics()` exposes per-frame counters and timings; the
 opt-in environment variable logs preparation and paint recording. GPU preparation
 means CPU resource/upload submission work, **not GPU execution time**. Native
 handler-to-preparation timing excludes presentation and the OS input queue.
-The stored [native observations](editor-native-viewport.csv) are interactive
+The stored `editor-native-viewport.csv` are interactive
 spot checks, not a controlled latency distribution or sustained frame-rate test.
 
 Representative release observations from the stress fixture:
@@ -119,7 +124,7 @@ Warm left/right movement on one 100,000-character line measured roughly
 value is sensitive to timer resolution; the useful result is removal of repeated
 full-line segmentation. Cold boundary discovery and editing that changes a very
 long line still scan that logical line. Raw post-change run:
-[editor-grapheme-cache.csv](editor-grapheme-cache.csv).
+`editor-grapheme-cache.csv`.
 
 Caret movement/blinking reuse shaped text. Selection geometry is rebuilt only
 for changed selections/layouts; drawing is restricted to visible lines. Blink

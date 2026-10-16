@@ -1,5 +1,10 @@
 # Editor input responsiveness and IME preparation
 
+> Historical analysis: raw measurements, capture manifests, and rendered reports
+> are generated locally and are not tracked. Artifact filenames below identify
+> the original runs; the reported values describe those runs. See the
+> [profiling guide](../profiling.md#generated-artifacts) for new captures.
+
 Follow-up: [Unicode and composition windows](composition-windows.md) replaces the
 multiline full-document fallback and adds guarded horizontal Unicode/preedit
 windows. This report records the earlier implementation and its measurements.
@@ -65,7 +70,7 @@ preedit updates on 10,000 lines/250 KB. These are prepared, warm interactions,
 not cold font loading or application startup. Editing expires annotations, so the
 typing case does not include a real syntax/LSP producer's update cost.
 
-The baseline ordinary cases use Velk `fc18907` with the same initial harness and
+The baseline ordinary cases use Velk `e1d8578` with the same initial harness and
 pinned RXUI `093d05d`; the optimized cases use the implementation described above.
 The large-IME reference was collected after removing the follow-up frame but before
 localizing composition, isolating the full-document preparation cost. Both use
@@ -114,7 +119,7 @@ data. Waiting changes workload cadence, so these are separate samples rather
 than a GPU duration obtained by subtracting the earlier submission results.
 The first four GPU-wait cases have 201 samples each; large IME has 21.
 All 5,733 raw offscreen samples are in
-[editor-responsiveness.csv](editor-responsiveness.csv).
+`editor-responsiveness.csv`.
 
 ## Native dispatch and queue behavior
 
@@ -154,7 +159,7 @@ Oldest dispatch → submission p50/p95 was 2.520/5.740 ms baseline and
 0.076 ms. These are consistent with reduced queue pressure, but unequal cadence
 and coalescing prevent attributing those differences to the change alone.
 
-Raw [native samples](editor-responsiveness-native.csv) retain the complete bounded
+Raw `editor-responsiveness-native.csv` retain the complete bounded
 frame intervals, including follow-up frames. Timing starts at native callback
 dispatch, so it excludes device/OS delivery before that point. Submission is CPU
 completion of queue submission; it is neither GPU completion nor display arrival.
@@ -198,7 +203,7 @@ python3 scripts/latency.py summary /tmp/native.csv --input-only
 ```
 
 Frame boundaries in the last command are an example; choose the actual stable
-interaction interval in your capture. For a baseline checkout at `fc18907`, copy
+interaction interval in your capture. For a baseline checkout at `e1d8578`, copy
 the benchmark file into `crates/editor-widget/benches/`, register its `[[bench]]`
 entry with `harness = false`, and use the same Astrelis checkout. That baseline
 still requests two submissions for IME; use `first_submit_ms` when comparing its

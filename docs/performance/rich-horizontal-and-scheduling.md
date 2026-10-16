@@ -1,10 +1,15 @@
 # Rich horizontal windows and native scheduling investigation
 
+> Historical analysis: raw measurements, capture manifests, and rendered reports
+> are generated locally and are not tracked. Artifact filenames below identify
+> the original runs; the reported values describe those runs. See the
+> [profiling guide](../profiling.md#generated-artifacts) for new captures.
+
 Follow-up: [input responsiveness and IME preparation](responsiveness.md) implements
 same-frame measured IME publication and line-local composition, with native and
 offscreen interaction benchmarks. Dependency pins below describe this earlier pass.
 
-2026-10-15. This follows the fixed-grid pass in Velk `5fd98a8`. RXUI remains pinned
+2026-10-15. This follows the fixed-grid pass in Velk `8e5b26d`. RXUI remains pinned
 to `093d05d9a2fa5491c3cebe26be46b8720b4c6158`. Astrelis changes are published on
 [`perf/editor-text`](https://github.com/hxyulin/astrelis/tree/perf/editor-text):
 
@@ -82,9 +87,9 @@ GPU work and presentation are excluded.
 | Warm middle window | 0.0029–0.0030 | 0.0032 |
 | Scroll through rich windows | 0.217–0.228 | 0.304 |
 
-Previous values are the earlier pass in [editor-horizontal.csv](editor-horizontal.csv),
+Previous values are the earlier pass in `editor-horizontal.csv`,
 not an interleaved A/B run. New raw results, including the ordinary document and
-fixed-grid cases, are in [editor-rich-horizontal.csv](editor-rich-horizontal.csv).
+fixed-grid cases, are in `editor-rich-horizontal.csv`.
 
 ## Native timing investigation
 
@@ -128,9 +133,9 @@ navigation; the editor intentionally requests a follow-up to publish measured IM
 geometry. Reducing that work may reduce queue pressure, but a causal improvement
 has not been measured and removing it would require an IME geometry design change.
 
-Raw [native stage samples](editor-native-stages.csv) retain initial frame and
+Raw `editor-native-stages.csv` retain initial frame and
 input-bearing frame records for the default, reverted experiment, and final default
-runs. [Widget preparation samples](editor-rich-native.csv) retain initial, input,
+runs. `editor-rich-native.csv` retain initial, input,
 and GPU-preparing records. These independent record counters are not one-to-one.
 The samples are exploratory; counts, durations, and interaction order differ.
 They do not establish a frame-rate/latency distribution or sustained 120 Hz.

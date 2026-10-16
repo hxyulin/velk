@@ -1,7 +1,12 @@
 # Chunk-aware grapheme queries and edit latency
 
+> Historical analysis: raw measurements, capture manifests, and rendered reports
+> are generated locally and are not tracked. Artifact filenames below identify
+> the original runs; the reported values describe those runs. See the
+> [profiling guide](../profiling.md#generated-artifacts) for new captures.
+
 2026-10-15, Apple M3 Pro, macOS 27.0.1, Rust 1.99.0, release builds.
-Baseline Velk `ffd1ee7`; RXUI stays pinned to `fc331af`, and the sibling Astrelis
+Baseline Velk `16b57ed`; RXUI stays pinned to `fc331af`, and the sibling Astrelis
 patch stays at `4801b66`. This implements the application-side follow-up from
 [the native redraw experiment](native-input-redraw.md). No dependencies or backend
 policies changed.
@@ -83,14 +88,14 @@ the 8.33 ms target.
 
 All **7,866 offscreen records**, including other composition/navigation controls,
 event times, frame counts and cache counters, are in
-[editor-grapheme-cursors.csv](editor-grapheme-cursors.csv).
+`editor-grapheme-cursors.csv`.
 
 ## Native composition and editing
 
 Native captures use the same fullscreen `--unicode-long-lines` fixture, with
 `ASTRELIS_PROFILE=1` and widget profiling disabled. The baseline release executable
 was preserved before rebuilding; the two executable hashes and capture bounds are
-in [the manifest](editor-grapheme-captures.json). Order is before 1 → after 1 →
+in `editor-grapheme-captures.json`. Order is before 1 → after 1 →
 after 2 → before 2, using a fresh process each time. Both use the normal scheduler;
 the previous inline-redraw prototype is not applied.
 
@@ -120,7 +125,7 @@ There are no acquisition retries or availability changes in the retained ranges.
 Startup, activation, fullscreen transitions and warmup are excluded. Idle blink
 frames inside the retained ranges remain archived. The complete **269 native
 frame records**, representing **240 invalidating callbacks**, are in
-[editor-grapheme-native.csv](editor-grapheme-native.csv).
+`editor-grapheme-native.csv`.
 
 The host callback measurement includes UI input preparation, editor listeners,
 native text-state sync and accessibility progress; it is broader than the
@@ -163,6 +168,6 @@ ASTRELIS_PROFILE=1 cargo run --release --locked -- --unicode-long-lines
 ```
 
 To reproduce the paired baseline, preserve a release responsiveness executable
-and editor binary at `ffd1ee7`, rebuild after the change with the same dependency
+and editor binary at `16b57ed`, rebuild after the change with the same dependency
 checkouts, and alternate the preserved executables. Do not compile or leave a
 native preview active during offscreen measurements.

@@ -1,3 +1,23 @@
 /target/
 .DS_Store
 /.direnv/
+
+# Generated benchmark measurements, capture manifests, and rendered reports.
+/docs/performance/**/*.csv
+/docs/performance/**/*.json
+/docs/performance/**/*.html
+
+# Local logs, traces, profiling sessions, and Python bytecode.
+*.log
+*.trace.json
+*.cpuprofile
+*.heapprofile
+*.profraw
+*.profdata
+*.dSYM/
+*.trace/
+__pycache__/
+*.py[cod]
+
+# Agent-created worktrees are local checkout state.
+/.claude/worktrees/

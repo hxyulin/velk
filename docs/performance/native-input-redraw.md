@@ -1,7 +1,12 @@
 # Native input redraw experiment
 
+> Historical analysis: raw measurements, capture manifests, and rendered reports
+> are generated locally and are not tracked. Artifact filenames below identify
+> the original runs; the reported values describe those runs. See the
+> [profiling guide](../profiling.md#generated-artifacts) for new captures.
+
 2026-10-15, Apple M3 Pro, macOS 27.0.1, Rust 1.99.0, release builds.
-Velk `c0a682d`, RXUI `fc331af`, Astrelis `4801b66` plus the archived experiment
+Velk `66f7b2e`, RXUI `fc331af`, Astrelis `4801b66` plus the archived experiment
 patch. This follows [composition windows](composition-windows.md).
 The [grapheme-query follow-up](grapheme-cursors.md) implements the application-side
 optimization identified here and measures the resulting native edit latency.
@@ -111,8 +116,8 @@ measurement includes UI input preparation, editor listeners, native text-state
 sync and accessibility progress; it does not isolate each of those costs.
 
 There are **788 retained native frame records**, representing **600 invalidating
-input callbacks**, in [editor-input-redraw-native.csv](editor-input-redraw-native.csv).
-The [capture manifest](editor-input-redraw-captures.json) records inclusive frame
+input callbacks**, in `editor-input-redraw-native.csv`.
+The `editor-input-redraw-captures.json` records inclusive frame
 bounds, capture order, revisions and automation durations. These are automated,
 instrumented exploratory measurements, not physical key-to-photon or display
 presentation measurements. The previous isolated 41 ms outlier remains unresolved.
@@ -131,7 +136,7 @@ operations, yielding 100 insertions and 100 deletions.
 | Backspace | 2.571 / 2.604 ms | 3.065 / 3.102 ms |
 
 All operations submit one frame and retain fewer than 4,000 cached source bytes.
-The raw [offscreen samples](editor-input-redraw-offscreen.csv) preserve per-sample
+The raw `editor-input-redraw-offscreen.csv` preserve per-sample
 event and submission times. Even samples insert; odd samples delete. These timings
 do not directly subtract from the native fullscreen/scale-two results.
 
