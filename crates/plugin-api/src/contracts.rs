@@ -159,3 +159,11 @@ pub struct EventApi {
     pub context: *mut c_void,
     pub notify: unsafe extern "C" fn(*mut c_void, Bytes) -> i32,
 }
+
+/// Pure reentrant callback; has no plugin-instance context. The host pins code
+/// and retires leases before destroying the generation. Replies are synchronous.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EditingApi {
+    pub evaluate: unsafe extern "C" fn(Bytes, ByteSink, *mut c_void) -> i32,
+}

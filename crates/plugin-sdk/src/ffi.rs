@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 use crate::{Plugin, api::*};
+pub mod editing;
 pub mod language_server;
 pub mod registry;
 pub mod semantic;

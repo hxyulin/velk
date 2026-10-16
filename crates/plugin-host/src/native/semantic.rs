@@ -348,6 +348,8 @@ mod tests {
                 markdown: None,
                 language: None,
                 semantic: None,
+                editing: Default::default(),
+                editing_active: Arc::new(std::sync::RwLock::new(true)),
                 library: None,
             },
         );
@@ -366,6 +368,8 @@ mod tests {
             markdown: None,
             language: None,
             semantic: None,
+            editing: Default::default(),
+            editing_active: Arc::new(std::sync::RwLock::new(true)),
             library: None,
         };
         manager.plugins.insert("test.profile".into(), profile);

@@ -55,6 +55,7 @@ impl Plugin for Probe {
         "Named registry probe".into()
     }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+        reg.editing::<EditingProbe>()?;
         reg.provide(
             velk_plugin_sdk::hooks::CommandHandler {
                 name: "test.command",
@@ -101,3 +102,31 @@ impl Plugin for Probe {
     }
 }
 velk_plugin_sdk::export_plugin!(Probe);
+
+struct EditingProbe;
+impl velk_plugin_sdk::EditingBehavior for EditingProbe {
+    const ROLE: velk_plugin_sdk::editing::Role = velk_plugin_sdk::editing::Role::Pairing;
+    fn evaluate(
+        request: &velk_plugin_sdk::editing::Request,
+    ) -> Result<velk_plugin_sdk::editing::Decision, String> {
+        use velk_plugin_sdk::editing::*;
+        if request.intent == Intent::Type("invalid".into()) {
+            return Ok(Decision::Apply(Proposal {
+                revision: request.revision + 1,
+                edits: vec![],
+                selection: None,
+                pairs: vec![],
+            }));
+        }
+        Ok(Decision::Apply(Proposal {
+            revision: request.revision,
+            edits: vec![Edit {
+                start: request.selection.range().start,
+                end: request.selection.range().end,
+                text: "()".into(),
+            }],
+            selection: Some(Selection::caret(request.selection.range().start + 1)),
+            pairs: vec![],
+        }))
+    }
+}

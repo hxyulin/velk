@@ -4003,6 +4003,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "velk-editing"
+version = "0.0.0-dev"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "velk-editor"
 version = "0.0.0-dev"
 dependencies = [
@@ -4073,6 +4081,7 @@ dependencies = [
  "ropey",
  "serde_json",
  "velk-commands",
+ "velk-editing",
  "velk-plugin-contracts",
  "velk-semantic",
 ]
@@ -4122,6 +4131,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "velk-diagnostics",
+ "velk-editing",
  "velk-markup",
  "velk-plugin-api",
  "velk-plugin-contracts",
@@ -4167,6 +4177,7 @@ version = "0.0.0-dev"
 dependencies = [
  "serde_json",
  "velk-diagnostics",
+ "velk-editing",
  "velk-markup",
  "velk-plugin-api",
  "velk-plugin-contracts",
@@ -5095,6 +5106,7 @@ dependencies = [
  "tokio",
  "velk-commands",
  "velk-diagnostics",
+ "velk-editing",
  "velk-markup",
  "velk-panels",
  "velk-plugin-host",

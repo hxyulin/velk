@@ -174,6 +174,8 @@ mod tests {
                 query,
             }),
             semantic: None,
+            editing: Default::default(),
+            editing_active: Arc::new(std::sync::RwLock::new(true)),
             library: None,
         }
     }

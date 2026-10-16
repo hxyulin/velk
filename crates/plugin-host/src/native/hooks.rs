@@ -121,6 +121,16 @@ impl Generation {
                 SEMANTIC_CONTRACT if name == SEMANTIC_HOOK => {
                     self.semantic = Some(typed!(SemanticApi, SERVICE, 1))
                 }
+                velk_editing::CONTRACT
+                    if name == velk_editing::INDENT_HOOK || name == velk_editing::PAIRS_HOOK =>
+                {
+                    let role = if name == velk_editing::INDENT_HOOK {
+                        velk_editing::Role::Indentation
+                    } else {
+                        velk_editing::Role::Pairing
+                    };
+                    self.editing.insert(role, typed!(EditingApi, SERVICE));
+                }
                 BYTES_CONTRACT => hook.bytes = Some(typed!(BytesApi, REQUEST)),
                 EVENT_CONTRACT => hook.event = Some(typed!(EventApi, EVENT)),
                 _ => {} // Unknown contracts are discoverable, not reinterpreted.
@@ -130,11 +140,11 @@ impl Generation {
         Ok(())
     }
 }
-struct Reply {
-    result: Option<Result<Vec<u8>, String>>,
-    calls: usize,
+pub(super) struct Reply {
+    pub(super) result: Option<Result<Vec<u8>, String>>,
+    pub(super) calls: usize,
 }
-unsafe extern "C" fn collect(context: *mut c_void, bytes: Bytes, status: i32) -> i32 {
+pub(super) unsafe extern "C" fn collect(context: *mut c_void, bytes: Bytes, status: i32) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if context.is_null() {
             return INVALID;

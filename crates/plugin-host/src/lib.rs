@@ -83,6 +83,7 @@ pub enum Event {
 }
 #[derive(Debug)]
 pub struct Report {
+    pub editing: velk_editing::Providers,
     pub loaded: usize,
     /// Owned snapshot after this operation, including unchanged active plugins.
     pub plugins: Vec<PluginInfo>,
@@ -479,6 +480,7 @@ impl Runtime {
                     }
                     manager.drive_semantics();
                     let result = events.map(|events| Report {
+                        editing: manager.editing_providers(),
                         loaded: manager.plugins().count(),
                         plugins: manager.plugins().cloned().collect(),
                         events,

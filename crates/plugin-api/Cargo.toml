@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [dependencies]
+velk-editing.workspace = true
 velk-commands.workspace = true
 serde_json = "1"
 velk-plugin-contracts.workspace = true

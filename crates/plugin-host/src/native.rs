@@ -1,6 +1,7 @@
 #![allow(unsafe_code)]
 use crate::{Event, PluginSpec, read_manifest};
 mod code;
+mod editing;
 mod hooks;
 use code::Code;
 mod language_server;
@@ -43,6 +44,8 @@ struct Generation {
     markdown: Option<MarkupApi>,
     language: Option<LanguageApi>,
     semantic: Option<SemanticApi>,
+    editing: BTreeMap<velk_editing::Role, EditingApi>,
+    editing_active: Arc<std::sync::RwLock<bool>>,
     // Explicit drop order: instance, library, then its on-disk copy.
     library: Option<Arc<Code>>,
 }
@@ -90,6 +93,8 @@ impl Generation {
             markdown: None,
             language: None,
             semantic: None,
+            editing: Default::default(),
+            editing_active: Arc::new(std::sync::RwLock::new(true)),
             library: Some(code),
         };
         loaded.discover_hooks()?;
@@ -244,6 +249,9 @@ impl Generation {
     fn retire(&mut self) -> bool {
         if self.destroyed {
             return self.library.is_some();
+        }
+        if let Ok(mut active) = self.editing_active.write() {
+            *active = false;
         }
         self.destroyed = true;
         // SAFETY: serial owner destroys exactly once, with library still loaded.
@@ -607,6 +615,8 @@ mod tests {
                 markdown: None,
                 language: None,
                 semantic: None,
+                editing: Default::default(),
+                editing_active: Arc::new(std::sync::RwLock::new(true)),
                 library: None,
             },
         );
@@ -762,6 +772,8 @@ pub(super) mod test_provider {
                 markdown: None,
                 language: None,
                 semantic: None,
+                editing: Default::default(),
+                editing_active: Arc::new(std::sync::RwLock::new(true)),
                 library: None,
             },
         );

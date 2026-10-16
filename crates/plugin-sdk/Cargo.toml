@@ -23,6 +23,7 @@ crate-type = ["cdylib"]
 markup = ["dep:velk-markup"]
 
 [dependencies]
+velk-editing.workspace = true
 velk-plugin-contracts.workspace = true
 serde_json = "1"
 velk-diagnostics.workspace = true

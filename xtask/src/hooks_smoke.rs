@@ -35,6 +35,22 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     unsafe {
         manager.load()?;
     }
+    let editing = manager.editing_provider("test.hooks", velk_editing::Role::Pairing)?;
+    let mut editing_context = velk_editing::Request {
+        revision: 0,
+        text: String::new(),
+        offset: 0,
+        document_length: 0,
+        selection: Default::default(),
+        intent: velk_editing::Intent::Type("(".into()),
+        settings: Default::default(),
+        pairs: vec![],
+    };
+    assert!(
+        matches!(editing.evaluate(&editing_context)?, velk_editing::Decision::Apply(proposal) if proposal.edits[0].text == "()" && proposal.selection.unwrap().head == 1)
+    );
+    editing_context.intent = velk_editing::Intent::Type("invalid".into());
+    assert!(editing.evaluate(&editing_context).is_err());
     let metadata = manager.plugins().next().unwrap().metadata.clone();
     assert_eq!(metadata.name, "Named Hooks Probe");
     assert_eq!(metadata.settings.len(), 1);
@@ -113,6 +129,12 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     assert_eq!(manager.call_hook(&echo, b"after panic")?, b"after panic");
     let copy = manager.plugins().next().unwrap().loaded_path.clone();
     manager.unload_all();
+    assert!(copy.exists(), "interactive lease pins native code");
+    assert_eq!(
+        editing.evaluate(&editing_context)?,
+        velk_editing::Decision::Decline
+    );
+    drop(editing);
     assert!(!copy.exists());
     assert_eq!(owned, input);
     assert_eq!(
