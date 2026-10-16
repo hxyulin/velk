@@ -1,4 +1,5 @@
 //! Experimental native ABI. No Rust containers or trait objects cross it.
+//! Common models live in velk-plugin-contracts; wire adapters copy native views.
 use std::ffi::c_void;
 pub mod contracts;
 pub use contracts::*;
@@ -62,81 +63,7 @@ pub struct PluginPackApi {
 }
 pub type PackEntry = unsafe extern "C" fn(u32, *mut PluginPackApi, usize) -> i32;
 
-/// Borrowed interpretation of author.[namespace.]name. Namespace may contain dots;
-/// nesting has no implicit dependency, permissions, or ownership semantics.
-#[derive(Debug, PartialEq, Eq)]
-pub struct PluginId<'a> {
-    pub author: &'a str,
-    pub namespace: Option<&'a str>,
-    pub name: &'a str,
-}
-pub fn parse_plugin_id(id: &str) -> Option<PluginId<'_>> {
-    if id.len() >= 64 {
-        return None;
-    }
-    if id.split('.').any(|s| {
-        s.is_empty()
-            || !s.as_bytes()[0].is_ascii_lowercase()
-            || !s
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_".contains(&b))
-    }) {
-        return None;
-    }
-    let first = id.find('.')?;
-    let last = id.rfind('.')?;
-    Some(PluginId {
-        author: &id[..first],
-        namespace: (first != last).then(|| &id[first + 1..last]),
-        name: &id[last + 1..],
-    })
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn parses_flat_and_nested_namespaces_and_rejects_ambiguous_ids() {
-        assert_eq!(
-            parse_plugin_id("velk.markdown"),
-            Some(PluginId {
-                author: "velk",
-                namespace: None,
-                name: "markdown"
-            })
-        );
-        assert_eq!(
-            parse_plugin_id("velk.language-server.rust-analyzer"),
-            Some(PluginId {
-                author: "velk",
-                namespace: Some("language-server"),
-                name: "rust-analyzer"
-            })
-        );
-        assert_eq!(
-            parse_plugin_id("author.tools.language.server.rust"),
-            Some(PluginId {
-                author: "author",
-                namespace: Some("tools.language.server"),
-                name: "rust"
-            })
-        );
-        for id in [
-            "",
-            "velk",
-            ".velk.rust",
-            "velk.rust.",
-            "velk..rust",
-            "Velk.rust",
-            "velk.世界",
-            "velk.a/b",
-            "velk.-rust",
-            "velk.1rust",
-        ] {
-            assert!(parse_plugin_id(id).is_none(), "accepted {id}");
-        }
-        assert!(parse_plugin_id(&format!("velk.{}", "a".repeat(59))).is_none());
-    }
-}
+pub use velk_plugin_contracts::{PluginId, parse_plugin_id};
 
 pub const REQUEST: u32 = 1;
 pub const EVENT: u32 = 2;
@@ -152,11 +79,6 @@ pub struct HookInfo {
     pub kind: u32,
     pub table_size: usize,
 }
-
-/// Optional paired request hooks for owned, plugin-versioned restart state.
-/// Snapshot accepts empty input; restore accepts the snapshot (at most 1 MiB).
-pub const LIFECYCLE_SNAPSHOT_HOOK: &str = "velk.lifecycle.snapshot.v1";
-pub const LIFECYCLE_RESTORE_HOOK: &str = "velk.lifecycle.restore.v1";
 
 /// Optional SDK-to-host timing bridge. Callbacks are process-owned and thread
 /// safe. Borrowed UTF-8 is copied before returning; no Rust objects cross the ABI.
@@ -184,9 +106,7 @@ pub struct DiagnosticsApi {
     pub attach: unsafe extern "C" fn(*const TraceSink) -> i32,
 }
 
-/// Optional JSON metadata request; empty input, UTF-8 PluginMetadata response.
-/// Uses BYTES_CONTRACT v1 without changing the root native ABI.
-pub const METADATA_HOOK: &str = "velk.plugin.metadata.v1";
+pub use velk_plugin_contracts::hooks::*;
 
-/// Optional settings snapshot request using the v1 bytes contract.
-pub const SETTINGS_HOOK: &str = "velk.plugin.settings.v1";
+#[allow(unsafe_code)]
+pub mod wire;

@@ -4057,6 +4057,11 @@ dependencies = [
 [[package]]
 name = "velk-plugin-api"
 version = "0.0.0-dev"
+dependencies = [
+ "ropey",
+ "velk-plugin-contracts",
+ "velk-semantic",
+]
 
 [[package]]
 name = "velk-plugin-builtin"
@@ -4069,6 +4074,14 @@ dependencies = [
  "velk-plugin-sdk",
  "velk-plugin-search",
  "velk-plugin-terminal",
+]
+
+[[package]]
+name = "velk-plugin-contracts"
+version = "0.0.0-dev"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4096,7 +4109,7 @@ dependencies = [
  "velk-diagnostics",
  "velk-markup",
  "velk-plugin-api",
- "velk-plugin-sdk",
+ "velk-plugin-contracts",
  "velk-semantic",
 ]
 
@@ -4135,12 +4148,11 @@ dependencies = [
 name = "velk-plugin-sdk"
 version = "0.0.0-dev"
 dependencies = [
- "ropey",
- "serde",
  "serde_json",
  "velk-diagnostics",
  "velk-markup",
  "velk-plugin-api",
+ "velk-plugin-contracts",
  "velk-semantic",
 ]
 

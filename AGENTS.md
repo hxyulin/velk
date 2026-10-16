@@ -26,6 +26,8 @@ and any checks that could not run.
   and the shell. `crates/editor-widget` adapts Core to RXUI input and rendering.
 - Shared contracts and services live in `crates/`; feature plugins live in
   `plugins/`. Build and staging commands live in `xtask/`.
+- Common plugin definitions live in `plugin-contracts`; native tables/codecs in
+  `plugin-api`. The host must not depend on SDK authoring/lifecycle code.
 - Keep one authoritative document model and a consistent service interface.
   Extend existing contracts before introducing parallel plugin-specific mechanisms. Update the
   host, SDK, bundled plugins, and relevant docs together when a contract changes.

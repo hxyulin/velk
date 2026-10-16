@@ -234,7 +234,7 @@ fn register_diagnostics<P: Plugin>(reg: &mut registry::Registrar<P>) -> Result<(
 }
 
 fn register_metadata<P: Plugin>(registry: &mut registry::Registrar<P>) -> Result<(), String> {
-    let metadata = crate::PluginMetadata::of::<P>();
+    let metadata = crate::metadata::of::<P>();
     metadata.validate()?;
     let bytes = serde_json::to_vec(&metadata).map_err(|e| e.to_string())?;
     registry.provide(

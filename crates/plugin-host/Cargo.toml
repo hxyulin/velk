@@ -7,7 +7,7 @@ publish.workspace = true
 [dependencies]
 velk-diagnostics.workspace = true
 tracing.workspace = true
-velk-plugin-sdk.workspace = true
+velk-plugin-contracts.workspace = true
 velk-semantic.workspace = true
 velk-markup.workspace = true
 velk-plugin-api.workspace = true

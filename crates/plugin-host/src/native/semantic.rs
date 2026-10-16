@@ -2,7 +2,7 @@
 //! its producers. Every input/lifecycle call stays on the host plugin worker.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
-use velk_plugin_sdk::ffi::semantic as wire;
+use velk_plugin_api::wire::semantic as wire;
 use velk_semantic::{DocumentSnapshot, Event as SemanticEvent, Input, Session, Status};
 
 struct Callback {
@@ -177,7 +177,7 @@ impl Manager {
                                     .events()
                                     .publish(SemanticEvent::Status(Status::Starting));
                                 let status =
-                                    velk_plugin_sdk::ffi::language_server::with_definition(
+                                    velk_plugin_api::wire::language_server::with_definition(
                                         &definition,
                                         |raw| {
                                             // SAFETY: live transport, copied definition borrowed

@@ -9,20 +9,11 @@ pub mod hooks {
         Event, LanguageDefinition, RenderMarkdown, Request, SemanticSessions,
     };
 }
-/// Owned definition copied independently into each library's allocator.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LanguageServer {
-    pub transport: String,
-    pub language: String,
-    pub executable: String,
-    pub arguments: Vec<String>,
-    pub root: Option<String>,
-    pub initialization_options: String,
-    pub configuration: String,
-}
 mod metadata;
-pub mod settings;
-pub use metadata::{Capability, CapabilityDeclaration, PluginMetadata};
+pub use velk_plugin_contracts as contracts;
+pub use velk_plugin_contracts::{
+    Capability, CapabilityDeclaration, LanguageServer, PluginMetadata, settings,
+};
 
 pub trait Plugin: Default + 'static {
     const ID: &'static str;

@@ -1,7 +1,8 @@
 //! Host broker for copied language-server definitions. Definitions select a
 //! transport by exact plugin ID, never by namespace prefix or Rust linkage.
 use super::*;
-use velk_plugin_sdk::{LanguageServer, ffi::language_server as wire};
+use velk_plugin_api::wire::language_server as wire;
+use velk_plugin_contracts::LanguageServer;
 struct Output {
     value: Option<Result<LanguageServer, String>>,
     calls: usize,

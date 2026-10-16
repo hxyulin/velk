@@ -9,7 +9,7 @@ use std::{
 };
 mod native;
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
-pub use velk_plugin_sdk::{Capability, PluginMetadata, settings};
+pub use velk_plugin_contracts::{Capability, PluginMetadata, settings};
 
 pub mod hook_kind {
     pub use velk_plugin_api::{CONTRIBUTION, EVENT, REQUEST, SERVICE};

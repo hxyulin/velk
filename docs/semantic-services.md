@@ -14,7 +14,10 @@ implement `register(&mut Registrar<Self>)`; Markdown, language definitions, and
 semantic backends are registered handlers, not methods or boolean flags on the
 root trait. The root C table discovers registration count/descriptors/tables and
 has no feature-specific entry points. Built-in wire contracts live separately in
-`velk-plugin-api::contracts`.
+`velk-plugin-api::contracts`. Shared native marshaling lives in
+`velk-plugin-api::wire`; the host does not depend on SDK authoring code.
+The owned `LanguageServer` definition lives in `velk-plugin-contracts` and remains
+available from the SDK's existing re-export.
 
 Each registration has a name, explicit contract identifier, contract version,
 kind (request/event/service/contribution), and C table size. The host copies

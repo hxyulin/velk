@@ -264,7 +264,9 @@ fn call_bytes(api: BytesApi, input: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 impl Generation {
-    pub(super) fn read_metadata(&self) -> Result<Option<velk_plugin_sdk::PluginMetadata>, String> {
+    pub(super) fn read_metadata(
+        &self,
+    ) -> Result<Option<velk_plugin_contracts::PluginMetadata>, String> {
         let Some(hook) = self.hooks.iter().find(|h| h.info.name == METADATA_HOOK) else {
             return Ok(None);
         };
@@ -275,7 +277,7 @@ impl Generation {
         if bytes.len() > 512 * 1024 {
             return Err("plugin metadata exceeds 512 KiB".into());
         }
-        let metadata: velk_plugin_sdk::PluginMetadata =
+        let metadata: velk_plugin_contracts::PluginMetadata =
             serde_json::from_slice(&bytes).map_err(|e| format!("invalid plugin metadata: {e}"))?;
         metadata.validate()?;
         Ok(Some(metadata))
@@ -285,9 +287,9 @@ impl Generation {
 impl Generation {
     pub(super) fn configure_settings(
         &mut self,
-        overrides: &velk_plugin_sdk::settings::Values,
+        overrides: &velk_plugin_contracts::settings::Values,
     ) -> Result<(), String> {
-        use velk_plugin_sdk::settings::{Values, resolve};
+        use velk_plugin_contracts::settings::{Values, resolve};
         let schema = &self.info.metadata.settings;
         if schema.is_empty() {
             return Ok(());

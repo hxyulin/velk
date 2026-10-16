@@ -164,7 +164,7 @@ Current limitations include:
 - [Buffers](docs/buffers.md) and [edit transactions](docs/edit-transactions.md)
 - [Editor shell](docs/editor-shell.md), [panels](docs/panels.md), and
   [window reloading](docs/reloading.md)
-- [Plugin API](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
+- [Plugin API and shared contracts](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
   [plugin settings](docs/plugin-settings.md)
 - [Semantic services and Rust LSP](docs/semantic-services.md)
 - [Core and component boundaries](docs/core.md)

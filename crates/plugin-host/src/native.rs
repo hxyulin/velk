@@ -26,8 +26,8 @@ pub struct PluginInfo {
     /// Host-owned copy; remains valid after the library is unloaded.
     pub description: String,
     /// Owned display name, Markdown README and declared access requirements.
-    pub metadata: velk_plugin_sdk::PluginMetadata,
-    pub settings_values: velk_plugin_sdk::settings::Values,
+    pub metadata: velk_plugin_contracts::PluginMetadata,
+    pub settings_values: velk_plugin_contracts::settings::Values,
     pub settings_error: Option<String>,
     /// Logical unload releases sessions/instances, while this build stays mapped.
     pub resident_code: bool,
@@ -53,7 +53,7 @@ impl Generation {
         spec: &PluginSpec,
         generation: u64,
         code: Arc<Code>,
-        settings: &velk_plugin_sdk::settings::Values,
+        settings: &velk_plugin_contracts::settings::Values,
     ) -> Result<Self, String> {
         let api = *code
             .apis
@@ -98,7 +98,7 @@ impl Generation {
         loaded.info.metadata =
             loaded
                 .read_metadata()?
-                .unwrap_or_else(|| velk_plugin_sdk::PluginMetadata {
+                .unwrap_or_else(|| velk_plugin_contracts::PluginMetadata {
                     name: loaded.info.id.clone(),
                     ..Default::default()
                 });
@@ -277,7 +277,7 @@ pub struct Manager {
     sessions: BTreeMap<u64, semantic::DocumentSession>,
     resident_code: BTreeMap<(String, bool), Arc<Code>>,
     images: BTreeMap<(String, bool), Weak<Code>>,
-    settings: velk_plugin_sdk::settings::PluginValues,
+    settings: velk_plugin_contracts::settings::PluginValues,
 }
 impl Manager {
     pub fn new(directory: PathBuf) -> Self {
@@ -293,7 +293,7 @@ impl Manager {
             settings: Default::default(),
         }
     }
-    pub fn set_settings(&mut self, settings: velk_plugin_sdk::settings::PluginValues) {
+    pub fn set_settings(&mut self, settings: velk_plugin_contracts::settings::PluginValues) {
         self.settings = settings;
     }
     pub fn plugins(&self) -> impl Iterator<Item = &PluginInfo> {

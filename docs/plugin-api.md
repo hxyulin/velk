@@ -1,4 +1,34 @@
-# Plugin metadata and access declarations
+# Plugin API
+
+## Crate boundaries
+
+- `velk-plugin-contracts` owns common definitions: plugin IDs, metadata, access
+  declarations, settings schemas and values, language-server definitions, and
+  standard service/request names. It has no loader, native ABI, authoring trait,
+  UI, or executor dependency. Its current Rust implementation uses `std` and
+  Serde; it is not yet a `no_std` SDK or a Wasm interface definition.
+- `velk-plugin-api` owns native C-compatible tables, entry points, status codes,
+  and ABI limits. `wire` contains shared native codecs that copy borrowed C views
+  into receiver-owned values. Its `contracts` module describes native tables,
+  rather than the transport-independent models in `velk-plugin-contracts`.
+- `velk-plugin-sdk` owns the safe authoring trait, registration adapters, export
+  macros, panic containment, and plugin-side lifecycle. It re-exports common
+  definitions and settings at their existing paths; `contracts` also exposes the
+  shared crate. Existing bundled plugins need no import migration.
+- `velk-plugin-host` owns native loading, scheduling, generations, discovery, and
+  restart. It consumes shared contracts and native codecs directly, without
+  depending on the authoring SDK. Its existing metadata/settings re-exports remain.
+
+Feature models remain in their domain crates, including `velk-markup`,
+`velk-semantic`, `velk-panels`, and `velk-search`. A future adapter should reuse
+their service semantics and common definitions instead of depending on native
+function tables. No Wasm runtime or new feature API is introduced by this split.
+
+The native ABI, entry symbols, contract versions, JSON field names, validation
+limits, and settings/restart behavior remain unchanged. Standard hook names and
+plugin-ID helpers remain available from `velk-plugin-api` through re-exports.
+
+## Metadata and access declarations
 
 Plugins have a stable machine ID and a separate human-readable name. The short
 `describe()` summary belongs in lists. Use `README` for the full Markdown detail

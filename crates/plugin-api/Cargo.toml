@@ -4,5 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-[lints]
-workspace = true
+[dependencies]
+velk-plugin-contracts.workspace = true
+velk-semantic.workspace = true
+ropey.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"

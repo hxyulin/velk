@@ -1,6 +1,7 @@
 //! Built-in typed contracts layered on the generic registry. New contract
 //! packages can define additional C tables without extending PluginApi.
 use super::*;
+pub use velk_plugin_contracts::hooks::{LANGUAGE_HOOK, MARKUP_HOOK, SEMANTIC_HOOK};
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
 pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_RUNS: usize = 65_536;
@@ -116,11 +117,8 @@ pub type LanguageServerSink =
 pub type QueryLanguageServer =
     unsafe extern "C" fn(*mut c_void, *const u8, usize, LanguageServerSink, *mut c_void) -> i32;
 
-pub const MARKUP_HOOK: &str = "velk.markup.render";
 pub const MARKUP_CONTRACT: &str = "velk.contract.markup-render";
-pub const LANGUAGE_HOOK: &str = "velk.language-server.definition";
 pub const LANGUAGE_CONTRACT: &str = "velk.contract.language-server";
-pub const SEMANTIC_HOOK: &str = "velk.semantic.session";
 pub const SEMANTIC_CONTRACT: &str = "velk.contract.semantic-session";
 pub const BYTES_CONTRACT: &str = "velk.contract.bytes-request";
 pub const EVENT_CONTRACT: &str = "velk.contract.bytes-event";
