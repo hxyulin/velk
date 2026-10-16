@@ -4,7 +4,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::{BufWriter, Write},
+    io::{BufWriter, IsTerminal, Write},
     path::PathBuf,
     sync::{
         Arc, Mutex, OnceLock,
@@ -203,6 +203,10 @@ pub struct Config {
     pub targets: Vec<String>,
     pub log_directory: Option<PathBuf>,
 }
+fn log_colors(terminal: bool, json: bool, file: bool, no_color: bool, dumb_terminal: bool) -> bool {
+    terminal && !json && !file && !no_color && !dumb_terminal
+}
+
 pub fn init_with(config: Config) -> Result<Guard, String> {
     if config.duration.is_zero() || config.duration > Duration::from_secs(600) {
         return Err("capture duration must be positive and at most 600 seconds".into());
@@ -218,6 +222,13 @@ pub fn init_with(config: Config) -> Result<Guard, String> {
     });
     let filter =
         tracing_subscriber::EnvFilter::try_new(&config.filter).map_err(|e| e.to_string())?;
+    let ansi = log_colors(
+        std::io::stderr().is_terminal(),
+        config.json_logs,
+        config.log_directory.is_some(),
+        std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
+        std::env::var("TERM").as_deref() == Ok("dumb"),
+    );
     let output: Box<dyn Write + Send> = if let Some(directory) = config.log_directory {
         std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         Box::new(
@@ -238,7 +249,7 @@ pub fn init_with(config: Config) -> Result<Guard, String> {
     let dropped_logs = writer.error_counter();
     let log_layer = tracing_subscriber::fmt::layer()
         .with_writer(writer)
-        .with_ansi(false)
+        .with_ansi(ansi)
         .with_thread_names(true)
         .with_target(true);
     let log_layer = if config.json_logs {
@@ -840,5 +851,20 @@ mod tests {
             trace["traceEvents"].as_array().unwrap().last().unwrap()["name"],
             "velk.capture.summary"
         );
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::log_colors;
+
+    #[test]
+    fn colors_only_readable_terminal_logs_unless_disabled() {
+        assert!(log_colors(true, false, false, false, false));
+        assert!(!log_colors(false, false, false, false, false));
+        assert!(!log_colors(true, true, false, false, false));
+        assert!(!log_colors(true, false, true, false, false));
+        assert!(!log_colors(true, false, false, true, false));
+        assert!(!log_colors(true, false, false, false, true));
     }
 }

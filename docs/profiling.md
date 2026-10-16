@@ -144,11 +144,16 @@ cargo bench -p velk-diagnostics --features collector --bench instrumentation
 | `VELK_LOG` | `tracing-subscriber` filter directives; defaults to `warn,velk=info`. Falls back to `RUST_LOG`. |
 | `VELK_LOG_FORMAT=json` | Emit app-owned logs as JSON records; otherwise readable text. |
 | `VELK_LOG_DIR` | Optional directory for `velk-<pid>.log`; otherwise stderr. |
+| `NO_COLOR` | A nonempty value disables terminal log colors. |
 
 For example, `VELK_TRACE_TARGETS=velk_plugin,velk_syntax` narrows a capture to
 plugin and syntax activity. `VELK_LOG=warn,velk_plugin_host=debug` enables detailed
 host logs. Target filtering applies to SDK timings as well as host tracing;
 control markers/summary metadata remain in the capture.
+
+Readable logs use colors when stderr is a terminal, unless `NO_COLOR` is nonempty
+or `TERM=dumb`. Redirected output, log files, and JSON logs remain uncolored.
+Child language-server stderr is inherited and uses the server's own log format.
 
 Logs use `tracing-appender`'s bounded 4,096-line nonblocking queue. Log overload is
 lossy and its dropped-record count is reported on shutdown. A guard outlives the

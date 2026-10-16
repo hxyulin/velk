@@ -30,7 +30,13 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
     };
     let source = temp.path().join("file 世界.rs");
     std::fs::write(&source, "fn café() {}\n").map_err(|e| e.to_string())?;
-    for mode in ["normal", "stall-init", "no-profile", "missing-transport"] {
+    for mode in [
+        "normal",
+        "runtime-stop",
+        "stall-init",
+        "no-profile",
+        "missing-transport",
+    ] {
         let specs = match mode {
             "no-profile" => vec![markdown.clone(), lsp.clone()],
             "missing-transport" => vec![markdown.clone(), rust.clone()],
@@ -62,7 +68,7 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
         )?;
     }
     println!(
-        "LSP plugin smoke passed: native async diagnostics/hover, declared navigation/Rust commands, cancellation, save, unload during requests/initialization, process reaping, latest-document reattachment, resident image reuse, independent Markdown, namespaced Rust definition dependency/unload/reload, no server without its profile or transport."
+        "LSP plugin smoke passed: native async diagnostics/hover, declared navigation/Rust commands, cancellation, save, unload during requests/initialization, runtime exit with live clients, process reaping, latest-document reattachment, resident image reuse, independent Markdown, namespaced Rust definition dependency/unload/reload, no server without its profile or transport."
     );
     Ok(())
 }
@@ -131,8 +137,8 @@ fn assert_reaped(_: &Path) {}
 #[allow(unsafe_code)]
 pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), String> {
     // SAFETY: parent staged only trusted SDK-based local plugins.
-    let runtime = unsafe { velk_plugin_host::Runtime::start(directory.into())? };
-    let client = runtime.client();
+    let mut runtime = Some(unsafe { velk_plugin_host::Runtime::start(directory.into())? });
+    let client = runtime.as_ref().unwrap().client();
     let service = client.semantic_service()?;
     let initial = "fn café() { let text = \"👩‍💻\"; }\n";
     service.update(snapshot(path, 0, initial));
@@ -184,6 +190,19 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 matches!(e, Event::Status(Status::Ready(_)))
             })
             .await?;
+            if mode == "runtime-stop" {
+                // Mirror the application's exit hook with UI clients still alive.
+                drop(runtime.take());
+                let messages = messages(log);
+                let methods: Vec<_> = messages.iter().filter_map(|v| v["method"].as_str()).collect();
+                let close = methods.iter().position(|&m| m == "textDocument/didClose").unwrap();
+                let shutdown = methods.iter().position(|&m| m == "shutdown").unwrap();
+                let exit = methods.iter().position(|&m| m == "exit").unwrap();
+                assert!(close < shutdown && shutdown < exit);
+                assert_reaped(log);
+                assert!(client.load().is_err());
+                return Ok(());
+            }
             let first = until(&service.events, |e| {
                 matches!(e, Event::Diagnostics { revision: 0, .. })
             })

@@ -276,6 +276,8 @@ fn run() -> Result<(), Error> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let application = application.menu_bar(document::Document::menus());
     let result = application
+        // Join plugin workers before native event-loop teardown.
+        .exiting(move |_| drop(plugins))
         .theme(theme::dark())
         // Unmapped, RXUI's generic monospace is Courier New; match the editor.
         .map_font_family(
