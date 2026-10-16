@@ -67,6 +67,9 @@ stored in Git. Regenerate samples for the revision and hardware under test;
 exact timings and native interactions will vary. Share selected findings in
 review or an issue rather than committing a full capture.
 
+A [native keybinding latency check](performance/keybindings-native.md) records
+a large-file smoke test, its measurement limits, and observed follow-ups.
+
 ## Coverage and interpretation
 
 The existing RXUI/Astrelis `profiling` instrumentation is connected through
