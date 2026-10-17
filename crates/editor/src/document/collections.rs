@@ -231,7 +231,18 @@ impl Document {
         let mut guard = self.edit_guard(cx);
         guard.owner = Some((invocation.plugin.clone(), invocation.generation));
         if !refresh {
-            editor.update(cx, |editor, _| editor.show_completions(Vec::new(), false));
+            let policy = self
+                .plugins
+                .as_ref()
+                .and_then(|state| {
+                    state
+                        .matching
+                        .get(&self.shell.store.preferences.completion_matching_provider)
+                })
+                .cloned();
+            editor.update(cx, |editor, _| {
+                editor.show_completions_with_policy(Vec::new(), false, policy)
+            });
         }
         let id = self.next_collection;
         self.next_collection += 1;
@@ -533,6 +544,7 @@ impl Document {
             return;
         }
         match action {
+            ChoiceAction::Snippet { snippet } => self.apply_workspace_snippet(snippet, guard, cx),
             ChoiceAction::Edit { edit } => {
                 self.apply_guarded_outcome(Outcome::Edit { edit }, guard, cx)
             }

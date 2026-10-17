@@ -49,13 +49,29 @@ impl Editor {
         (target == self.completion_target()).then(|| (target, text, self.completion_prefix()))
     }
     pub fn show_completions(&mut self, items: Vec<Item>, refresh: bool) {
+        self.show_completions_with_policy(items, refresh, None);
+    }
+    /// A policy is retained by this session only; refreshes preserve its lease.
+    pub fn show_completions_with_policy(
+        &mut self,
+        items: Vec<Item>,
+        refresh: bool,
+        policy: Option<std::sync::Arc<dyn velk_commands::completion::matching::Policy>>,
+    ) {
         let target = self.completion_target();
         if refresh {
             if let Some(session) = &mut self.completion.session {
                 session.resolve(target, items);
             }
         } else {
-            self.completion.session = Some(Session::new(target, self.completion_prefix(), items));
+            self.completion.session = Some(Session::with_policy(
+                target,
+                self.completion_prefix(),
+                items,
+                policy.unwrap_or_else(|| {
+                    std::sync::Arc::new(velk_commands::completion::matching::Prefix)
+                }),
+            ));
         }
         self.hide_hover();
     }
@@ -521,5 +537,151 @@ mod documentation_tests {
                 .elements()
                 .any(|element| element.scroll_offset[1] > 0.)
         );
+    }
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    use super::*;
+    use velk_editor_model::EditCommand;
+    fn snippet(source: &str) -> Editor {
+        let expanded = velk_commands::snippet::expand(source).unwrap();
+        let mut editor = Editor::new(&expanded.text);
+        editor.start_snippet(expanded.stops).unwrap();
+        editor
+    }
+    #[test]
+    fn repeated_placeholders_edit_together_and_navigation_reaches_the_final_caret() {
+        let mut editor = snippet("${1:世界} + $1, ${2:next}$0");
+        assert_eq!(editor.selected_text(), "世界\n世界");
+        editor.execute(EditCommand::Insert("value"));
+        assert_eq!(editor.buffer().text().to_string(), "value + value, next");
+        assert!(editor.snippet_active());
+        assert!(editor.navigate_snippet(false));
+        assert_eq!(editor.selected_text(), "next");
+        assert!(editor.navigate_snippet(true));
+        assert_eq!(editor.selected_text(), "value\nvalue");
+        editor.navigate_snippet(false);
+        editor.execute(EditCommand::Insert("last"));
+        editor.navigate_snippet(false);
+        assert!(!editor.snippet_active());
+        assert_eq!(
+            editor.buffer().selection().head,
+            "value + value, last".chars().count()
+        );
+        assert!(!editor.navigate_snippet(false));
+    }
+    #[test]
+    fn undo_movement_and_shared_view_edits_invalidate_navigation_without_undoing_the_session() {
+        let mut editor = snippet("call(${1:arg}, ${2:other})$0");
+        editor.execute(EditCommand::Insert("changed"));
+        editor.execute(EditCommand::Undo);
+        assert!(!editor.snippet_active());
+        assert_eq!(editor.buffer().text().to_string(), "call(arg, other)");
+        editor.execute(EditCommand::Redo);
+        assert_eq!(editor.buffer().text().to_string(), "call(changed, other)");
+        let mut editor = snippet("call(${1:arg})$0");
+        editor.execute(EditCommand::SetCaret {
+            position: 0,
+            extend: false,
+        });
+        assert!(!editor.snippet_active());
+        let mut editor = snippet("call(${1:arg})$0");
+        let mut other = editor.new_view().unwrap();
+        assert!(!other.snippet_active());
+        other.execute(EditCommand::Insert("different"));
+        editor.synchronize_document(None, false);
+        assert!(!editor.snippet_active());
+    }
+    #[test]
+    fn nested_defaults_can_be_entered_or_replaced_as_a_whole() {
+        let mut editor = snippet("${1:call(${2:arg})}$0");
+        editor.navigate_snippet(false);
+        assert_eq!(editor.selected_text(), "arg");
+        editor.execute(EditCommand::Insert("value"));
+        editor.navigate_snippet(true);
+        assert_eq!(editor.selected_text(), "call(value)");
+        editor.execute(EditCommand::Insert("replacement"));
+        editor.navigate_snippet(false);
+        assert!(!editor.snippet_active());
+        assert_eq!(editor.buffer().selection().head, 11);
+        let mut editor = snippet("${1:${2:arg} tail} = $1$0");
+        editor.navigate_snippet(false);
+        editor.execute(EditCommand::Insert("value"));
+        editor.navigate_snippet(true);
+        assert_eq!(editor.selected_text(), "value tail\nvalue tail");
+    }
+    #[test]
+    fn vim_insert_mode_preserves_mirrored_placeholder_typing() {
+        #[derive(Debug)]
+        struct Vim;
+        impl velk_editing::Provider for Vim {
+            fn evaluate(
+                &self,
+                request: &velk_editing::Request,
+            ) -> Result<velk_editing::Decision, String> {
+                <velk_plugin_vim::Vim as velk_plugin_sdk::EditingBehavior>::evaluate(request)
+            }
+        }
+        let expansion = velk_commands::snippet::expand("${1:arg} + $1$0").unwrap();
+        let mut editor = Editor::new(&expansion.text);
+        editor.set_editing_providers(std::collections::BTreeMap::from([(
+            velk_editing::Role::Keymap,
+            std::sync::Arc::new(Vim) as std::sync::Arc<dyn velk_editing::Provider>,
+        )]));
+        editor.committed_text("i", rxui::TextInsertSource::Keyboard);
+        editor.start_snippet(expansion.stops).unwrap();
+        editor.committed_text("z", rxui::TextInsertSource::Keyboard);
+        assert_eq!(editor.buffer().text().to_string(), "z + z");
+        assert!(editor.snippet_active());
+        editor.navigate_snippet(false);
+        assert_eq!(editor.buffer().selection().head, 5);
+    }
+}
+
+#[cfg(test)]
+mod snippet_keyboard_tests {
+    use super::*;
+    #[test]
+    fn tab_and_shift_tab_take_priority_over_completion_and_escape_ends_navigation() {
+        let graphics = pollster::block_on(rxui::astrelis::GraphicsContext::headless()).unwrap();
+        let expansion = velk_commands::snippet::expand("${1:first} ${2:second}$0").unwrap();
+        let mut editor = Editor::new(&expansion.text);
+        editor.start_snippet(expansion.stops).unwrap();
+        editor.show_completions(
+            vec![
+                velk_commands::Choice {
+                    title: "first_option".into(),
+                    detail: None,
+                    action: velk_commands::ChoiceAction::Semantic {
+                        payload: Default::default(),
+                    },
+                }
+                .into(),
+            ],
+            false,
+        );
+        let mut test = rxui::TestUi::new(&graphics, [640, 240], editor).unwrap();
+        test.painter_mut().fonts_mut().load_system_fonts();
+        let surface = test.element("editor-surface").unwrap().unwrap().id;
+        test.parts().1.focus(surface);
+        for (key, shift, selected) in [
+            (KeyboardKey::Tab, false, "second"),
+            (KeyboardKey::Tab, true, "first"),
+            (KeyboardKey::Escape, false, "first"),
+        ] {
+            test.key(rxui::KeyEvent {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers: rxui::Modifiers {
+                    shift,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+            test.read(|editor| assert_eq!(editor.selected_text(), selected));
+        }
+        test.read(|editor| assert!(!editor.snippet_active()));
     }
 }

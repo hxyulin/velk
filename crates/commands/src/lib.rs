@@ -2,6 +2,7 @@
 pub mod completion;
 pub mod contributions;
 pub mod keybindings;
+pub mod snippet;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -196,6 +197,9 @@ impl WorkspaceEdit {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChoiceAction {
+    Snippet {
+        snippet: snippet::SnippetEdit,
+    },
     BufferEdit {
         id: u64,
         revision: u64,
@@ -253,6 +257,9 @@ pub fn text_hash(bytes: impl IntoIterator<Item = u8>) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Outcome {
+    Snippet {
+        snippet: snippet::SnippetEdit,
+    },
     RevealDiagnostic {
         location: DiagnosticLocation,
     },
@@ -295,6 +302,7 @@ impl Outcome {
                 return Err("invalid panel identity".into());
             }
             Self::Edit { edit } => edit.validate()?,
+            Self::Snippet { snippet } => snippet.validate()?,
             Self::Completions { items } => {
                 if items.len() > 1000 {
                     return Err("too many completions".into());
@@ -448,6 +456,7 @@ fn validate_choice(item: &Choice) -> Result<(), String> {
             return Err("too many buffer replacements".into());
         }
         ChoiceAction::Edit { edit } => edit.validate()?,
+        ChoiceAction::Snippet { snippet } => snippet.validate()?,
         ChoiceAction::Semantic { payload }
             if serde_json::to_vec(payload)
                 .map_err(|e| e.to_string())?

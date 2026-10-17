@@ -1,4 +1,5 @@
 //! Default completion policy and an independent document-word contributor.
+pub mod matching;
 use velk_completion_contracts::{Collection, Contribution, TOPIC};
 use velk_plugin_sdk::{Host, Plugin, Registrar, commands::*, hooks, host};
 
@@ -52,6 +53,7 @@ impl Plugin for Completion {
         Ok(())
     }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+        reg.matching::<matching::DefaultPolicy>()?;
         reg.provide(
             hooks::Request(velk_completion_contracts::AUTOMATIC),
             |this: &mut Self, bytes: &[u8]| {
@@ -263,7 +265,7 @@ fn words(context: &Context, buffer: u64, text: &str) -> Result<Outcome, String> 
         .char_indices()
         .nth(position)
         .map_or(text.len(), |(offset, _)| offset);
-    let mut matcher = velk_plugin_sdk::commands::completion::matching::Matcher::new(&prefix);
+    let mut matcher = matching::Matcher::new(&prefix);
     let mut seen = std::collections::BTreeSet::new();
     let mut ranked = std::collections::BinaryHeap::new();
     let mut offset = 0;

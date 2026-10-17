@@ -139,3 +139,6 @@ pub struct HostApi {
 
 mod syntax;
 pub use syntax::*;
+
+mod matching;
+pub use matching::*;

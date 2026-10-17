@@ -102,6 +102,11 @@ impl Generation {
                 }};
             }
             match contract.as_str() {
+                velk_plugin_contracts::commands::completion::matching::CONTRACT
+                    if name == velk_plugin_contracts::commands::completion::matching::HOOK =>
+                {
+                    self.matching = Some(typed!(MatchingApi, SERVICE));
+                }
                 HOST_HOOK if name == HOST_HOOK => {
                     let _ = typed!(HostApi, SERVICE);
                 }

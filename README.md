@@ -226,8 +226,9 @@ Current limitations include:
   typing filters and refreshes suggestions, Up/Down selects, Enter/Tab accepts, and
   Escape dismisses. Selected suggestions can show formatted documentation. Automatic suggestions start after two identifier characters or
   supported provider trigger characters, and can be disabled in plugin settings.
-  Completion remains plain-text only; snippets and server command execution are
-  not yet implemented.
+  Snippet placeholders support Tab/Shift+Tab navigation and mirrored editing.
+  Snippet variables, transforms, and server command execution remain deferred.
+  The local completion matcher is a replaceable plugin service.
 - Language-server clients and diagnostic publications are shared by workspace.
   Problems includes unopened files when the server publishes them; Velk does not
   independently scan every file. Pull diagnostics are supported for open buffers

@@ -519,8 +519,14 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
                 }
             }
             Outcome::Choices { items, .. } => {
-                assert_eq!(items.len(), if name == "complete" { 1 } else { 2 });
+                assert_eq!(items.len(), 2);
                 for item in items {
+                    if let ChoiceAction::Snippet { snippet } = &item.action {
+                        snippet.validate().unwrap();
+                        assert_eq!(snippet.edit.documents[0].edits[0].text, "call(value)");
+                        assert_eq!(snippet.stops[0].range, 5..10);
+                        continue;
+                    }
                     let ChoiceAction::Semantic { payload } = item.action else {
                         continue;
                     };
@@ -572,7 +578,7 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
         .unwrap()["params"]["capabilities"];
     assert_eq!(
         init["textDocument"]["completion"]["completionItem"]["snippetSupport"],
-        false
+        true
     );
 }
 

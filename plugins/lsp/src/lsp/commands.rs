@@ -164,8 +164,14 @@ impl Request {
             }
             ResultKind::ResolvedCompletion => {
                 let item = serde_json::from_value(value).map_err(|e| e.to_string())?;
-                Outcome::Edit {
-                    edit: completion_edit(item, encoding, source, request)?,
+                match completion_action(item, encoding, source, request)? {
+                    velk_plugin_sdk::commands::ChoiceAction::Edit { edit } => {
+                        Outcome::Edit { edit }
+                    }
+                    velk_plugin_sdk::commands::ChoiceAction::Snippet { snippet } => {
+                        Outcome::Snippet { snippet }
+                    }
+                    _ => unreachable!("completion edit action"),
                 }
             }
             ResultKind::Locations => {
@@ -335,9 +341,7 @@ fn completion(
     });
     let mut items = Vec::new();
     for item in completions.into_iter().take(1000) {
-        if item.command.is_some()
-            || item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET)
-        {
+        if item.command.is_some() {
             continue;
         }
         let title = item.label.clone();
@@ -375,8 +379,9 @@ fn completion(
             }
             ChoiceAction::Semantic { payload }
         } else {
-            ChoiceAction::Edit {
-                edit: completion_edit(item, encoding, source, request)?,
+            match completion_action(item, encoding, source, request) {
+                Ok(action) => action,
+                Err(_) => continue,
             }
         };
         items.push(velk_completion_contracts::Item {
@@ -415,18 +420,18 @@ fn completion_documentation(
     Some(velk_completion_contracts::Documentation { text, markdown })
 }
 
-fn completion_edit(
+fn completion_action(
     item: lsp_types::CompletionItem,
     encoding: Encoding,
     source: &DocumentSnapshot,
     request: PositionRequest,
-) -> Result<velk_plugin_sdk::commands::WorkspaceEdit, String> {
-    if item.command.is_some()
-        || item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET)
-    {
-        return Err("Snippet or command-based completion is not supported".into());
+) -> Result<velk_plugin_sdk::commands::ChoiceAction, String> {
+    use velk_plugin_sdk::commands::{ChoiceAction, snippet};
+    if item.command.is_some() {
+        return Err("Command-based completion is not supported".into());
     }
-    let primary = match item.text_edit {
+    let is_snippet = item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET);
+    let mut primary = match item.text_edit {
         Some(lsp_types::CompletionTextEdit::Edit(edit)) => edit,
         Some(lsp_types::CompletionTextEdit::InsertAndReplace(edit)) => lsp_types::TextEdit {
             range: edit.replace,
@@ -448,15 +453,35 @@ fn completion_edit(
             }
         }
     };
+    let expansion = if is_snippet {
+        let expansion = snippet::expand(&primary.new_text)?;
+        primary.new_text = expansion.text.clone();
+        Some(expansion)
+    } else {
+        None
+    };
     let mut edits = vec![primary];
     edits.extend(item.additional_text_edits.unwrap_or_default());
-    Ok(velk_plugin_sdk::commands::WorkspaceEdit {
+    let edit = velk_plugin_sdk::commands::WorkspaceEdit {
         documents: vec![super::edits::document(
             source.path.clone(),
             Some(source.revision),
             edits,
             encoding,
         )],
+    };
+    Ok(match expansion {
+        Some(expansion) => {
+            let snippet = snippet::SnippetEdit {
+                edit,
+                document: 0,
+                replacement: 0,
+                stops: expansion.stops,
+            };
+            snippet.validate()?;
+            ChoiceAction::Snippet { snippet }
+        }
+        None => ChoiceAction::Edit { edit },
     })
 }
 
@@ -542,5 +567,54 @@ mod documentation_tests {
             completion_documentation(Some(lsp_types::Documentation::String(" \n".into())))
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    use super::*;
+    #[test]
+    fn resolved_snippets_keep_additional_edits_and_plain_items_survive_unsupported_snippets() {
+        let source = DocumentSnapshot {
+            path: "/test.rs".into(),
+            language: "rust".into(),
+            revision: 7,
+            text: ropey::Rope::from_str("ca"),
+        };
+        let position = PositionRequest {
+            id: 1,
+            revision: 7,
+            position: 2,
+        };
+        let item = json!({"label":"call", "insertTextFormat":2, "insertText":"call(${1:世界})$0", "additionalTextEdits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"use dep;\n"}]});
+        let request = Request {
+            method: "completionItem/resolve".into(),
+            result: ResultKind::ResolvedCompletion,
+            capability: None,
+            parameters: None,
+        };
+        let outcome = request
+            .outcome(
+                item,
+                Encoding::Utf16,
+                (&source, 1),
+                position,
+                &Value::Null,
+                &[],
+            )
+            .unwrap();
+        outcome.validate().unwrap();
+        let Outcome::Snippet { snippet } = outcome else {
+            panic!("missing snippet");
+        };
+        assert_eq!(snippet.edit.documents[0].edits.len(), 2);
+        assert_eq!(snippet.edit.documents[0].edits[0].text, "call(世界)");
+        assert_eq!(snippet.stops[0].range, 5..7);
+        let outcome = completion(json!([{"label":"unsupported", "insertTextFormat":2,"insertText":"${TM_FILENAME}"},{"label":"plain"}]), Encoding::Utf16, &source, position, &Value::Null).unwrap();
+        let Outcome::Completions { items } = outcome else {
+            panic!("missing candidates");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "plain");
     }
 }

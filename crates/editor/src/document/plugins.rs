@@ -13,6 +13,7 @@ pub(super) struct State {
     pub(super) client: Client,
     markdown_provider: String,
     pub(super) editing: velk_editing::Providers,
+    pub(super) matching: velk_commands::completion::matching::Policies,
     syntax: std::collections::BTreeMap<String, std::sync::Arc<dyn velk_syntax::Provider>>,
     pub(super) task: Option<Task>,
     pub status: String,
@@ -33,6 +34,7 @@ impl State {
             client,
             markdown_provider,
             editing: Default::default(),
+            matching: Default::default(),
             syntax: Default::default(),
             task: None,
             status: String::new(),
@@ -191,6 +193,7 @@ impl Document {
                 &state.loaded,
                 &report.plugins,
             );
+            state.matching = report.matching;
             state.available = report.available;
             state.inventory = report.inventory;
             state.loaded = report.plugins;
@@ -419,6 +422,7 @@ mod tests {
                 assert_eq!(initial.read(cx).input_mode_id(), "insert");
                 this.apply_plugin_report(
                     velk_plugin_host::Report {
+                        matching: Default::default(),
                         inventory: Vec::new(),
                         syntax: Default::default(),
                         undo: Default::default(),
@@ -439,6 +443,7 @@ mod tests {
                 }
                 this.apply_plugin_report(
                     velk_plugin_host::Report {
+                        matching: Default::default(),
                         inventory: Vec::new(),
                         syntax: Default::default(),
                         undo: Default::default(),

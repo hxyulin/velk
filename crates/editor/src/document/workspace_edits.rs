@@ -70,6 +70,27 @@ impl Document {
         guard: Guard,
         cx: &mut Context<'_, Self>,
     ) {
+        self.apply_workspace_edit_inner(edit, None, guard, cx);
+    }
+    pub(super) fn apply_workspace_snippet(
+        &mut self,
+        snippet: velk_commands::snippet::SnippetEdit,
+        guard: Guard,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Err(error) = snippet.validate() {
+            self.notice(Some(error));
+            return;
+        }
+        self.apply_workspace_edit_inner(snippet.edit.clone(), Some(snippet), guard, cx);
+    }
+    fn apply_workspace_edit_inner(
+        &mut self,
+        edit: WorkspaceEdit,
+        snippet: Option<velk_commands::snippet::SnippetEdit>,
+        guard: Guard,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.workspace_edit.is_some() || !self.guard_valid(&guard, cx) {
             return;
         }
@@ -98,7 +119,13 @@ impl Document {
             .collect();
         let worker_guard = guard.clone();
         match cx.try_spawn_blocking(
-            move || prepare(edit, &snapshots, &worker_guard),
+            move || {
+                let stops = snippet
+                    .map(|snippet| prepare_snippet(&snippet, &snapshots, &worker_guard))
+                    .transpose()?;
+                let prepared = prepare(edit, &snapshots, &worker_guard)?;
+                Ok::<_, String>((prepared, stops))
+            },
             move |this, result, cx| {
                 this.workspace_edit = None;
                 if !this.guard_valid(&guard, cx) {
@@ -106,11 +133,19 @@ impl Document {
                     return;
                 }
                 match result {
-                    Ok(Ok(prepared)) => {
-                        if let Err(error) = this.commit_workspace_edit(prepared, cx) {
-                            this.notice(Some(error));
+                    Ok(Ok((prepared, stops))) => match this.commit_workspace_edit(prepared, cx) {
+                        Err(error) => this.notice(Some(error)),
+                        Ok(()) => {
+                            if let Some(stops) = stops
+                                && let Err(error) = this
+                                    .buffer
+                                    .editor
+                                    .update(cx, |editor, _| editor.start_snippet(stops))
+                            {
+                                this.notice(Some(error));
+                            }
                         }
-                    }
+                    },
                     Ok(Err(error)) => this.notice(Some(error)),
                     Err(error) => this.notice(Some(error.to_string())),
                 }
@@ -226,6 +261,43 @@ impl Document {
         Ok(())
     }
 }
+fn prepare_snippet(
+    snippet: &velk_commands::snippet::SnippetEdit,
+    snapshots: &BTreeMap<PathBuf, Snapshot>,
+    guard: &Guard,
+) -> Result<Vec<velk_commands::snippet::Tabstop>, String> {
+    snippet.validate()?;
+    let document = &snippet.edit.documents[snippet.document];
+    let path = std::fs::canonicalize(&document.path).map_err(|error| error.to_string())?;
+    let snapshot = snapshots
+        .get(&path)
+        .filter(|snapshot| guard.source == Some(snapshot.id))
+        .ok_or("snippet must target its source buffer")?;
+    let transaction =
+        velk_editor_model::prepare_document_edit(document, &snapshot.text, snapshot.revision)?;
+    let primary = &transaction.edits[snippet.replacement];
+    let mut start = primary.range.start;
+    for (index, edit) in transaction.edits.iter().enumerate() {
+        if index != snippet.replacement && edit.range.end <= primary.range.start {
+            start = start - edit.range.len()
+                + edit
+                    .text
+                    .replace("\r\n", "\n")
+                    .replace('\r', "\n")
+                    .chars()
+                    .count();
+        }
+    }
+    Ok(snippet
+        .stops
+        .iter()
+        .map(|stop| velk_commands::snippet::Tabstop {
+            index: stop.index,
+            range: start + stop.range.start..start + stop.range.end,
+        })
+        .collect())
+}
+
 fn prepare(
     edit: WorkspaceEdit,
     snapshots: &BTreeMap<PathBuf, Snapshot>,
@@ -509,6 +581,98 @@ mod empty_workspace_tests {
                 "after"
             );
             assert!(d.buffer.editor.read(cx).buffer().is_dirty());
+        });
+    }
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    use super::*;
+    use velk_commands::{
+        DocumentEdit, Encoding, Position, TextEdit,
+        snippet::{SnippetEdit, Tabstop},
+    };
+    #[test]
+    fn completion_import_and_snippet_are_one_guarded_undo_step_with_shifted_tabstops() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("main.rs");
+        let original = "fn main() {\n    ca\n}\n";
+        std::fs::write(&path, original).unwrap();
+        let mut runtime = rxui::Runtime::new();
+        let executor = std::sync::Arc::new(super::super::tests::QueuedExecutor::default());
+        runtime.configure_tasks(executor.clone(), || {}).unwrap();
+        let document = runtime.update(|cx| {
+            let (file, mut editor) = FileState::open(&path).unwrap();
+            editor.select_range(18..18);
+            let editor = cx.new(|_| editor);
+            cx.new(|cx| Document::new(editor, file, path.clone(), cx))
+        });
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                let position = |line, column| Position {
+                    line,
+                    column,
+                    encoding: Encoding::Utf32,
+                };
+                let guard = this.edit_guard(cx);
+                let snippet = SnippetEdit {
+                    edit: WorkspaceEdit {
+                        documents: vec![DocumentEdit {
+                            path: path.clone(),
+                            revision: Some(0),
+                            edits: vec![
+                                TextEdit {
+                                    start: position(1, 4),
+                                    end: position(1, 6),
+                                    text: "call(arg)".into(),
+                                },
+                                TextEdit {
+                                    start: position(0, 0),
+                                    end: position(0, 0),
+                                    text: "use dep;\r\n".into(),
+                                },
+                            ],
+                        }],
+                    },
+                    document: 0,
+                    replacement: 0,
+                    stops: vec![
+                        Tabstop {
+                            index: 1,
+                            range: 5..8,
+                        },
+                        Tabstop {
+                            index: 0,
+                            range: 9..9,
+                        },
+                    ],
+                };
+                this.apply_workspace_snippet(snippet, guard, cx);
+            })
+        });
+        executor.complete(&mut runtime);
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.buffer.editor.update(cx, |editor, _| {
+                    assert_eq!(
+                        editor.buffer().text().to_string(),
+                        "use dep;\nfn main() {\n    call(arg)\n}\n"
+                    );
+                    assert!(editor.snippet_active());
+                    assert_eq!(editor.selected_text(), "arg");
+                    editor.navigate_snippet(false);
+                    assert_eq!(editor.buffer().selection().head, 34);
+                    editor.execute(velk_editor_model::EditCommand::Undo);
+                    assert_eq!(editor.buffer().text().to_string(), original);
+                    assert!(!editor.snippet_active());
+                    editor.execute(velk_editor_model::EditCommand::Redo);
+                    assert_eq!(
+                        editor.buffer().text().to_string(),
+                        "use dep;\nfn main() {\n    call(arg)\n}\n"
+                    );
+                    assert!(!editor.snippet_active());
+                });
+            })
         });
     }
 }

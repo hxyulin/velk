@@ -46,6 +46,20 @@ editor; typing does not queue behind lifecycle work or LSP requests. See
 [interactive editing](interactive-editing.md) for roles, limits, input routing,
 provider settings, and the bundled indentation and autopairs implementations.
 
+## Completion matching and snippets
+
+Completion providers, merge/activation policy, and local matching are independently
+replaceable. A stateless `commands::completion::matching::Policy` registers through
+`Registrar::matching`; its context-free C table uses borrowed text views and owned
+output storage. Calls run locally and must perform bounded CPU work without I/O or
+host calls. Retired leases fall back safely while pinning native code until dropped.
+
+Completion actions can return a `commands::snippet::SnippetEdit`, identifying the
+primary replacement and expanded placeholder ranges alongside a workspace edit.
+The host keeps atomic edit validation; editor-model owns navigation and mirrored
+editing. See [completion](completion.md) for contracts, selection settings, supported
+snippet syntax, lifecycle, and limits.
+
 ## Workspace and buffer host services
 
 `Plugin::attach_host` receives a per-instance `Host` handle. The host exposes

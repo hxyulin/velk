@@ -4041,7 +4041,6 @@ version = "0.0.0-dev"
 name = "velk-commands"
 version = "0.0.0-dev"
 dependencies = [
- "nucleo-matcher",
  "serde",
  "serde_json",
  "velk-search",
@@ -4245,6 +4244,7 @@ dependencies = [
 name = "velk-plugin-completion"
 version = "0.0.0-dev"
 dependencies = [
+ "nucleo-matcher",
  "serde_json",
  "velk-completion-contracts",
  "velk-plugin-sdk",

@@ -20,6 +20,7 @@ pub struct Preferences {
     pub search_backend: String,
     pub markdown_provider: String,
     pub syntax_provider: String,
+    pub completion_matching_provider: String,
     pub undo_provider: String,
     pub indentation_provider: String,
     pub pairing_provider: String,
@@ -42,6 +43,7 @@ impl Default for Preferences {
             search_backend: velk_search::DEFAULT_BACKEND.into(),
             markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
             syntax_provider: velk_syntax::DEFAULT_PROVIDER.into(),
+            completion_matching_provider: "velk.completion".into(),
             undo_provider: velk_core::history::DEFAULT_PROVIDER.into(),
             indentation_provider: "velk.indentation".into(),
             pairing_provider: "velk.autopairs".into(),
@@ -212,6 +214,7 @@ impl Preferences {
             key,
             "markdown_provider"
                 | "syntax_provider"
+                | "completion_matching_provider"
                 | "undo_provider"
                 | "indentation_provider"
                 | "pairing_provider"
@@ -387,6 +390,25 @@ fn undo_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, Stri
     }
     choices
 }
+fn completion_matching_providers(
+    plugins: &[velk_plugin_host::PluginInfo],
+) -> Vec<(String, String)> {
+    let mut choices = vec![(
+        "velk.completion".into(),
+        "Completion (bundled default)".into(),
+    )];
+    for plugin in plugins {
+        if plugin
+            .hooks
+            .iter()
+            .any(|hook| hook == velk_commands::completion::matching::HOOK)
+            && !choices.iter().any(|(id, _)| id == &plugin.id)
+        {
+            choices.push((plugin.id.clone(), plugin.metadata.name.clone()));
+        }
+    }
+    choices
+}
 fn syntax_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
     let mut choices = vec![(
         velk_syntax::DEFAULT_PROVIDER.into(),
@@ -496,6 +518,12 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         key: "undo_provider".into(), title: "Undo provider".into(),
         description: "History engine for newly opened documents. Existing documents retain their provider and history. Bundled undo is the fallback.".into(),
         category: Category::Plugins, control: Control::Choice(undo_providers),
+    },
+    Setting {
+        plugin: None, keywords: "completion ranking fuzzy typo matcher".into(), default: Value::Null,
+        key: "completion_matching_provider".into(), title: "Completion matching provider".into(),
+        description: "Local ranking service for suggestions. Prefix filtering is used when unavailable. Applies to the next completion session.".into(),
+        category: Category::Plugins, control: Control::Choice(completion_matching_providers),
     },
     Setting {
         plugin: None,

@@ -105,9 +105,19 @@ pub struct Session {
     pub start: usize,
     pub ready: bool,
     selection_explicit: bool,
+    policy: std::sync::Arc<dyn matching::Policy>,
+    scores: Vec<Option<matching::Score>>,
 }
 impl Session {
     pub fn new(target: Target, prefix: String, items: Vec<Item>) -> Self {
+        Self::with_policy(target, prefix, items, std::sync::Arc::new(matching::Prefix))
+    }
+    pub fn with_policy(
+        target: Target,
+        prefix: String,
+        items: Vec<Item>,
+        policy: std::sync::Arc<dyn matching::Policy>,
+    ) -> Self {
         let start = target.position.saturating_sub(prefix.chars().count());
         let mut session = Self {
             target,
@@ -118,6 +128,8 @@ impl Session {
             start,
             ready: true,
             selection_explicit: false,
+            policy,
+            scores: Vec::new(),
         };
         session.filter();
         session
@@ -151,10 +163,8 @@ impl Session {
                 .iter()
                 .position(|i| identity(&self.items[*i]) == selected)
                 .filter(|index| {
-                    let mut matcher = matching::Matcher::new(&self.prefix);
                     self.selection_explicit
-                        || matcher.score(&self.items[self.visible[*index]].filter_text)
-                            == matcher.score(&self.items[self.visible[0]].filter_text)
+                        || self.scores[self.visible[*index]] == self.scores[self.visible[0]]
                 })
                 .unwrap_or_else(|| {
                     self.selection_explicit = false;
@@ -164,14 +174,25 @@ impl Session {
         true
     }
     fn filter(&mut self) {
-        let mut matcher = matching::Matcher::new(&self.prefix);
-        let mut ranked: Vec<_> = self
+        let candidates: Vec<_> = self
             .items
             .iter()
+            .map(|item| item.filter_text.as_str())
+            .collect();
+        self.scores = self
+            .policy
+            .scores(&self.prefix, &candidates)
+            .ok()
+            .filter(|scores| scores.len() == candidates.len())
+            .unwrap_or_else(|| {
+                matching::Policy::scores(&matching::Prefix, &self.prefix, &candidates)
+                    .expect("prefix policy")
+            });
+        let mut ranked: Vec<_> = self
+            .scores
+            .iter()
             .enumerate()
-            .filter_map(|(index, item)| {
-                matcher.score(&item.filter_text).map(|score| (score, index))
-            })
+            .filter_map(|(index, score)| score.map(|score| (score, index)))
             .collect();
         ranked.sort_by_key(|(score, _)| *score);
         self.visible = ranked.into_iter().map(|(_, index)| index).collect();
@@ -346,7 +367,7 @@ mod metadata_tests {
                 item("one", "Display one", "print"),
             ],
         );
-        assert_eq!(session.selected, 1);
+        assert_eq!(session.selected, 0);
         assert_eq!(session.accept().unwrap().title, "Updated label");
         session.update(
             Target {
@@ -383,8 +404,33 @@ mod metadata_tests {
 }
 
 #[cfg(test)]
-mod ranking_tests {
+mod policy_tests {
     use super::*;
+    #[derive(Debug)]
+    struct Suffix;
+    impl matching::Policy for Suffix {
+        fn scores(
+            &self,
+            query: &str,
+            candidates: &[&str],
+        ) -> Result<Vec<Option<matching::Score>>, String> {
+            Ok(candidates
+                .iter()
+                .map(|candidate| {
+                    candidate
+                        .ends_with(query)
+                        .then_some([candidate.len() as u64, 0, 0, 0])
+                })
+                .collect())
+        }
+    }
+    #[derive(Debug)]
+    struct Broken;
+    impl matching::Policy for Broken {
+        fn scores(&self, _: &str, _: &[&str]) -> Result<Vec<Option<matching::Score>>, String> {
+            Ok(vec![])
+        }
+    }
     fn item(title: &str) -> Item {
         Choice {
             title: title.into(),
@@ -396,52 +442,25 @@ mod ranking_tests {
         .into()
     }
     #[test]
-    fn exact_matches_beat_provider_order_and_arriving_exact_matches_replace_automatic_selection() {
+    fn custom_policy_controls_filtering_and_ranking_and_invalid_responses_fall_back() {
         let target = Target {
             revision: 1,
-            position: 5,
+            position: 3,
         };
-        let session = Session::new(target, "print".into(), vec![item("println"), item("print")]);
-        assert_eq!(session.accept().unwrap().title, "print");
-        let mut session = Session::new(target, "print".into(), vec![item("println")]);
-        session.resolve(target, vec![item("println"), item("print")]);
-        assert_eq!(session.accept().unwrap().title, "print");
-    }
-    #[test]
-    fn explicit_navigation_survives_late_better_matches_but_typing_recomputes_the_best_match() {
-        let target = Target {
-            revision: 1,
-            position: 4,
-        };
-        let mut session = Session::new(
+        let session = Session::with_policy(
             target,
-            "prin".into(),
-            vec![item("print"), item("printable")],
+            "ing".into(),
+            vec![item("long ending"), item("ring"), item("ignore")],
+            std::sync::Arc::new(Suffix),
         );
-        session.next(false);
-        session.resolve(target, vec![item("prin"), item("print"), item("printable")]);
-        assert_eq!(session.accept().unwrap().title, "printable");
-        let current = Target {
-            revision: 2,
-            position: 5,
-        };
-        session.update(current, "print".into());
-        assert_eq!(session.choice().unwrap().title, "print");
-        assert!(session.accept().is_none());
-        session.resolve(current, vec![item("printable"), item("print")]);
-        assert_eq!(session.accept().unwrap().title, "print");
-    }
-    #[test]
-    fn popup_accepts_subsequences_and_typos_using_filter_text() {
-        let target = Target {
-            revision: 1,
-            position: 5,
-        };
-        let mut candidate = item("A display label");
-        candidate.filter_text = "print".into();
-        let session = Session::new(target, "pritn".into(), vec![candidate]);
-        assert_eq!(session.accept().unwrap().title, "A display label");
-        let session = Session::new(target, "prnt".into(), vec![item("print")]);
-        assert_eq!(session.accept().unwrap().title, "print");
+        assert_eq!(session.visible, vec![1, 0]);
+        assert_eq!(session.accept().unwrap().title, "ring");
+        let session = Session::with_policy(
+            target,
+            "ing".into(),
+            vec![item("ring"), item("ingredient")],
+            std::sync::Arc::new(Broken),
+        );
+        assert_eq!(session.visible, vec![1]);
     }
 }

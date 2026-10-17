@@ -33,3 +33,12 @@ Matching prioritizes exact text and prefixes, tolerates small typos (including
 adjacent swaps), and supports fuzzy subsequences through Nucleo. Automatic
 selection follows the best match; explicit keyboard navigation stays stable as
 sources finish. The word source applies the same scoring before its result cap.
+
+The matching service is replaceable separately through the editor's
+`completion_matching_provider` setting. The bundled matcher runs locally through
+a pinned native lease; typing does not wait for the plugin worker.
+
+LSP function completions can insert snippets. Tab and Shift+Tab navigate numbered
+placeholders, repeated placeholders edit together, and the final stop returns to
+normal editing. Escape or undo ends the session. Imports and snippet insertion
+remain one checked undoable transaction. Variables and transforms are deferred.

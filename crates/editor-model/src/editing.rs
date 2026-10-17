@@ -10,8 +10,58 @@ pub struct Session {
     input: velk_editing::input::State,
     visual: Option<crate::input::VisualSelection>,
     multiple: Option<crate::selections::SelectionSet>,
+    snippet: Option<crate::snippets::Session>,
 }
 impl Session {
+    pub fn start_snippet(
+        &mut self,
+        buffer: &mut Buffer,
+        stops: Vec<velk_commands::snippet::Tabstop>,
+    ) -> Result<(), String> {
+        self.cancel_snippet();
+        self.snippet = Some(crate::snippets::Session::new(buffer, stops)?);
+        self.project_snippet(buffer)
+    }
+    pub fn cancel_snippet(&mut self) {
+        if self.snippet.take().is_some() {
+            self.multiple = None;
+        }
+    }
+    fn project_snippet(&mut self, buffer: &mut Buffer) -> Result<(), String> {
+        let snippet = self.snippet.as_ref().ok_or("missing snippet")?;
+        let finished = snippet.finished();
+        let regions = snippet
+            .selections()
+            .into_iter()
+            .map(|selection| crate::selections::SelectionRegion {
+                caret: selection.head,
+                selection,
+            })
+            .collect();
+        let set = crate::selections::SelectionSet::new(buffer, regions, 0)?;
+        set.project(buffer);
+        self.multiple = (!finished).then_some(set);
+        if finished {
+            self.snippet = None;
+        }
+        Ok(())
+    }
+    pub fn navigate_snippet(&mut self, buffer: &mut Buffer, backwards: bool) -> bool {
+        self.synchronize(buffer);
+        let Some(snippet) = &mut self.snippet else {
+            return false;
+        };
+        buffer.break_undo_group();
+        snippet.advance(backwards);
+        if self.project_snippet(buffer).is_err() {
+            self.cancel_snippet();
+        }
+        true
+    }
+    pub fn snippet_active(&self) -> bool {
+        self.snippet.is_some()
+    }
+
     /// A new view shares providers, with independent modes, pairs, and selections.
     pub fn new_view(&self) -> Self {
         Self {
@@ -29,6 +79,7 @@ impl Session {
             _ => false,
         };
         if !unchanged {
+            self.cancel_snippet();
             self.input = Default::default();
             self.visual = None;
             self.multiple = None;
@@ -78,6 +129,15 @@ impl Session {
         command: &crate::EditCommand<'_>,
     ) -> Result<bool, String> {
         self.synchronize(buffer);
+        if !matches!(
+            command,
+            crate::EditCommand::Insert(_)
+                | crate::EditCommand::Paste(_)
+                | crate::EditCommand::Backspace
+                | crate::EditCommand::Delete
+        ) {
+            self.cancel_snippet();
+        }
         let block = self
             .visual
             .as_ref()
@@ -141,6 +201,13 @@ impl Session {
         self.pairs.clear();
     }
     pub fn synchronize(&mut self, buffer: &Buffer) {
+        if self
+            .snippet
+            .as_mut()
+            .is_some_and(|snippet| !snippet.synchronize(buffer))
+        {
+            self.cancel_snippet();
+        }
         if self
             .visual
             .as_mut()
@@ -240,6 +307,7 @@ impl Session {
                         | velk_editing::input::Action::Redo { .. }
                 ) {
                     self.pairs.clear();
+                    self.cancel_snippet();
                 }
                 crate::input::apply_visual(buffer, action, &mut self.visual, &mut self.multiple)?;
             }

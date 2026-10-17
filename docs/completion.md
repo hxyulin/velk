@@ -11,11 +11,12 @@ the same topic without copying provider implementations.
 | Component | Responsibility |
 | --- | --- |
 | `plugins/completion/contracts` | Completion topic and default command/hook names |
-| Completion plugin | Default merge policy and source labels |
+| Completion plugin | Default merge policy, source labels, and replaceable similarity matcher |
 | Contributor plugins | Declare activation support and produce candidates and deferred resolve payloads |
 | Command contracts | Feature-neutral contribution declarations, collection snapshots, and choices |
 | Application adapter | Discover loaded sources, schedule commands, cancel, and validate source/view/revision/generation |
-| Editor widget | Caret popup, local similarity ranking, selection, keyboard input, and accessibility |
+| Editor model | View-local snippet sessions and mirrored placeholder editing |
+| Editor widget | Caret popup, local matching-service calls, selection, keyboard input, and accessibility |
 | Core | Authoritative text and normal undoable transactions |
 
 The application and platform SDK do not depend on `velk-completion-contracts`.
@@ -111,7 +112,7 @@ validated before presentation.
 
 ## Similarity ranking
 
-The popup ranks against `filter_text`, independently of display labels:
+The bundled completion plugin ranks against `filter_text`, independently of display labels:
 
 1. Exact case-sensitive text, then exact case-insensitive text.
 2. Prefix matches, preferring shorter completions.
@@ -126,6 +127,22 @@ Unicode matching is supported. Typo distance compares the query with a candidate
 prefix so an untyped completion suffix is not treated as an error. Fuzzy and typo
 work is bounded to 128 query characters; longer identifiers still support exact
 and prefix matches.
+
+The `completion_matching_provider` preference selects the local ranking service,
+independently of the collector and contributors. `velk.completion` is the default.
+A replacement implements `commands::completion::matching::Policy` and registers
+with `Registrar::matching::<Policy>()`. Return one optional four-part score per
+candidate: `None` filters it out, lower scores rank first, and equal scores retain
+provider order. The editor owns selection and revision guards regardless of policy.
+
+The native service receives borrowed UTF-8 query/candidate views and caller-owned
+score storage through `MatchingApi`. It runs synchronously on the caller with no
+worker queue, JSON encoding, LSP request, or host-service call. Policies must be
+reentrant and perform bounded CPU work only; native plugins remain trusted code.
+The host pins the library, excludes retirement during calls, validates result
+shape, and falls back to case-insensitive prefix filtering on failure or retirement.
+Provider selection applies to the next completion session. A custom policy changes
+ranking of returned candidates; it cannot change a source's own result cap.
 
 New sessions and typing select the best-ranked candidate. A better late result,
 including an exact match, replaces an automatic selection. Up/Down navigation
@@ -204,11 +221,40 @@ acceptance resolve proceeds. A failed or empty response displays no documentatio
 and does not turn into an editor command or apply edits. Links are styled as text;
 rendering does not fetch URLs or execute link actions.
 
+## Snippet sessions
+
+`ChoiceAction::Snippet` and `Outcome::Snippet` carry a `commands::snippet::SnippetEdit`:
+one workspace edit, the document/replacement indices identifying its primary
+insertion, and relative Unicode-scalar tabstops in that insertion's expanded text.
+Positive indices navigate in ascending order; exactly one index-zero stop ends the
+session. Repeated positive indices edit together through the normal multi-selection
+transaction path. Ranges must be valid, mirrors must have identical defaults, and
+the primary insertion must target the guarded source buffer.
+
+LSP advertises snippet support and expands numbered stops (`$1`, `${1}`), defaults
+(`${1:value}`), nested defaults, mirrors, escaped characters, and choice defaults
+(`${1|one,two|}`, initially selecting `one`). `commands::snippet::expand` is also
+available to other providers. Snippet variables and regular-expression transforms
+are not supported; these candidates are declined instead of inserting raw syntax.
+Expansion is bounded to 64 KiB, 256 stops, and 16 nesting levels.
+
+The host validates and commits the primary insertion and additional edits such as
+imports together. It adjusts tabstop positions for preceding edits and normalized
+line endings. Failed or stale preparation leaves the whole batch untouched.
+The insertion and imports form one undo step; placeholder edits use ordinary undo.
+
+Tab advances and Shift+Tab returns to the previous placeholder, taking precedence
+over indentation and a new completion popup while the snippet is active. The final
+stop leaves a normal caret. Escape, explicit movement/selection commands, undo,
+redo, programmatic edits, and edits from another view end navigation. Replacing a
+parent default removes its nested stops. Sessions belong to a view; new views and
+redo do not recreate them. Placeholder selection uses the existing selection and
+multi-caret renderer.
+
 ## Current limits
 
-There is no snippet expansion, cross-provider deduplication, or configurable
-source priority yet. LSP still skips snippet and command-based
-items. Automatic IME completion and retriggering incomplete LSP lists with trigger
+There is no cross-provider deduplication or configurable source priority yet.
+LSP still skips command-based items. Automatic IME completion and retriggering incomplete LSP lists with trigger
 kind 3 are deferred. Plugin lifecycle operations dismiss the collection; provider
 generation checks also reject results from retired sources.
 

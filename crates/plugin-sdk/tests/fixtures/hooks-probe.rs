@@ -78,6 +78,7 @@ impl Plugin for Probe {
             serde_json::to_vec(&response).map_err(|e| e.to_string())
         })?;
         reg.editing::<EditingProbe>()?;
+        reg.matching::<MatchingProbe>()?;
         reg.provide(
             velk_plugin_sdk::hooks::CommandHandler {
                 name: "test.command",
@@ -150,5 +151,23 @@ impl velk_plugin_sdk::EditingBehavior for EditingProbe {
             selection: Some(Selection::caret(request.selection.range().start + 1)),
             pairs: vec![],
         }))
+    }
+}
+
+#[derive(Debug, Default)]
+struct MatchingProbe;
+impl velk_plugin_sdk::commands::completion::matching::Policy for MatchingProbe {
+    fn scores(&self, query: &str, candidates: &[&str]) -> Result<Vec<Option<[u64; 4]>>, String> {
+        if query == "panic" {
+            panic!("contained matcher panic");
+        }
+        Ok(candidates
+            .iter()
+            .map(|candidate| {
+                candidate
+                    .ends_with(query)
+                    .then_some([candidate.len() as u64, 0, 0, 0])
+            })
+            .collect())
     }
 }

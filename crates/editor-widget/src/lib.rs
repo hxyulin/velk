@@ -294,6 +294,7 @@ impl Editor {
         let revision = self.buffer.revision();
         let mut changed = self.document_revision != revision;
         if changed {
+            self.editing.cancel_snippet();
             self.composition = None;
             self.edited();
             self.reveal_caret = false;
@@ -540,6 +541,7 @@ impl Editor {
         &mut self,
         transaction: Transaction,
     ) -> Result<bool, TransactionError> {
+        self.editing.cancel_snippet();
         self.buffer.break_undo_group();
         let changed = self.buffer.apply_transaction(transaction)?;
         self.composition = None;
@@ -572,6 +574,26 @@ impl Editor {
                 "input received"
             );
         }
+    }
+    pub fn start_snippet(
+        &mut self,
+        stops: Vec<velk_commands::snippet::Tabstop>,
+    ) -> Result<(), String> {
+        self.dismiss_completions();
+        self.editing.start_snippet(&mut self.buffer, stops)?;
+        self.edited();
+        Ok(())
+    }
+    pub fn snippet_active(&self) -> bool {
+        self.editing.snippet_active()
+    }
+    pub fn navigate_snippet(&mut self, backwards: bool) -> bool {
+        let handled = self.editing.navigate_snippet(&mut self.buffer, backwards);
+        if handled {
+            self.dismiss_completions();
+            self.edited();
+        }
+        handled
     }
     fn edited(&mut self) {
         self.update_completion();
@@ -622,6 +644,17 @@ impl Editor {
         }
         let had_hover = self.has_hover();
         self.hide_hover();
+        if key.key == KeyboardKey::Escape {
+            self.editing.cancel_snippet();
+        }
+        if key.key == KeyboardKey::Tab
+            && !key.modifiers.control
+            && !key.modifiers.meta
+            && !key.modifiers.alt
+            && self.navigate_snippet(key.modifiers.shift)
+        {
+            return;
+        }
         if self.completion_key(event) {
             return;
         }

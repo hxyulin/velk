@@ -385,6 +385,27 @@ fn render_feature_walkthrough() {
                 .contains("    greeting")
     });
     shot(&mut capture, &output, "completion-accepted");
+    capture.runtime().update(|cx| {
+        let doc = entity.read(cx);
+        let editor = doc.buffer.editor.read(cx);
+        assert!(
+            editor.snippet_active(),
+            "rust-analyzer function completion should select its argument"
+        );
+        assert_eq!(editor.selected_text(), "name");
+    });
+    shot(&mut capture, &output, "completion-snippet");
+    capture
+        .key(rxui::KeyEvent {
+            key: rxui::KeyboardKey::Tab,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+    capture
+        .runtime()
+        .update(|cx| assert!(!entity.read(cx).buffer.editor.read(cx).snippet_active()));
     let id = capture.read(|doc| doc.buffer.id);
     capture.runtime().update(|cx| {
         entity.update(cx, |doc, cx| {

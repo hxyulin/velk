@@ -35,6 +35,13 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     unsafe {
         manager.load()?;
     }
+    let matching = manager.matching_provider("test.hooks")?;
+    assert_eq!(
+        matching.scores("ing", &["long ending", "ring", "no"])?,
+        vec![Some([11, 0, 0, 0]), Some([4, 0, 0, 0]), None]
+    );
+    assert!(matching.scores("panic", &["anything"]).is_err());
+    assert_eq!(matching.scores("", &[])?, vec![]);
     let editing = manager.editing_provider("test.hooks", velk_editing::Role::Pairing)?;
     let mut editing_context = velk_editing::Request {
         revision: 0,
@@ -135,6 +142,9 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         velk_editing::Decision::Decline
     );
     drop(editing);
+    assert!(copy.exists(), "matching lease also pins native code");
+    assert!(matching.scores("ing", &["ring"]).is_err());
+    drop(matching);
     assert!(!copy.exists());
     assert_eq!(owned, input);
     assert_eq!(

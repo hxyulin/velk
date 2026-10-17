@@ -24,3 +24,5 @@ pub mod editing;
 pub mod views;
 
 pub mod workspace;
+
+pub mod snippets;

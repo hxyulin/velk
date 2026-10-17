@@ -3,6 +3,7 @@ use crate::{Event, PluginSpec, read_manifest};
 mod code;
 mod editing;
 mod hooks;
+mod matching;
 mod syntax;
 mod undo;
 use code::Code;
@@ -48,6 +49,7 @@ struct Generation {
     hooks: Vec<hooks::Hook>,
     markdown: Option<MarkupApi>,
     syntax: Option<SyntaxApi>,
+    matching: Option<MatchingApi>,
     undo: Option<UndoApi>,
     language: Option<LanguageApi>,
     semantic: Option<SemanticApi>,
@@ -102,6 +104,7 @@ impl Generation {
             hooks: vec![],
             markdown: None,
             syntax: None,
+            matching: None,
             undo: None,
             language: None,
             semantic: None,
@@ -827,6 +830,7 @@ mod tests {
                 hooks: vec![],
                 markdown: None,
                 syntax: None,
+                matching: None,
                 undo: None,
                 language: None,
                 semantic: None,
@@ -992,6 +996,7 @@ pub(super) mod test_provider {
                 hooks: vec![],
                 markdown: None,
                 syntax: None,
+                matching: None,
                 undo: None,
                 language: None,
                 semantic: None,
