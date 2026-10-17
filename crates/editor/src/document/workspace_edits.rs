@@ -10,6 +10,7 @@ use velk_editor_widget::{Editor, Language};
 #[derive(Clone)]
 pub(super) struct Guard {
     pub source: Option<u64>,
+    pub commit_character: Option<char>,
     view: u64,
     context: CommandContext,
     pub owner: Option<(String, u64)>,
@@ -38,6 +39,7 @@ impl Document {
         Guard {
             view: self.views.layout.active,
             source: self.buffer.as_ref().map(|b| b.id),
+            commit_character: None,
             context: self.command_context(cx),
             owner: None,
             buffers: self
@@ -143,6 +145,12 @@ impl Document {
                                     .update(cx, |editor, _| editor.start_snippet(stops))
                             {
                                 this.notice(Some(error));
+                                return;
+                            }
+                            if let Some(character) = guard.commit_character {
+                                this.buffer.editor.update(cx, |editor, _| {
+                                    editor.finish_completion_commit(character)
+                                });
                             }
                         }
                     },
@@ -479,6 +487,7 @@ mod tests {
         };
         let snapshots = BTreeMap::from([(path.clone(), snapshot)]);
         let guard = Guard {
+            commit_character: None,
             view: 0,
             source: Some(1),
             context: CommandContext {
@@ -518,6 +527,7 @@ mod tests {
             .is_err()
         );
         let guard = Guard {
+            commit_character: None,
             view: 0,
             source: Some(2),
             ..guard

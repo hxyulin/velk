@@ -6,6 +6,7 @@ mod composition;
 mod documentation;
 mod horizontal;
 mod hover;
+mod signature;
 mod surface;
 mod syntax;
 mod unicode_window;
@@ -59,6 +60,7 @@ pub struct Editor {
     appearance: EditorAppearance,
     hover: hover::State,
     completion: completion::State,
+    signature: signature::State,
 }
 
 impl Default for Editor {
@@ -85,6 +87,7 @@ impl Default for Editor {
             appearance: Default::default(),
             hover: Default::default(),
             completion: Default::default(),
+            signature: Default::default(),
         }
     }
 }
@@ -223,6 +226,12 @@ impl Editor {
         if source == rxui::TextInsertSource::Keyboard
             && self.composition.is_none()
             && self.keymap(text, false, false, false, true)
+        {
+            return;
+        }
+        if source == rxui::TextInsertSource::Keyboard
+            && self.composition.is_none()
+            && self.commit_completion_character(text)
         {
             return;
         }
@@ -655,6 +664,9 @@ impl Editor {
         {
             return;
         }
+        if self.signature_key(event) {
+            return;
+        }
         if self.completion_key(event) {
             return;
         }
@@ -1045,6 +1057,9 @@ impl View for Editor {
                 .into_element()
                 .pointer_events(PointerEvents::Auto),
             );
+        }
+        if let Some(popup) = self.signature_popup(cx) {
+            root = root.child(popup);
         }
         if let Some(popup) = self.completion_popup(cx) {
             root = root.child(popup);

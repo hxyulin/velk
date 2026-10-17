@@ -104,7 +104,8 @@ async fn drive(
                 "hover":{"dynamicRegistration":false,"contentFormat":["markdown","plaintext"]},
                 "formatting":{"dynamicRegistration":false}, "rename":{"dynamicRegistration":false},
                 "codeAction":{"dynamicRegistration":false,"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix","refactor","source"]}},"resolveSupport":{"properties":["edit"]}},
-                "completion":{"dynamicRegistration":false,"contextSupport":true,"completionItem":{"snippetSupport":true,"insertReplaceSupport":true,"documentationFormat":["markdown","plaintext"],"resolveSupport":{"properties":["documentation","additionalTextEdits"]}}},
+                "signatureHelp":{"signatureInformation":{"documentationFormat":["plaintext"],"parameterInformation":{"labelOffsetSupport":true},"activeParameterSupport":true}},
+                "completion":{"dynamicRegistration":false,"contextSupport":true,"completionItem":{"snippetSupport":true,"commitCharactersSupport":true,"insertReplaceSupport":true,"documentationFormat":["markdown","plaintext"],"resolveSupport":{"properties":["documentation","additionalTextEdits"]}}},
                 "diagnostic":{"dynamicRegistration":false,"relatedDocumentSupport":false},
                 "publishDiagnostics":{"versionSupport":true,"relatedInformation":false}
             }

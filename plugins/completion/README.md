@@ -60,3 +60,8 @@ Changes apply to the next completion session. Both use the same providers,
 matching, keyboard behavior, and checked edit application. Custom native plugins
 register a stateless `commands::completion::frontend::Provider` with
 `Registrar::completion_frontend`; no RXUI types cross the native boundary.
+
+Contributors may declare punctuation commit characters on their items. The host
+accepts a ready selection before replaying a typed character after the edit
+succeeds, preserving snippet placeholders and normal autopair behavior. Signature
+help is a separate LSP-declared command (Ctrl+Shift+Space), independent of this plugin.

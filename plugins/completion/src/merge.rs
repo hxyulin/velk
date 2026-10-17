@@ -117,9 +117,15 @@ fn equivalence(item: &velk_completion_contracts::Item) -> Result<Option<String>,
         // establish equivalence, and resolving every candidate would add latency.
         _ => return Ok(None),
     };
-    serde_json::to_string(&(&item.title, &item.filter_text, &item.choice.detail, action))
-        .map(Some)
-        .map_err(|error| error.to_string())
+    serde_json::to_string(&(
+        &item.title,
+        &item.filter_text,
+        &item.choice.detail,
+        &item.commit_characters,
+        action,
+    ))
+    .map(Some)
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -226,6 +232,19 @@ mod tests {
     #[test]
     fn duplicates_keep_the_preferred_source_but_distinct_edits_imports_and_overloads_survive() {
         let base = candidate("print");
+        let mut with_commit = base.clone();
+        with_commit.commit_characters = vec!['('];
+        assert_eq!(
+            merge(
+                &Policy::default(),
+                vec![
+                    source("velk.lsp", vec![base.clone()]),
+                    source("velk.completion.words", vec![with_commit])
+                ]
+            )
+            .len(),
+            2
+        );
         let mut imported = base.clone();
         if let ChoiceAction::Edit { edit } = &mut imported.action {
             edit.documents[0].edits.push(TextEdit {

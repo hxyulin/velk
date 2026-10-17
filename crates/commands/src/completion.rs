@@ -13,6 +13,8 @@ pub struct Item {
     pub filter_text: String,
     pub sort_text: String,
     pub choice: Choice,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commit_characters: Vec<char>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation: Option<Documentation>,
     /// Opaque semantic command that returns `Outcome::Document` for this item.
@@ -27,6 +29,7 @@ impl From<Choice> for Item {
             filter_text: choice.title.clone(),
             sort_text: choice.title.clone(),
             choice,
+            commit_characters: Vec::new(),
             documentation: None,
             documentation_resolve: None,
         }
@@ -45,6 +48,14 @@ impl std::ops::DerefMut for Item {
 }
 impl Item {
     pub fn validate(&self) -> Result<(), String> {
+        if self.commit_characters.len() > 32
+            || self
+                .commit_characters
+                .iter()
+                .any(|c| c.is_control() || c.is_whitespace() || c.is_alphanumeric() || *c == '_')
+        {
+            return Err("invalid completion commit characters".into());
+        }
         for value in [&self.id, &self.filter_text, &self.sort_text] {
             if value.len() > 4096 || value.chars().any(char::is_control) {
                 return Err("invalid completion metadata".into());
@@ -325,6 +336,7 @@ mod metadata_tests {
     use super::*;
     fn item(id: &str, label: &str, filter: &str) -> Item {
         Item {
+            commit_characters: Vec::new(),
             documentation: None,
             documentation_resolve: None,
             id: id.into(),

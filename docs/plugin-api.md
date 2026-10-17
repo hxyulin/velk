@@ -46,7 +46,7 @@ editor; typing does not queue behind lifecycle work or LSP requests. See
 [interactive editing](interactive-editing.md) for roles, limits, input routing,
 provider settings, and the bundled indentation and autopairs implementations.
 
-## Completion presentation, matching, and snippets
+## Completion presentation, matching, snippets, and signatures
 
 Completion providers, merge/activation policy, presentation, and local matching are independently
 replaceable. Generic collection inputs carry activation and opaque per-source
@@ -65,6 +65,10 @@ editing. A stateless `commands::completion::frontend::Provider` registers throug
 declarative rows/layouts. `completion_frontend` selects this service independently
 of the matcher. The host owns accessibility, focus, keyboard input and checked
 acceptance, validates output, and falls back safely after retirement or failure.
+`completion::Item::commit_characters` declares punctuation that accepts a ready
+selection before host editing handles the character. `Outcome::SignatureHelp`
+returns neutral callable labels, Unicode-scalar active-parameter ranges, and
+optional documentation; the host owns session dismissal and refresh guards.
 See [completion](completion.md) for contracts, selection settings, supported
 snippet syntax, lifecycle, and limits.
 

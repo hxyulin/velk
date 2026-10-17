@@ -337,7 +337,8 @@ async fn declared_navigation_and_rust_commands_cross_the_backend_with_negotiated
         .filter(|command| {
             !matches!(
                 command.id.as_str(),
-                "velk.lsp.format"
+                "velk.lsp.signature-help"
+                    | "velk.lsp.format"
                     | "velk.lsp.rename"
                     | "velk.lsp.code-actions"
                     | "velk.lsp.complete"
@@ -1256,5 +1257,69 @@ async fn incomplete_completion_lists_retrigger_until_complete_and_fresh_invocati
     assert_eq!(
         contexts,
         [1, 3, 3, 1, 1].map(|kind| serde_json::json!({"triggerKind": kind}))
+    );
+}
+
+#[tokio::test]
+async fn signature_command_uses_negotiated_document_position_and_neutral_parameter_ranges() {
+    use velk_plugin_sdk::{
+        Plugin,
+        commands::{Handler, Outcome},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let logfile = directory.path().join("signature.jsonl");
+    let service = Service::start(backend(&logfile, "commands")).unwrap();
+    service.update(document(&directory.path().join("file.rs"), 1, "a𐐀 call("));
+    until(&service.events, |event| {
+        matches!(event, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let command = velk_plugin_lsp::Lsp::commands()
+        .into_iter()
+        .find(|c| c.id == "velk.lsp.signature-help")
+        .unwrap();
+    let Handler::Semantic { payload } = command.handler else {
+        panic!()
+    };
+    service
+        .command(
+            PositionRequest {
+                id: 1,
+                revision: 1,
+                position: 8,
+            },
+            payload,
+            None,
+        )
+        .unwrap();
+    let Event::Command { result, .. } = until(&service.events, |event| {
+        matches!(event, Event::Command { .. })
+    })
+    .await
+    else {
+        panic!()
+    };
+    let Outcome::SignatureHelp { help: Some(help) } = result.unwrap() else {
+        panic!()
+    };
+    assert_eq!(help.signatures[0].active_parameter, Some(8..13));
+    service.shutdown_and_join().unwrap();
+    let messages = log(&logfile);
+    let request = messages
+        .iter()
+        .find(|m| m["method"] == "textDocument/signatureHelp")
+        .unwrap();
+    assert_eq!(request["params"]["position"]["character"], 9);
+    let caps = &messages
+        .iter()
+        .find(|m| m["method"] == "initialize")
+        .unwrap()["params"]["capabilities"]["textDocument"];
+    assert_eq!(
+        caps["completion"]["completionItem"]["commitCharactersSupport"],
+        true
+    );
+    assert_eq!(
+        caps["signatureHelp"]["signatureInformation"]["parameterInformation"]["labelOffsetSupport"],
+        true
     );
 }

@@ -560,6 +560,7 @@ mod activation_tests {
             command: command.into(),
             outcome: Ok(Outcome::Completions {
                 items: vec![velk_completion_contracts::Item {
+                    commit_characters: Vec::new(),
                     documentation: None,
                     documentation_resolve: None,
                     id: id.into(),

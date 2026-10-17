@@ -10,6 +10,7 @@ use velk_commands::{
 pub(super) struct State {
     session: Option<Session>,
     accepted: Option<(Target, Item)>,
+    commit_character: Option<char>,
     generation: u64,
     typed: Option<(Target, String)>,
     documentation: Option<(DocumentationTarget, std::sync::Arc<velk_markup::Document>)>,
@@ -191,6 +192,7 @@ impl Editor {
         self.completion.frontend = None;
         *self.completion.view.borrow_mut() = None;
         self.completion.accepted = None;
+        self.completion.commit_character = None;
         self.completion.typed = None;
         self.completion.documentation = None;
         self.completion.generation += 1;
@@ -212,6 +214,41 @@ impl Editor {
         {
             self.dismiss_completions();
         }
+    }
+    pub fn take_completion_commit(&mut self) -> Option<char> {
+        self.completion.commit_character.take()
+    }
+    pub(super) fn commit_completion_character(&mut self, text: &str) -> bool {
+        let mut chars = text.chars();
+        let Some(character) = chars.next() else {
+            return false;
+        };
+        if chars.next().is_some()
+            || self.completion.session.as_ref().is_none_or(|s| {
+                !s.ready
+                    || s.accept()
+                        .is_none_or(|item| !item.commit_characters.contains(&character))
+            })
+        {
+            return false;
+        }
+        self.accept_completion();
+        self.completion.commit_character = Some(character);
+        true
+    }
+    /// Replay only after the guarded completion edit succeeds. Pairing sees the
+    /// completed text; an opener already inserted by a snippet is consumed once.
+    pub fn finish_completion_commit(&mut self, character: char) {
+        if self.snippet_active() {
+            let position = self.buffer.selection().range().start;
+            if character == '(' && position > 0 && self.buffer.text().char(position - 1) == '(' {
+                return;
+            }
+            while self.snippet_active() {
+                self.navigate_snippet(false);
+            }
+        }
+        self.committed_text(&character.to_string(), rxui::TextInsertSource::Keyboard);
     }
     fn accept_completion(&mut self) {
         let Some(session) = &self.completion.session else {
@@ -825,5 +862,80 @@ mod frontend_tests {
             assert_eq!(editor.completion_choice().unwrap().title, "print");
             assert!(editor.completion_view().unwrap().rows[0].detail.is_none());
         });
+    }
+}
+
+#[cfg(test)]
+mod commit_character_tests {
+    use super::*;
+    fn editor() -> Editor {
+        let mut editor = Editor::new("pr");
+        editor.select_range(2..2);
+        let mut item: Item = velk_commands::Choice {
+            title: "print".into(),
+            detail: None,
+            action: velk_commands::ChoiceAction::Semantic {
+                payload: Default::default(),
+            },
+        }
+        .into();
+        item.commit_characters = vec!['('];
+        editor.show_completions(vec![item], false);
+        editor
+    }
+    #[test]
+    fn only_ready_keyboard_characters_commit_and_replay_is_separate_from_acceptance() {
+        let mut editor = editor();
+        editor.committed_text("(", rxui::TextInsertSource::Keyboard);
+        assert_eq!(editor.buffer().text().to_string(), "pr");
+        assert_eq!(editor.take_completion().unwrap().1.title, "print");
+        assert_eq!(editor.take_completion_commit(), Some('('));
+        let mut editor = self::editor();
+        editor.insert("i");
+        editor.committed_text("(", rxui::TextInsertSource::Keyboard);
+        assert!(editor.take_completion().is_none());
+        assert_eq!(editor.buffer().text().to_string(), "pri(");
+        for source in [rxui::TextInsertSource::Paste, rxui::TextInsertSource::Ime] {
+            let mut editor = self::editor();
+            editor.committed_text("(", source);
+            assert!(editor.take_completion().is_none());
+            assert_eq!(editor.buffer().text().to_string(), "pr(");
+        }
+    }
+    #[test]
+    fn snippet_opener_preserves_placeholder_and_plain_edits_use_autopairs() {
+        let expanded = velk_commands::snippet::expand("print(${1:value})$0").unwrap();
+        let mut editor = Editor::new(&expanded.text);
+        editor.start_snippet(expanded.stops).unwrap();
+        editor.finish_completion_commit('(');
+        assert_eq!(editor.buffer().text().to_string(), "print(value)");
+        assert_eq!(editor.selected_text(), "value");
+        assert!(editor.snippet_active());
+        editor.finish_completion_commit('.');
+        assert_eq!(editor.buffer().text().to_string(), "print(value).");
+        assert!(!editor.snippet_active());
+        #[derive(Debug)]
+        struct Pairing;
+        impl velk_editing::Provider for Pairing {
+            fn evaluate(
+                &self,
+                request: &velk_editing::Request,
+            ) -> Result<velk_editing::Decision, String> {
+                <velk_plugin_autopairs::Autopairs as velk_plugin_sdk::EditingBehavior>::evaluate(
+                    request,
+                )
+            }
+        }
+        let mut editor = Editor::new("print");
+        editor.select_range(5..5);
+        editor.set_editing_providers(std::collections::BTreeMap::from([(
+            velk_editing::Role::Pairing,
+            std::sync::Arc::new(Pairing) as std::sync::Arc<dyn velk_editing::Provider>,
+        )]));
+        editor.finish_completion_commit('(');
+        assert_eq!(editor.buffer().text().to_string(), "print()");
+        assert_eq!(editor.caret_position(), 6);
+        editor.execute(crate::EditCommand::Undo);
+        assert_eq!(editor.buffer().text().to_string(), "print");
     }
 }

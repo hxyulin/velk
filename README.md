@@ -230,6 +230,7 @@ Current limitations include:
   Snippet placeholders support Tab/Shift+Tab navigation and mirrored editing.
   Snippet variables, transforms, and server command execution remain deferred.
   The completion frontend and local matcher are independently replaceable plugin services.
+  Ctrl+Shift+Space displays LSP signature help, and ready suggestions support provider-declared punctuation commit characters.
 - Language-server clients and diagnostic publications are shared by workspace.
   Problems includes unopened files when the server publishes them; Velk does not
   independently scan every file. Pull diagnostics are supported for open buffers

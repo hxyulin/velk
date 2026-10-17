@@ -70,7 +70,7 @@ while (message := read()) is not None:
             "definitionProvider": True, "typeDefinitionProvider": True, "implementationProvider": True, "referencesProvider": True,
             "experimental": {"parentModule": True},
             "documentFormattingProvider": True, "renameProvider": True,
-            "codeActionProvider": {"resolveProvider": True}, "completionProvider": {"resolveProvider": True, "triggerCharacters": [".", ":"]},
+            "codeActionProvider": {"resolveProvider": True}, "signatureHelpProvider": {"triggerCharacters": ["(", ","]}, "completionProvider": {"allCommitCharacters": ["."], "resolveProvider": True, "triggerCharacters": [".", ":"]},
             "textDocumentSync": {"openClose": True, "change": 2, "save": {"includeText": True}}
         }}})
         send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "rust-analyzer"}]}})
@@ -135,6 +135,8 @@ while (message := read()) is not None:
         action = dict(params)
         action["edit"] = {"changes": {uri: [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}, "newText": "resolved"}]}}
         send({"id": message["id"], "result": action})
+    elif method == "textDocument/signatureHelp":
+        send({"id": message["id"], "result": {"activeSignature": 0, "activeParameter": 1, "signatures": [{"label": "call(𐐀, value)", "parameters": [{"label": [5, 7]}, {"label": [9, 14]}]}]}})
     elif method == "textDocument/completion":
         completion_requests += 1
         if mode == "incomplete-completion":

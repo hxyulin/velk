@@ -2,6 +2,7 @@
 pub mod completion;
 pub mod contributions;
 pub mod keybindings;
+pub mod signature;
 pub mod snippet;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -257,6 +258,9 @@ pub fn text_hash(bytes: impl IntoIterator<Item = u8>) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Outcome {
+    SignatureHelp {
+        help: Option<signature::Help>,
+    },
     Snippet {
         snippet: snippet::SnippetEdit,
     },
@@ -298,6 +302,7 @@ pub enum Outcome {
 impl Outcome {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::SignatureHelp { help: Some(help) } => help.validate()?,
             Self::ShowPanel { panel }
                 if panel.is_empty() || panel.len() > 128 || panel.chars().any(char::is_control) =>
             {

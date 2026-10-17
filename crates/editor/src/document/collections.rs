@@ -544,15 +544,18 @@ impl Document {
             return true;
         }
         let accepted = source.update(cx, |editor, cx| {
-            let accepted = editor.take_completion();
+            let accepted = editor
+                .take_completion()
+                .map(|(target, choice)| (target, choice, editor.take_completion_commit()));
             if accepted.is_none() {
                 cx.unchanged();
             }
             accepted
         });
-        if let Some((target, choice)) = accepted {
+        if let Some((target, choice, commit_character)) = accepted {
             let state = self.collection.as_ref().unwrap();
-            let guard = state.guard.clone();
+            let mut guard = state.guard.clone();
+            guard.commit_character = commit_character;
             let source_valid = match &choice.action {
                 ChoiceAction::Contributed {
                     plugin, generation, ..
@@ -617,6 +620,7 @@ impl Document {
                 revision,
                 edits,
             } => {
+                let character = guard.commit_character;
                 if let Err(error) = self.host_request(
                     velk_plugin_contracts::host::Request::EditBuffer {
                         id,
@@ -627,6 +631,10 @@ impl Document {
                     cx,
                 ) {
                     self.notice(Some(error));
+                } else if let Some(character) = character {
+                    self.buffer
+                        .editor
+                        .update(cx, |editor, _| editor.finish_completion_commit(character));
                 }
             }
             ChoiceAction::Semantic { payload } => {
@@ -796,7 +804,7 @@ mod tests {
             doc.plugins = Some(plugins);
             doc.buffer.semantic = Some(super::super::semantic::State {
                 service: service.clone(), revision: 0, status: Status::Ready(Default::default()), count: 0,
-                diagnostics: vec![], hover: None, command: None, completion: None, target: None,
+                diagnostics: vec![], hover: None, command: None, completion: None, signature: None, target: None,
                 hover_view: None, next_request: 1, task: None, render_task: None,
                 renderer: std::sync::Arc::new(velk_markup::PlainText), notice: None,
             });
@@ -860,7 +868,7 @@ mod tests {
             doc.plugins = Some(plugins);
             doc.buffer.semantic = Some(super::super::semantic::State {
                 service: service.clone(), revision: 0, status: Status::Ready(Default::default()), count: 0,
-                diagnostics: vec![], hover: None, command: None, completion: None, target: None,
+                diagnostics: vec![], hover: None, command: None, completion: None, signature: None, target: None,
                 hover_view: None, next_request: 1, task: None, render_task: None,
                 renderer: std::sync::Arc::new(velk_markup::PlainText), notice: None,
             });

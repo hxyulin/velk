@@ -82,3 +82,9 @@ Completion items preserve inline documentation and can lazily resolve missing
 documentation for the selected suggestion. The client advertises Markdown and
 plain text. Documentation resolution never applies returned edits; accepting a
 completion remains a separate checked edit operation, including import resolution.
+
+Ctrl+Shift+Space invokes signature help, which refreshes while active; Alt+Up/Down
+cycles overloads and Escape dismisses it. Initial automatic signature triggers
+are deferred. Completion commit characters use item overrides or server defaults
+and are replayed through host editing after checked acceptance. Snippet openers
+are consumed once. See [completion](../../docs/completion.md) for behavior and limits.

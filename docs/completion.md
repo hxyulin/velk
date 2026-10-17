@@ -346,6 +346,42 @@ invalid output, or an unavailable provider uses a minimal title/detail menu.
 The session releases its code lease on acceptance or dismissal. Pointer handlers
 also check session epoch, target revision/position, and candidate identity.
 
+## Signature help and commit characters
+
+LSP declares `velk.lsp.signature-help` with Ctrl+Shift+Space. It displays the
+server's callable signature, highlights the active parameter separately, and
+shows a bounded documentation excerpt. Alt+Up/Down cycles overloads; Escape or
+clicking away dismisses it. Once invoked, the session refreshes on text/caret
+changes and ends when the server returns no signature. Initial automatic trigger
+characters are deferred; invoking the command does not require the Completion
+plugin. The panel stays hidden while a completion menu is active.
+
+`Outcome::SignatureHelp` carries a neutral `commands::signature::Help`, including
+Unicode-scalar active-parameter ranges. LSP converts its UTF-16 label offsets
+independently of negotiated document position encoding. Invalid/split offsets
+omit highlighting. Requests use normal document/view/revision/provider guards;
+a dismissal epoch prevents late replies from reopening the popup. Signature
+refreshes share semantic scheduling with completion and documentation. Signature
+documentation currently uses a plain text excerpt.
+
+Completion items may declare up to 32 punctuation commit characters. Only a
+ready selected suggestion and a single committed keyboard character can accept
+this way. Paste, IME input, stale lists, and unlisted characters follow ordinary
+editing. LSP advertises commit-character support, uses per-item declarations in
+preference to server defaults, and preserves explicit empty overrides. Malformed
+multi-character values, whitespace, and identifier characters are excluded.
+Deduplication preserves candidates with differing commit behavior.
+
+The host carries the typed character through the existing edit guard, including
+asynchronous completion resolution. It replays the character only after the edit
+successfully commits; stale/cancelled/failed edits do not replay it. Plain edits
+then use the normal interactive pairing provider. A function snippet that already
+inserted `(` consumes that opener once and retains the argument placeholder;
+other commit characters finish snippet navigation before ordinary insertion.
+A separately inserted commit character uses ordinary editing undo, so undoing it
+and the accepted completion can require two steps. Completion plus its imports
+remain one checked transaction.
+
 ## Current limits
 
 LSP still skips command-based items. Automatic IME completion is deferred.

@@ -22,6 +22,7 @@ pub(super) enum ResultKind {
     Completion,
     ResolvedCompletion,
     CompletionDocumentation,
+    SignatureHelp,
 }
 impl Request {
     pub fn decode(payload: Value, capabilities: &Value) -> Result<Self, String> {
@@ -122,6 +123,9 @@ impl Request {
     ) -> Result<Outcome, String> {
         let (source, version) = source;
         if value.is_null() {
+            if matches!(self.result, ResultKind::SignatureHelp) {
+                return Ok(Outcome::SignatureHelp { help: None });
+            }
             if matches!(self.result, ResultKind::Completion) {
                 return Ok(Outcome::Completions {
                     items: vec![],
@@ -156,6 +160,7 @@ impl Request {
             ResultKind::ResolvedAction => {
                 resolved_action(value, encoding, source, version, documents)?
             }
+            ResultKind::SignatureHelp => signature_help(value)?,
             ResultKind::Completion => completion(value, encoding, source, request, capabilities)?,
             ResultKind::CompletionDocumentation => {
                 let item: lsp_types::CompletionItem =
@@ -354,6 +359,30 @@ fn completion(
         if item.command.is_some() {
             continue;
         }
+        let commit_characters = item
+            .commit_characters
+            .as_ref()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| single_commit_character(value))
+                    .take(32)
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                capabilities
+                    .pointer("/completionProvider/allCommitCharacters")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .filter_map(single_commit_character)
+                            .take(32)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
         let title = item.label.clone();
         let detail = item.detail.clone();
         let filter_text = item.filter_text.clone().unwrap_or_else(|| title.clone());
@@ -397,6 +426,7 @@ fn completion(
         items.push(velk_completion_contracts::Item {
             documentation,
             documentation_resolve,
+            commit_characters,
             id,
             filter_text,
             sort_text,
@@ -723,5 +753,143 @@ mod continuation_tests {
                 }
             ));
         }
+    }
+}
+
+fn signature_help(value: Value) -> Result<Outcome, String> {
+    use velk_plugin_sdk::commands::signature::{Help, Signature};
+    let help: lsp_types::SignatureHelp =
+        serde_json::from_value(value).map_err(|e| e.to_string())?;
+    if help.signatures.is_empty() {
+        return Ok(Outcome::SignatureHelp { help: None });
+    }
+    let active = help
+        .active_signature
+        .map(|index| index as usize)
+        .filter(|index| *index < help.signatures.len().min(32))
+        .unwrap_or(0);
+    let signatures = help
+        .signatures
+        .into_iter()
+        .take(32)
+        .map(|signature| {
+            let parameter = signature
+                .active_parameter
+                .or(help.active_parameter)
+                .unwrap_or(0) as usize;
+            let parameters = signature.parameters.unwrap_or_default();
+            let parameter = parameters.get(parameter).or_else(|| parameters.first());
+            let active_parameter = parameter.and_then(|p| match &p.label {
+                lsp_types::ParameterLabel::Simple(text) => {
+                    signature.label.find(text).map(|start| {
+                        let start = signature.label[..start].chars().count();
+                        start..start + text.chars().count()
+                    })
+                }
+                lsp_types::ParameterLabel::LabelOffsets([start, end]) => {
+                    fn scalar(label: &str, units: u32) -> Option<usize> {
+                        let mut offset = 0;
+                        for (index, c) in label.chars().enumerate() {
+                            if offset == units {
+                                return Some(index);
+                            }
+                            offset += c.len_utf16() as u32;
+                        }
+                        (offset == units).then(|| label.chars().count())
+                    }
+                    let start = scalar(&signature.label, *start)?;
+                    let end = scalar(&signature.label, *end)?;
+                    (start <= end).then_some(start..end)
+                }
+            });
+            let documentation = parameter
+                .and_then(|p| p.documentation.clone())
+                .or(signature.documentation);
+            Signature {
+                label: signature.label,
+                active_parameter,
+                documentation: completion_documentation(documentation),
+            }
+        })
+        .collect();
+    let help = Help { signatures, active };
+    help.validate()?;
+    Ok(Outcome::SignatureHelp { help: Some(help) })
+}
+
+fn single_commit_character(value: &str) -> Option<char> {
+    let mut chars = value.chars();
+    let c = chars.next()?;
+    (chars.next().is_none()
+        && !c.is_control()
+        && !c.is_whitespace()
+        && !c.is_alphanumeric()
+        && c != '_')
+        .then_some(c)
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+    #[test]
+    fn signatures_decode_utf16_and_per_signature_parameter_overrides() {
+        let Outcome::SignatureHelp { help: Some(help) } = signature_help(json!({
+            "activeSignature":99, "activeParameter":0, "signatures":[
+                {"label":"call(𐐀, x)","activeParameter":1,"parameters":[{"label":[5,7]},{"label":[9,10],"documentation":"active doc"}]},
+                {"label":"other(value)","parameters":[{"label":"value"}]}
+            ]
+        })).unwrap() else { panic!() };
+        assert_eq!(help.active, 0);
+        assert_eq!(help.signatures[0].active_parameter, Some(8..9));
+        assert_eq!(
+            help.signatures[0].documentation.as_ref().unwrap().text,
+            "active doc"
+        );
+        assert_eq!(help.signatures[1].active_parameter, Some(6..11));
+        let Outcome::SignatureHelp { help: Some(help) } = signature_help(
+            json!({"signatures":[{"label":"call(𐐀)","parameters":[{"label":[6,7]}]}]}),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            help.signatures[0].active_parameter, None,
+            "reject split surrogate"
+        );
+        assert!(matches!(
+            signature_help(json!({"signatures":[]})).unwrap(),
+            Outcome::SignatureHelp { help: None }
+        ));
+    }
+    #[test]
+    fn commit_characters_respect_item_overrides_and_validate_single_punctuation() {
+        let snapshot = DocumentSnapshot {
+            path: "/file.rs".into(),
+            language: "rust".into(),
+            revision: 1,
+            text: ropey::Rope::from_str("pr"),
+        };
+        let request = PositionRequest {
+            id: 1,
+            revision: 1,
+            position: 2,
+        };
+        let Outcome::Completions { items, .. } = completion(
+            json!([
+                {"label":"print"}, {"label":"private","commitCharacters":[]},
+                {"label":"process","commitCharacters":["(","too long","a"," ","_","→"]}
+            ]),
+            Encoding::Utf16,
+            &snapshot,
+            request,
+            &json!({"completionProvider":{"allCommitCharacters":["."]}}),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        let find = |name| items.iter().find(|i| i.title == name).unwrap();
+        assert_eq!(find("print").commit_characters, vec!['.']);
+        assert!(find("private").commit_characters.is_empty());
+        assert_eq!(find("process").commit_characters, vec!['(', '→']);
     }
 }

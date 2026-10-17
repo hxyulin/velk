@@ -308,6 +308,7 @@ mod tests {
             hover: None,
             command: None,
             completion: None,
+            signature: None,
             target: None,
             hover_view: None,
             next_request: 1,
@@ -438,6 +439,164 @@ mod tests {
                 assert!(editor.read(cx).completion_documentation().is_none());
             })
         });
+    }
+    #[test]
+    #[allow(unsafe_code)]
+    fn signature_dismissal_rejects_late_reply_and_refresh_errors_end_the_session() {
+        let directory = tempfile::tempdir().unwrap();
+        // SAFETY: the directory has no native images.
+        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let mut harness = Harness::new();
+        let path = harness.write_file("signature.rs", "call(");
+        harness
+            .request(velk_plugin_contracts::host::Request::OpenBuffer { path })
+            .unwrap();
+        harness.drain();
+        let (service, session) = Service::external(|| {});
+        let help = || Outcome::SignatureHelp {
+            help: Some(velk_commands::signature::Help {
+                signatures: vec![velk_commands::signature::Signature {
+                    label: "call(value)".into(),
+                    active_parameter: Some(5..10),
+                    documentation: None,
+                }],
+                active: 0,
+            }),
+        };
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |doc, cx| {
+                attach(doc, host.client(), service.clone(), cx);
+                let editor = doc.buffer.editor.clone();
+                editor.update(cx, |editor, _| {
+                    editor.dismiss_completions();
+                    editor.select_range(5..5);
+                });
+                let invocation = Invoke {
+                    plugin: "test.docs".into(),
+                    generation: 1,
+                    command: Declaration {
+                        id: "test.signature".into(),
+                        title: "Signature".into(),
+                        input: None,
+                        shortcut: None,
+                        language: None,
+                        handler: Handler::Semantic {
+                            payload: serde_json::json!({"signature":true}),
+                        },
+                    },
+                };
+                let mut guard = doc.edit_guard(cx);
+                guard.owner = Some(("test.docs".into(), 1));
+                doc.execute_plugin_command(invocation.clone(), None, guard.clone(), cx);
+                let (old, _) = next_command(&session);
+                editor.update(cx, |editor, _| editor.dismiss_signature());
+                doc.semantic_event(
+                    terminal(
+                        &service,
+                        &session,
+                        Event::Command {
+                            request: old,
+                            result: Ok(help()),
+                        },
+                    ),
+                    cx,
+                );
+                assert!(!editor.read(cx).signature_active());
+                doc.execute_plugin_command(invocation, None, guard, cx);
+                let (request, _) = next_command(&session);
+                doc.semantic_event(
+                    terminal(
+                        &service,
+                        &session,
+                        Event::Command {
+                            request,
+                            result: Ok(help()),
+                        },
+                    ),
+                    cx,
+                );
+                assert!(editor.read(cx).signature_active());
+                editor.update(cx, |editor, _| editor.insert("x"));
+                doc.sync_semantics_for(editor.clone(), cx);
+                let (request, payload) = next_command(&session);
+                assert_eq!(payload["signature"], true);
+                assert_eq!(request.position, 6);
+                doc.semantic_event(
+                    terminal(
+                        &service,
+                        &session,
+                        Event::Command {
+                            request,
+                            result: Err("signature provider failed".into()),
+                        },
+                    ),
+                    cx,
+                );
+                assert!(!editor.read(cx).signature_active());
+            })
+        });
+    }
+    #[test]
+    fn completion_commit_is_replayed_after_success_and_discarded_after_stale_preparation() {
+        let mut harness = Harness::new();
+        let path = harness.write_file("commit.rs", "pr");
+        harness
+            .request(velk_plugin_contracts::host::Request::OpenBuffer { path: path.clone() })
+            .unwrap();
+        harness.drain();
+        for stale in [false, true] {
+            harness.runtime.update(|cx| {
+                harness.document.update(cx, |doc, cx| {
+                    let editor = doc.buffer.editor.clone();
+                    let revision = editor.read(cx).buffer().revision();
+                    editor.update(cx, |editor, _| editor.select_range(2..2));
+                    let mut guard = doc.edit_guard(cx);
+                    guard.commit_character = Some('.');
+                    doc.apply_workspace_edit(
+                        velk_commands::WorkspaceEdit {
+                            documents: vec![velk_commands::DocumentEdit {
+                                path: path.clone(),
+                                revision: Some(revision),
+                                edits: vec![velk_commands::TextEdit {
+                                    start: velk_commands::Position {
+                                        line: 0,
+                                        column: 0,
+                                        encoding: velk_commands::Encoding::Utf32,
+                                    },
+                                    end: velk_commands::Position {
+                                        line: 0,
+                                        column: 2,
+                                        encoding: velk_commands::Encoding::Utf32,
+                                    },
+                                    text: "print".into(),
+                                }],
+                            }],
+                        },
+                        guard,
+                        cx,
+                    );
+                    if stale {
+                        editor.update(cx, |editor, _| editor.insert("x"));
+                    }
+                })
+            });
+            harness.drain();
+            harness.runtime.update(|cx| {
+                harness.document.update(cx, |doc, cx| {
+                    let editor = doc.buffer.editor.clone();
+                    if stale {
+                        assert_eq!(editor.read(cx).buffer().text().to_string(), "prx");
+                    } else {
+                        assert_eq!(editor.read(cx).buffer().text().to_string(), "print.");
+                        editor.update(cx, |editor, _| {
+                            editor.execute(velk_editor_widget::EditCommand::Undo);
+                            editor.execute(velk_editor_widget::EditCommand::Undo);
+                        });
+                        assert_eq!(editor.read(cx).buffer().text().to_string(), "pr");
+                    }
+                })
+            });
+        }
     }
 }
 

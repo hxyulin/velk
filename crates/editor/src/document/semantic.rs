@@ -18,6 +18,7 @@ pub(super) struct State {
     pub hover: Option<PositionRequest>,
     pub command: Option<super::plugin_commands::Pending>,
     pub completion: Option<super::plugin_commands::Invoke>,
+    pub signature: Option<super::plugin_commands::Invoke>,
     pub target: Option<HoverTarget>,
     pub hover_view: Option<Entity<velk_editor_widget::Editor>>,
     pub next_request: u64,
@@ -49,6 +50,7 @@ impl Document {
             hover: None,
             command: None,
             completion: None,
+            signature: None,
             target: None,
             hover_view: None,
             next_request: 1,
@@ -87,8 +89,43 @@ impl Document {
     ) -> bool {
         let changed = self.sync_semantic_snapshot_for(source.clone(), cx);
         self.sync_completion_for(source.clone(), cx);
-        self.sync_completion_documentation(source, cx);
+        self.sync_completion_documentation(source.clone(), cx);
+        self.sync_signature_for(source, cx);
         changed
+    }
+    fn sync_signature_for(
+        &mut self,
+        source: Entity<velk_editor_widget::Editor>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.background_buffer
+            || self
+                .buffer
+                .as_ref()
+                .is_none_or(|b| b.editor.id() != source.id())
+        {
+            return;
+        }
+        let Some(state) = self.buffer.semantic.as_ref() else {
+            return;
+        };
+        if !source.read(cx).signature_active() {
+            self.buffer.semantic.as_mut().unwrap().signature = None;
+            return;
+        }
+        if !source.read(cx).signature_refresh()
+            || source.read(cx).completion_active()
+            || state.command.is_some()
+            || self.workspace_edit.is_some()
+        {
+            return;
+        }
+        let Some(invocation) = state.signature.clone() else {
+            return;
+        };
+        let mut guard = self.edit_guard(cx);
+        guard.owner = Some((invocation.plugin.clone(), invocation.generation));
+        self.execute_plugin_command(invocation, None, guard, cx);
     }
     fn sync_completion_for(
         &mut self,
@@ -119,13 +156,15 @@ impl Document {
             return;
         }
         let accepted = source.update(cx, |editor, cx| {
-            let accepted = editor.take_completion();
+            let accepted = editor
+                .take_completion()
+                .map(|(target, choice)| (target, choice, editor.take_completion_commit()));
             if accepted.is_none() {
                 cx.unchanged();
             }
             accepted
         });
-        if let Some((target, choice)) = accepted {
+        if let Some((target, choice, commit_character)) = accepted {
             let Some(invocation) = self
                 .buffer
                 .semantic
@@ -140,6 +179,7 @@ impl Document {
                 return;
             }
             let mut guard = self.edit_guard(cx);
+            guard.commit_character = commit_character;
             guard.owner = Some((invocation.plugin.clone(), invocation.generation));
             self.apply_choice_action(choice.choice.action, guard, cx);
             return;
@@ -290,7 +330,8 @@ impl Document {
                     self.start_collection_semantic(cx);
                     self.drain_deferred_choice(cx);
                     if let Some(source) = self.buffer.as_ref().map(|buffer| buffer.editor.clone()) {
-                        self.sync_completion_documentation(source, cx);
+                        self.sync_completion_documentation(source.clone(), cx);
+                        self.sync_signature_for(source, cx);
                     }
                     return;
                 }
@@ -324,12 +365,37 @@ impl Document {
                                 self.notice(None);
                             }
                         }
+                        Ok(velk_commands::Outcome::SignatureHelp { help }) => {
+                            if completion_view.read(cx).signature_epoch() == pending.signature_epoch
+                            {
+                                self.buffer.semantic.as_mut().unwrap().signature =
+                                    help.as_ref().map(|_| pending.invocation);
+                                completion_view.update(cx, |editor, _| editor.show_signature(help));
+                            }
+                        }
                         Ok(outcome) => self.apply_guarded_outcome(outcome, pending.guard, cx),
-                        Err(error) => self.notice(Some(error)),
+                        Err(error) => {
+                            if self
+                                .buffer
+                                .semantic
+                                .as_ref()
+                                .and_then(|state| state.signature.as_ref())
+                                .is_some_and(|invocation| {
+                                    invocation.plugin == pending.invocation.plugin
+                                        && invocation.generation == pending.invocation.generation
+                                        && invocation.command.id == pending.invocation.command.id
+                                })
+                            {
+                                self.buffer.semantic.as_mut().unwrap().signature = None;
+                                completion_view.update(cx, |editor, _| editor.dismiss_signature());
+                            }
+                            self.notice(Some(error));
+                        }
                     }
                 }
                 if let Some(source) = self.buffer.as_ref().map(|active| active.editor.clone()) {
-                    self.sync_completion_for(source, cx);
+                    self.sync_completion_for(source.clone(), cx);
+                    self.sync_signature_for(source, cx);
                 }
             }
 
@@ -346,6 +412,10 @@ impl Document {
                 if !matches!(status, Status::Ready(_)) {
                     state.command = None;
                     state.completion = None;
+                    state.signature = None;
+                    active
+                        .editor
+                        .update(cx, |editor, _| editor.dismiss_signature());
                     if self.collection.is_none() {
                         active
                             .editor
@@ -861,6 +931,7 @@ mod tests {
                     hover: None,
                     command: None,
                     completion: None,
+                    signature: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,
@@ -985,6 +1056,7 @@ mod tests {
                     hover: None,
                     command: None,
                     completion: None,
+                    signature: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,
@@ -1076,6 +1148,7 @@ mod tests {
                     hover: Some(request),
                     command: None,
                     completion: None,
+                    signature: None,
                     target: None,
                     hover_view: None,
                     next_request: 3,

@@ -48,6 +48,20 @@ impl Plugin for Lsp {
         }).collect();
         for (id, title, method, result, capability, input, shortcut) in [
             (
+                "signature-help",
+                "Show signature help",
+                "textDocument/signatureHelp",
+                "signature_help",
+                "/signatureHelpProvider",
+                None,
+                Some(velk_plugin_sdk::commands::Shortcut {
+                    key: "Space".into(),
+                    control: true,
+                    shift: true,
+                    ..Default::default()
+                }),
+            ),
+            (
                 "format",
                 "Format document",
                 "textDocument/formatting",

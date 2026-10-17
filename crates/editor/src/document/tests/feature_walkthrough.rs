@@ -435,6 +435,34 @@ fn render_feature_walkthrough() {
         assert_eq!(editor.selected_text(), "name");
     });
     shot(&mut capture, &output, "completion-snippet");
+    invoke(&mut capture, "velk.lsp.signature-help", None);
+    wait(
+        &mut capture,
+        "signature help from rust-analyzer",
+        |doc, cx| {
+            doc.buffer.editor.read(cx).signature_active()
+                && !doc.buffer.editor.read(cx).signature_refresh()
+        },
+    );
+    shot(&mut capture, &output, "signature-help");
+    assert!(capture.element("editor-signature").unwrap().is_some());
+    assert!(
+        capture
+            .element("signature-label")
+            .unwrap()
+            .unwrap()
+            .bounds
+            .height
+            > 0.
+    );
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            doc.buffer
+                .editor
+                .update(cx, |editor, _| editor.dismiss_signature())
+        })
+    });
+
     capture
         .key(rxui::KeyEvent {
             key: rxui::KeyboardKey::Tab,

@@ -15,6 +15,7 @@ pub(super) struct Pending {
     pub invocation: Invoke,
     pub completion_refresh: bool,
     pub completion_epoch: u64,
+    pub signature_epoch: u64,
     pub cancelled: bool,
     pub collection: Option<(u64, usize)>,
     pub documentation: Option<velk_commands::completion::DocumentationTarget>,
@@ -281,6 +282,11 @@ impl Document {
             .as_ref()
             .map(|buffer| buffer.editor.read(cx).completion_epoch())
             .unwrap_or(0);
+        let signature_epoch = self
+            .buffer
+            .as_ref()
+            .map(|buffer| buffer.editor.read(cx).signature_epoch())
+            .unwrap_or(0);
         match invocation.command.handler {
             Handler::Collect { .. } => self.begin_collection(continuation, false, cx),
             Handler::Picker { .. } => unreachable!("pickers use their own live query flow"),
@@ -307,6 +313,7 @@ impl Document {
                             invocation: continuation,
                             completion_refresh: false,
                             completion_epoch,
+                            signature_epoch,
                             cancelled: false,
                             collection: None,
                             documentation: None,
@@ -382,6 +389,13 @@ impl Document {
             return;
         }
         match outcome {
+            Outcome::SignatureHelp { help } => {
+                if let Some(buffer) = self.buffer.as_ref() {
+                    buffer
+                        .editor
+                        .update(cx, |editor, _| editor.show_signature(help));
+                }
+            }
             Outcome::RevealDiagnostic { location } => self.reveal_diagnostic(location, cx),
             Outcome::RevealBuffer { location } => self.reveal_plugin_buffer(location, cx),
             Outcome::ShowPanel { panel } => {
@@ -733,6 +747,7 @@ mod tests {
                     hover: None,
                     command: None,
                     completion: None,
+                    signature: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,
@@ -975,6 +990,7 @@ mod tests {
                     hover: None,
                     command: None,
                     completion: None,
+                    signature: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,
@@ -1322,6 +1338,7 @@ mod edit_interaction_tests {
                     hover: None,
                     command: None,
                     completion: None,
+                    signature: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,
