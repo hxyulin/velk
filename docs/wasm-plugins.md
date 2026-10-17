@@ -120,8 +120,10 @@ module compilation. A store mutex serializes execution. Busy calls return prompt
 instead of waiting on another caller; existing completion prefix matching handles
 errors. Invalid caller input does not retire a healthy instance. Guest traps,
 invalid counts, and malformed output permanently drop the store, so later calls
-fail until the plugin is restarted. A plugin can still return poor but structurally
-valid rankings.
+fail until the plugin is restarted. Valid requests with large batches of long
+labels can exhaust fuel even when they fit the byte/count limits; those limits do
+not promise that every allowed request completes within the execution budget.
+A plugin can still return poor but structurally valid rankings.
 
 Retirement waits for any in-progress fuel-bounded call, then drops its store and
 memory even if old provider handles survive. This implementation supplies no

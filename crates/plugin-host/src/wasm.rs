@@ -92,7 +92,7 @@ impl Guest {
                     api::MAX_OUTPUT as u32,
                 ),
             )
-            .map_err(|e| format!("Wasm matching trapped: {e}"))?;
+            .map_err(|e| format!("Wasm matching trapped: {e:#}"))?;
         if count < 0 || count as usize != candidates.len() {
             return Err("invalid Wasm matching result count".into());
         }
@@ -179,7 +179,10 @@ mod tests {
             "unreachable",
         ] {
             let provider = provider(body);
-            assert!(provider.scores("x", &["x"]).is_err());
+            let error = provider.scores("x", &["x"]).unwrap_err();
+            if body.contains("$spin") {
+                assert!(error.contains("all fuel consumed"), "{error}");
+            }
             assert!(provider.guest.lock().unwrap().is_none());
             assert!(provider.scores("", &[]).is_err());
         }
