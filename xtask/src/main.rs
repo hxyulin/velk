@@ -91,6 +91,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         ID,
         "velk.tree-sitter",
         "velk.undo.tree",
+        "velk.undo.browser",
         "velk.lsp",
         "velk.language-server.rust-analyzer",
         velk_search::DEFAULT_BACKEND,

@@ -533,6 +533,16 @@ impl Editor {
         Ok(changed)
     }
 
+    pub fn checkout_history(&mut self, revision: u64, state: u64) -> bool {
+        if !self.buffer.checkout_history(revision, state) {
+            return false;
+        }
+        self.editing = self.editing.new_view();
+        self.composition = None;
+        self.edited();
+        true
+    }
+
     pub fn mark_saved(&mut self, checkpoint: Checkpoint) -> bool {
         self.buffer.mark_saved(checkpoint)
     }

@@ -73,6 +73,8 @@ pub enum Request {
     Checkout { current: u64, target: u64 },
     Limits { current: u64, limits: Limits },
     Status,
+    Inspect,
+    Travel { current: u64, target: u64 },
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Status {
@@ -85,6 +87,27 @@ pub struct Status {
 pub struct Response {
     pub status: Status,
     pub step: Option<Step>,
+    pub tree: Option<Tree>,
+}
+/// Retained state metadata, independent of a provider's archive representation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Node {
+    pub state: u64,
+    pub parent: Option<u64>,
+    pub inserted: usize,
+    pub removed: usize,
+    /// Bounded single-line excerpt of the change, for history browsers.
+    pub summary: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tree {
+    pub nodes: Vec<Node>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Inspection {
+    pub current: u64,
+    pub saved: u64,
+    pub tree: Option<Tree>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Restore {

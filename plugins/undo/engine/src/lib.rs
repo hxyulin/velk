@@ -11,6 +11,10 @@ pub(crate) struct Entry {
     pub patches: Vec<Patch>,
     #[serde(skip)]
     bytes: usize,
+    #[serde(skip)]
+    inserted: usize,
+    #[serde(skip)]
+    removed: usize,
 }
 impl Entry {
     fn measure(&self) -> usize {
@@ -40,6 +44,16 @@ impl RamHistory {
         for entry in self.entries.values_mut() {
             let entry = Arc::make_mut(entry);
             entry.bytes = entry.measure();
+            entry.inserted = entry
+                .patches
+                .iter()
+                .map(|p| p.inserted.chars().count())
+                .sum();
+            entry.removed = entry
+                .patches
+                .iter()
+                .map(|p| p.removed.chars().count())
+                .sum();
             self.bytes = self.bytes.saturating_add(entry.bytes);
         }
     }
@@ -62,6 +76,14 @@ impl RamHistory {
         patches: Vec<Patch>,
         merge: bool,
     ) {
+        let inserted = patches
+            .iter()
+            .map(|p| p.inserted.chars().count())
+            .sum::<usize>();
+        let removed = patches
+            .iter()
+            .map(|p| p.removed.chars().count())
+            .sum::<usize>();
         let patch_bytes = patches
             .iter()
             .fold(0usize, |sum, patch| sum.saturating_add(patch.bytes()));
@@ -72,6 +94,8 @@ impl RamHistory {
                 let mut entry = Arc::unwrap_or_clone(old);
                 entry.bytes = entry.bytes.saturating_add(patch_bytes);
                 entry.after = after;
+                entry.inserted += inserted;
+                entry.removed += removed;
                 entry.patches.extend(patches.iter().cloned());
                 entry
             })
@@ -84,6 +108,8 @@ impl RamHistory {
             after,
             patches,
             bytes: patch_bytes.saturating_add(std::mem::size_of::<Entry>()),
+            inserted,
+            removed,
         });
         self.bytes = self.bytes.saturating_add(entry.bytes);
         self.preferred.insert(entry.parent, state);
@@ -261,6 +287,70 @@ impl Provider for Tree {
         }))
     }
 }
+impl SessionState {
+    fn path(&self, current: u64, target: u64) -> Result<(Vec<u64>, Vec<u64>), String> {
+        if current != self.current
+            || (target != self.history.root && !self.history.entries.contains_key(&target))
+        {
+            return Err("history state changed or was pruned".into());
+        }
+        let mut ancestors = BTreeMap::new();
+        let mut up = Vec::new();
+        let mut state = current;
+        ancestors.insert(state, 0);
+        while let Some(entry) = self.history.entries.get(&state) {
+            up.push(state);
+            state = entry.parent;
+            ancestors.insert(state, up.len());
+        }
+        let mut down = Vec::new();
+        let mut state = target;
+        while !ancestors.contains_key(&state) {
+            down.push(state);
+            state = self
+                .history
+                .entries
+                .get(&state)
+                .ok_or("disconnected undo history")?
+                .parent;
+        }
+        up.truncate(ancestors[&state]);
+        down.reverse();
+        Ok((up, down))
+    }
+    fn inspect(&self) -> velk_core_contracts::history::Tree {
+        let mut nodes = vec![Node {
+            state: self.history.root,
+            parent: None,
+            inserted: 0,
+            removed: 0,
+            summary: "Retained root".into(),
+        }];
+        nodes.extend(self.history.entries.iter().map(|(&state, entry)| {
+            let summary = entry
+                .patches
+                .iter()
+                .flat_map(|p| {
+                    if p.inserted.is_empty() {
+                        p.removed.chars()
+                    } else {
+                        p.inserted.chars()
+                    }
+                })
+                .take(48)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            Node {
+                state,
+                parent: Some(entry.parent),
+                inserted: entry.inserted,
+                removed: entry.removed,
+                summary,
+            }
+        }));
+        velk_core_contracts::history::Tree { nodes }
+    }
+}
 impl Session for SessionState {
     fn status(&self) -> Status {
         Status {
@@ -275,8 +365,38 @@ impl Session for SessionState {
     }
     fn request(&mut self, request: Request) -> Result<Response, String> {
         let mut step = None;
+        let mut tree = None;
         match request {
             Request::Status => {}
+            Request::Inspect => {
+                if self.history.entries.len() > 4096 {
+                    return Err("history inspection exceeds 4096 retained edits".into());
+                }
+                tree = Some(self.inspect());
+            }
+            Request::Travel { current, target } => {
+                let (up, down) = self.path(current, target)?;
+                let mut patches = Vec::new();
+                let mut selection = Selection::default();
+                for state in up {
+                    let entry = &self.history.entries[&state];
+                    patches.extend(entry.patches.iter().rev().map(Patch::inverse));
+                    selection = entry.before;
+                }
+                for state in down {
+                    let entry = &self.history.entries[&state];
+                    patches.extend(entry.patches.clone());
+                    selection = entry.after;
+                }
+                if current != target {
+                    step = Some(Step {
+                        source: current,
+                        target,
+                        selection,
+                        patches,
+                    });
+                }
+            }
             Request::Record(commit) => {
                 if commit.parent != self.current || commit.state <= self.current {
                     return Err("undo commit state mismatch".into());
@@ -321,25 +441,11 @@ impl Session for SessionState {
                 });
             }
             Request::Checkout { current, target } => {
-                if current != self.current {
-                    return Err("checkout state mismatch".into());
-                }
-                if self
-                    .history
-                    .entries
-                    .get(&current)
-                    .is_some_and(|entry| entry.parent == target)
-                {
-                    self.history.preferred.insert(target, current);
-                } else if self
-                    .history
-                    .entries
-                    .get(&target)
-                    .is_some_and(|entry| entry.parent == current)
-                {
-                    self.history.preferred.insert(current, target);
-                } else {
-                    return Err("checkout is not an adjacent history state".into());
+                let (up, down) = self.path(current, target)?;
+                for state in up.into_iter().chain(down) {
+                    self.history
+                        .preferred
+                        .insert(self.history.entries[&state].parent, state);
                 }
                 self.current = target;
             }
@@ -354,6 +460,7 @@ impl Session for SessionState {
         Ok(Response {
             status: self.status(),
             step,
+            tree,
         })
     }
 }

@@ -289,3 +289,61 @@ fn extending_a_typing_group_does_not_mutate_an_in_flight_snapshot() {
     buffer.undo();
     assert_eq!(buffer.text().to_string(), "");
 }
+
+#[test]
+fn history_inspection_and_atomic_branch_travel_preserve_saved_state_and_peer_views() {
+    let mut buffer = Buffer::with_history("abc", std::sync::Arc::new(velk_undo_tree::Tree));
+    buffer.insert("A");
+    let first = buffer.inspect_history().unwrap().current;
+    buffer.mark_saved(buffer.checkpoint());
+    buffer.document_edge(true, false);
+    buffer.insert("B");
+    let second = buffer.inspect_history().unwrap().current;
+    buffer.undo();
+    buffer.insert("C");
+    let alternate = buffer.inspect_history().unwrap().current;
+    let inspection = buffer.inspect_history().unwrap();
+    assert_eq!(inspection.saved, first);
+    let nodes = inspection.tree.unwrap().nodes;
+    assert_eq!(nodes.len(), 4);
+    assert_eq!(
+        nodes.iter().find(|n| n.state == second).unwrap().parent,
+        Some(first)
+    );
+    let mut peer = buffer.new_view();
+    peer.set_caret(2, false);
+    let revision = buffer.revision();
+    assert!(buffer.checkout_history(revision, second));
+    assert_eq!(buffer.text().to_string(), "AabcB");
+    assert_eq!(peer.selection().head, 2);
+    assert_eq!(buffer.revision(), revision + 2);
+    assert!(buffer.is_dirty());
+    assert!(!buffer.checkout_history(revision, alternate));
+    assert!(!buffer.checkout_history(buffer.revision(), u64::MAX));
+    assert!(buffer.checkout_history(buffer.revision(), first));
+    assert!(!buffer.is_dirty());
+    buffer.redo();
+    assert_eq!(buffer.inspect_history().unwrap().current, second);
+    assert!(buffer.checkout_history(buffer.revision(), alternate));
+    assert_eq!(buffer.text().to_string(), "AabcC");
+    let bytes = buffer.snapshot().encode().unwrap();
+    let mut restored =
+        Buffer::restore_with_history(&bytes, std::sync::Arc::new(velk_undo_tree::Tree)).unwrap();
+    assert!(restored.checkout_history(restored.revision(), 0));
+    assert_eq!(restored.text().to_string(), "abc");
+    restored.set_history_limits(HistoryLimits {
+        entries: 0,
+        bytes: 0,
+    });
+    assert_eq!(
+        restored
+            .inspect_history()
+            .unwrap()
+            .tree
+            .unwrap()
+            .nodes
+            .len(),
+        1
+    );
+    assert!(!restored.checkout_history(restored.revision(), second));
+}

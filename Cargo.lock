@@ -4236,6 +4236,7 @@ dependencies = [
  "serde",
  "serde_json",
  "velk-commands",
+ "velk-core-contracts",
  "velk-syntax",
 ]
 
@@ -4394,6 +4395,9 @@ dependencies = [
 name = "velk-plugin-undo"
 version = "0.0.0-dev"
 dependencies = [
+ "serde_json",
+ "velk-core-contracts",
+ "velk-panels",
  "velk-plugin-sdk",
  "velk-undo-tree",
 ]

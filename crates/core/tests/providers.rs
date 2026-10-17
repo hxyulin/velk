@@ -82,6 +82,7 @@ impl Session for BrokenSession {
         Ok(Response {
             status: self.status(),
             step,
+            tree: None,
         })
     }
 }

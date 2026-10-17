@@ -1,4 +1,5 @@
-//! Bundled native undo provider. Its engine is also available for linked bootstrap.
+mod panel;
+pub use panel::UndoTree;
 #[derive(Default)]
 pub struct Undo;
 impl velk_plugin_sdk::Plugin for Undo {

@@ -264,3 +264,20 @@ by Core. The `velk.undo.tree` plugin implements it through the version-1
 `Registrar::undo::<Provider>()`; see [history.md](history.md) for the ownership,
 retirement, archive, and document-validation rules. The root plugin ABI is
 unchanged. Required undo sessions pin their implementation after logical unload.
+
+### Undo history inspection
+
+`host::Request::InspectHistory { id }` requires `editor.buffer.read` and returns
+buffer identity/revision plus `velk_core_contracts::history::Inspection`. Current
+and saved state IDs come from Core; the provider optionally supplies retained
+nodes with parents, transaction character counts, and bounded excerpts. The
+host does not interpret a provider's archive representation. A missing tree means
+the provider does not offer inspection; pruned saved states need not appear.
+
+`CheckoutHistory { id, revision, state }` requires `editor.buffer.write` and rejects
+stale revisions, unavailable targets, composition, and conflicting lifecycle work.
+Core validates the complete proposed patch path before committing the provider
+cursor and publishing text. Other document views rebase through all patches.
+This operation changes the buffer without saving or activating it. The bundled
+`velk.undo.browser` panel is a separate client of these operations, with no
+requirement that the selected provider be `velk.undo.tree`.

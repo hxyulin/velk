@@ -409,6 +409,33 @@ impl DocumentState {
             branch: Some(state),
         })
     }
+    fn inspect_history(&mut self) -> Result<crate::history::Inspection, String> {
+        let tree = match &mut self.history {
+            Some(history) => history.session.request(history::Request::Inspect)?.tree,
+            None => None,
+        };
+        if let Some(tree) = &tree {
+            let states: std::collections::BTreeSet<_> =
+                tree.nodes.iter().map(|n| n.state).collect();
+            if tree.nodes.len() > 4097
+                || states.len() != tree.nodes.len()
+                || !states.contains(&self.current.state)
+                || tree.nodes.iter().filter(|n| n.parent.is_none()).count() != 1
+                || tree.nodes.iter().any(|n| {
+                    n.summary.len() > 256
+                        || n.parent
+                            .is_some_and(|parent| parent >= n.state || !states.contains(&parent))
+                })
+            {
+                return Err("invalid undo inspection tree".into());
+            }
+        }
+        Ok(crate::history::Inspection {
+            current: self.current.state,
+            saved: self.saved.state,
+            tree,
+        })
+    }
     fn travel(&mut self, request: history::Request) -> bool {
         let result = (|| {
             let Some(history) = self.history.as_mut() else {

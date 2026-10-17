@@ -79,6 +79,14 @@ pub enum Request {
     },
     /// Current workspace diagnostics, omitting stale open revisions and disk content.
     Diagnostics,
+    InspectHistory {
+        id: u64,
+    },
+    CheckoutHistory {
+        id: u64,
+        revision: u64,
+        state: u64,
+    },
     ReadBuffer {
         id: u64,
     },
@@ -118,8 +126,10 @@ impl Request {
             Self::Diagnostics => DIAGNOSTICS_READ,
             Self::PublishDiagnostics { .. } | Self::ClearDiagnostics { .. } => DIAGNOSTICS_PUBLISH,
             Self::ReadFile { .. } | Self::ReadDirectory { .. } => PROJECT_READ,
-            Self::Buffers | Self::ReadBuffer { .. } => BUFFER_READ,
-            Self::ApplyEdit { .. } | Self::EditBuffer { .. } => BUFFER_WRITE,
+            Self::Buffers | Self::ReadBuffer { .. } | Self::InspectHistory { .. } => BUFFER_READ,
+            Self::ApplyEdit { .. } | Self::EditBuffer { .. } | Self::CheckoutHistory { .. } => {
+                BUFFER_WRITE
+            }
             _ => BUFFER_MANAGE,
         }
     }
@@ -193,6 +203,10 @@ pub enum Response {
     Buffer {
         buffer: Buffer,
         text: String,
+    },
+    History {
+        buffer: Buffer,
+        history: velk_core_contracts::history::Inspection,
     },
     Created {
         id: u64,

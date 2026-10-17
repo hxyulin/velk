@@ -9,8 +9,24 @@ undo steps. Programmatic multi-edit transactions stay atomic.
 
 Editing after undo keeps the previous future as another branch. Ordinary redo
 follows the most recently edited or visited branch. Alternative branches are
-available through Core's linked Rust `redo_branches` and `redo_branch` APIs;
-a branch picker is not implemented in the shell.
+available through **Undo: Show history tree** in the command palette.
+
+The separate `velk.undo.browser` plugin displays the active document's retained
+history in a right panel. Rows show state IDs, current/saved markers, inserted and
+removed character counts, and a short change excerpt. Activate a state row to
+restore it, including an alternative branch. Expand an ancestor and activate its
+**Restore state** child to return to that branching point. Normal Undo/Redo still works afterward.
+This changes the document and its dirty status; it does not save the file.
+The panel refreshes as edits, saves, buffer switches, and history pruning occur.
+A saved state that has been pruned will have no marked row.
+
+The browser uses host `InspectHistory` / revision-guarded `CheckoutHistory`
+operations, so other frontends can reuse the same data. It does not depend on the
+default engine or inspect opaque archives. Providers may return no inspection tree;
+then the browser displays an unsupported message. Inspection is bounded to 4096
+retained edits plus their root. Counts and excerpts describe each transaction
+relative to its parent, rather than a full document diff. Deep paths flatten at
+32 display levels while preserving state IDs and order.
 
 ## Provider boundary
 
@@ -25,7 +41,11 @@ The named native service is `velk.undo.session`, contract
 `registrar.undo::<Provider>()`. Only byte views and opaque allocations cross
 its C ABI. The host has no SDK lifecycle dependency. Commits send changed text
 only, not a flattened document. Snapshot capture is cheap; encoding runs on a
-worker against independently owned immutable data.
+worker against independently owned immutable data. `Inspect` optionally exposes
+provider-neutral node metadata. `Travel` proposes the complete reversible path
+between retained states; Core validates it on a disposable Rope before `Checkout`
+commits the provider cursor. The document publishes the result atomically and
+rebases peer views through every patch.
 
 Settings exposes **Undo provider** (`undo_provider`). A change applies to newly
 opened documents; live documents retain their history session. The application
@@ -46,7 +66,7 @@ provider is unavailable or disabled, recovery reports the failure and preserves
 its on-disk snapshot. Incompatible native code is never replaced with another
 provider's history decoder.
 
-## RAM and recovery## RAM and recovery
+## RAM and recovery
 
 History uses reversible text patches, separate from the live Rope. By default,
 a document retains at most 128 history entries and 64 MiB of patch data and

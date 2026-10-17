@@ -11,6 +11,9 @@ name = "velk_plugin_undo"
 path = "examples/standalone.rs"
 crate-type = ["cdylib"]
 [dependencies]
+velk-panels.workspace = true
+velk-core-contracts.workspace = true
+serde_json = "1"
 velk-undo-tree.workspace = true
 velk-plugin-sdk.workspace = true
 [lints.rust]

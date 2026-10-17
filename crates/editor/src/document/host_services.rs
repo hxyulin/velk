@@ -309,6 +309,14 @@ impl Document {
                         .collect::<Result<_, _>>()?,
                 });
             }
+            Request::InspectHistory { id } => {
+                let buffer = self.host_buffer(id)?;
+                let history = buffer.editor.read(cx).buffer().inspect_history()?;
+                return Ok(Response::History {
+                    buffer: self.buffer_info(buffer, cx),
+                    history,
+                });
+            }
             Request::ReadBuffer { id } => {
                 let buffer = self.host_buffer(id)?;
                 let editor = buffer.editor.read(cx);
@@ -398,6 +406,21 @@ impl Document {
                     self.save(None, cx);
                 }
             }
+            Request::CheckoutHistory {
+                id,
+                revision,
+                state,
+            } => {
+                let buffer = self.host_buffer(id)?;
+                if !buffer
+                    .editor
+                    .update(cx, |editor, _| editor.checkout_history(revision, state))
+                {
+                    return Err(
+                        "History changed or target is unavailable; refresh and try again".into(),
+                    );
+                }
+            }
             Request::EditBuffer {
                 id,
                 revision,
@@ -454,6 +477,99 @@ mod tests {
                 text: text.into(),
             }],
         }
+    }
+    #[test]
+    fn history_host_requests_navigate_inactive_buffers_and_reject_stale_revisions() {
+        let mut runtime = rxui::Runtime::new();
+        runtime
+            .configure_tasks(Arc::new(QueuedExecutor::default()), || {})
+            .unwrap();
+        let document = runtime.update(|cx| cx.new(|_| Document::empty(1)));
+        runtime.update(|cx| {
+            document.update(cx, |d, cx| {
+                let Response::Created { id } = d
+                    .host_request(
+                        Request::NewBuffer {
+                            text: "first".into(),
+                        },
+                        None,
+                        cx,
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                let Response::History { buffer, history } = d
+                    .host_request(Request::InspectHistory { id }, None, cx)
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(history.tree.unwrap().nodes.len(), 2);
+                d.host_request(
+                    Request::NewBuffer {
+                        text: "second".into(),
+                    },
+                    None,
+                    cx,
+                )
+                .unwrap();
+                let active = d.buffer.id;
+                d.host_request(
+                    Request::CheckoutHistory {
+                        id,
+                        revision: buffer.revision,
+                        state: 0,
+                    },
+                    None,
+                    cx,
+                )
+                .unwrap();
+                assert_eq!(d.buffer.id, active);
+                let Response::Buffer { text, .. } = d
+                    .host_request(Request::ReadBuffer { id }, None, cx)
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert!(text.is_empty());
+                assert!(
+                    d.host_request(
+                        Request::CheckoutHistory {
+                            id,
+                            revision: buffer.revision,
+                            state: history.current
+                        },
+                        None,
+                        cx
+                    )
+                    .is_err()
+                );
+                let Response::History { buffer, .. } = d
+                    .host_request(Request::InspectHistory { id }, None, cx)
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                d.host_request(
+                    Request::CheckoutHistory {
+                        id,
+                        revision: buffer.revision,
+                        state: history.current,
+                    },
+                    None,
+                    cx,
+                )
+                .unwrap();
+                let Response::Buffer { text, .. } = d
+                    .host_request(Request::ReadBuffer { id }, None, cx)
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(text, "first");
+            })
+        });
     }
     #[test]
     fn disk_diagnostic_navigation_opens_unopened_files_and_rejects_changed_text() {

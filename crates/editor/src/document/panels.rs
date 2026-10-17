@@ -1027,6 +1027,9 @@ impl Document {
                 .map(|connection| connection.element(grid.clone(), cx))
                 .unwrap_or_else(|| label("Interactive panel unavailable").into_element()),
             Content::Tree(nodes) => {
+                // FIXME: Narrow, deeply indented trees wrap labels into fixed-height
+                // rows and clip text. Improve overflow/indentation handling and
+                // verify virtual-list scrolling keeps the first and last rows accessible.
                 virtual_list(entry.visible.len(), 24., &entry.scroll, cx, |i| {
                     let node = &nodes[entry.visible[i]];
                     let expanded = view.is_some_and(|v| v.expanded.contains(&node.id));

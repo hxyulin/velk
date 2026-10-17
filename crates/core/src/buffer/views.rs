@@ -219,6 +219,24 @@ impl Buffer {
                 .map_or_else(Vec::new, |h| h.session.status().branches)
         })
     }
+    /// Inspect retained metadata without depending on the provider's archive format.
+    pub fn inspect_history(&self) -> Result<crate::history::Inspection, String> {
+        self.document.0.lock().unwrap().inspect_history()
+    }
+    pub fn checkout_history(&mut self, revision: u64, state: u64) -> bool {
+        self.update(|d| {
+            if d.revision != revision {
+                return false;
+            }
+            d.group = None;
+            d.previous_group = None;
+            d.merge_group = false;
+            d.travel(history::Request::Travel {
+                current: d.current.state,
+                target: state,
+            })
+        })
+    }
     pub fn redo_branch(&mut self, state: u64) -> bool {
         self.break_undo_group();
         self.update(|d| d.redo_branch(state))
