@@ -1027,9 +1027,10 @@ impl Document {
                 .map(|connection| connection.element(grid.clone(), cx))
                 .unwrap_or_else(|| label("Interactive panel unavailable").into_element()),
             Content::Tree(nodes) => {
-                // FIXME: Narrow, deeply indented trees wrap labels into fixed-height
-                // rows and clip text. Improve overflow/indentation handling and
-                // verify virtual-list scrolling keeps the first and last rows accessible.
+                let width = entry
+                    .scroll
+                    .state(cx)
+                    .map_or(280., |state| state.viewport[0]);
                 virtual_list(entry.visible.len(), 24., &entry.scroll, cx, |i| {
                     let node = &nodes[entry.visible[i]];
                     let expanded = view.is_some_and(|v| v.expanded.contains(&node.id));
@@ -1069,7 +1070,9 @@ impl Document {
                         .fill_width()
                         .radius(0.)
                         .padding_y(0.)
-                        .padding_x(12. + f32::from(node.depth) * 14.)
+                        .padding_left((12. + f32::from(node.depth) * 14.).min(width * 0.35))
+                        .padding_right(12.)
+                        .text_overflow(rxui::TextOverflow::Ellipsis)
                         .variant(rxui::ButtonVariant::Quiet)
                         .color(if selected {
                             ThemeColor::Text
@@ -1563,6 +1566,83 @@ mod tests {
         prepare(&mut ui, &mut runtime);
         assert_eq!(bounds(&ui), full);
         runtime.update(|cx| assert_eq!(editor.read(cx).buffer().text().to_string(), "original"));
+    }
+    #[test]
+    fn narrow_tree_rows_keep_text_space_and_reveal_both_scroll_extremes() {
+        let mut runtime = Runtime::new();
+        let document = runtime.update(|cx| cx.new(|_| Document::empty(1)));
+        let scroll = rxui::ScrollHandle::new();
+        runtime.update(|cx| {
+            document.update(cx, |document, _| {
+                let nodes: Vec<_> = (0..100)
+                    .map(|i| {
+                        let mut node = node(format!("row-{i}"), i.min(32) as u8, i < 99);
+                        node.label =
+                            "A long undo description that must stay within a single tree row"
+                                .into();
+                        node
+                    })
+                    .collect();
+                let view = ViewState {
+                    expanded: nodes.iter().map(|n| n.id.clone()).collect(),
+                    selected: None,
+                };
+                let mut entry = entry(Slot::Right, Content::Tree(nodes));
+                entry.scroll = scroll.clone();
+                entry.rebuild(&view);
+                document.panels.ui.views.insert(entry.key.clone(), view);
+                document.panels.ui.visible = true;
+                document.panels.entries.push(entry);
+            })
+        });
+        let mut ui = Ui::new(&mut runtime, document).unwrap();
+        ui.prepare(&mut runtime, [460., 350.], &mut Measure)
+            .unwrap();
+        let check = |ui: &Ui<Document>, id: usize| {
+            let key = rxui::Key::from(format!("panel-row-test:Right-row-{id}"));
+            let wrapper = ui.elements().find(|e| e.key == Some(&key)).unwrap().id;
+            let row = ui
+                .elements()
+                .find(|e| {
+                    e.kind == rxui::ElementType::Button
+                        && (e.id == wrapper || e.parent == Some(wrapper))
+                })
+                .unwrap();
+            assert_eq!(row.text_style.overflow, rxui::TextOverflow::Ellipsis);
+            assert_eq!(row.bounds.height, 24.);
+            assert!(row.content_bounds.width >= row.bounds.width * 0.5);
+            assert!(row.bounds.y >= row.clip_bounds.y - 0.01);
+            assert!(
+                row.bounds.y + row.bounds.height
+                    <= row.clip_bounds.y + row.clip_bounds.height + 0.01
+            );
+        };
+        check(&ui, 0);
+        let viewport = ui.elements().find(|e| e.scroll_range[1] > 0.).unwrap().id;
+        ui.semantic_action(
+            &mut runtime,
+            rxui::SemanticAction::Scroll {
+                target: viewport,
+                offset: [0., 1_000_000.],
+            },
+            &mut Measure,
+        )
+        .unwrap();
+        ui.prepare(&mut runtime, [460., 350.], &mut Measure)
+            .unwrap();
+        check(&ui, 99);
+        ui.semantic_action(
+            &mut runtime,
+            rxui::SemanticAction::Scroll {
+                target: viewport,
+                offset: [0., 0.],
+            },
+            &mut Measure,
+        )
+        .unwrap();
+        ui.prepare(&mut runtime, [460., 350.], &mut Measure)
+            .unwrap();
+        check(&ui, 0);
     }
     #[test]
     fn rail_toggles_one_sidebar_and_tiled_places_roles_in_panes() {

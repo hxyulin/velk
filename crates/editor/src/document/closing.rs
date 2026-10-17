@@ -159,6 +159,29 @@ mod tests {
     }
 
     #[test]
+    fn close_prompt_selects_the_same_document_in_the_workspace_and_visible_pane() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::new();
+        let (root, _) = changed_documents(&mut runtime, directory.path(), 2);
+        runtime.update(|cx| {
+            root.update(cx, |this, cx| {
+                assert_eq!(this.buffer.id, 2);
+                this.intent(Intent::Close, cx);
+                assert_eq!(this.lifecycle.prompted_document(), Some(2));
+                this.respond_to_close(2, CloseResponse::Discard, cx);
+                assert_eq!(this.lifecycle.prompted_document(), Some(1));
+                assert_eq!(this.buffer.id, 1);
+                assert_eq!(this.documents.active(), Some(1));
+                this.documents.validate_layout(&this.views.layout).unwrap();
+                this.respond_to_close(1, CloseResponse::Cancel, cx);
+                this.cycle_buffer(false, cx);
+                assert_eq!(this.buffer.id, 2);
+                assert_eq!(this.documents.active(), Some(2));
+                this.documents.validate_layout(&this.views.layout).unwrap();
+            });
+        });
+    }
+    #[test]
     fn repeated_buffer_discards_keep_confirmation_and_commands_usable() {
         let directory = tempfile::tempdir().unwrap();
         let mut runtime = Runtime::new();

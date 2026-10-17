@@ -1,4 +1,5 @@
 //! Command data shared by providers, semantic services, and presentation adapters.
+pub mod completion;
 pub mod keybindings;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -226,6 +227,10 @@ pub enum Outcome {
     Edit {
         edit: WorkspaceEdit,
     },
+    /// Caret-anchored suggestions; typing refreshes this session without moving focus.
+    Completions {
+        items: Vec<Choice>,
+    },
     Choices {
         title: String,
         items: Vec<Choice>,
@@ -251,8 +256,10 @@ impl Outcome {
                 return Err("invalid panel identity".into());
             }
             Self::Edit { edit } => edit.validate()?,
-            Self::Choices { title, items } => {
-                if title.is_empty() || title.len() > 256 || items.len() > 1000 {
+            Self::Completions { items } | Self::Choices { items, .. } => {
+                if matches!(self, Self::Choices { title, .. } if title.is_empty() || title.len() > 256)
+                    || items.len() > 1000
+                {
                     return Err("invalid command choices".into());
                 }
                 for item in items {

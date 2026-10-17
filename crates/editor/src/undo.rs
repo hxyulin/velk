@@ -149,6 +149,13 @@ impl Store {
         buffer.mark_saved(buffer.checkpoint());
         Ok(Some(buffer))
     }
+    pub fn relocate(&self, source: &Path, destination: &Path) -> Result<(), String> {
+        match std::fs::rename(self.path(source), self.path(destination)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
     pub fn save(&self, document: &Path, mut snapshot: BufferSnapshot) -> Result<(), String> {
         std::fs::create_dir_all(&self.directory).map_err(|e| e.to_string())?;
         snapshot.mark_saved();
@@ -159,6 +166,25 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn persistent_archives_follow_renamed_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store {
+            directory: directory.path().join("undo"),
+        };
+        let source = directory.path().join("before.txt");
+        let destination = directory.path().join("after.txt");
+        let mut buffer =
+            velk_core::Buffer::with_history("base", std::sync::Arc::new(velk_undo_tree::Tree));
+        buffer.insert("more");
+        store.save(&source, buffer.snapshot()).unwrap();
+        store.relocate(&source, &destination).unwrap();
+        assert!(store.load(&source, &buffer.text()).unwrap().is_none());
+        let mut restored = store.load(&destination, &buffer.text()).unwrap().unwrap();
+        restored.undo();
+        assert_eq!(restored.text().to_string(), "base");
+        store.relocate(&source, &destination).unwrap();
+    }
     #[test]
     fn persistent_undo_attaches_only_to_matching_text_and_keeps_branches() {
         let directory = tempfile::tempdir().unwrap();

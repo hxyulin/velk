@@ -17,6 +17,7 @@ pub(super) struct State {
     pub diagnostics: Vec<velk_semantic::Diagnostic>,
     pub hover: Option<PositionRequest>,
     pub command: Option<super::plugin_commands::Pending>,
+    pub completion: Option<super::plugin_commands::Invoke>,
     pub target: Option<HoverTarget>,
     pub hover_view: Option<Entity<velk_editor_widget::Editor>>,
     pub next_request: u64,
@@ -47,6 +48,7 @@ impl Document {
             diagnostics: Vec::new(),
             hover: None,
             command: None,
+            completion: None,
             target: None,
             hover_view: None,
             next_request: 1,
@@ -79,6 +81,97 @@ impl Document {
         self.sync_semantics_for(buffer.editor.clone(), cx)
     }
     pub(super) fn sync_semantics_for(
+        &mut self,
+        source: Entity<velk_editor_widget::Editor>,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let changed = self.sync_semantic_snapshot_for(source.clone(), cx);
+        self.sync_completion_for(source, cx);
+        changed
+    }
+    fn sync_completion_for(
+        &mut self,
+        source: Entity<velk_editor_widget::Editor>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self
+            .buffer
+            .as_ref()
+            .is_none_or(|active| active.editor.id() != source.id())
+        {
+            return;
+        }
+        let accepted = source.update(cx, |editor, cx| {
+            let accepted = editor.take_completion();
+            if accepted.is_none() {
+                cx.unchanged();
+            }
+            accepted
+        });
+        if let Some((target, choice)) = accepted {
+            let Some(invocation) = self
+                .buffer
+                .semantic
+                .as_mut()
+                .and_then(|state| state.completion.take())
+            else {
+                return;
+            };
+            if source.read(cx).buffer().revision() != target.revision
+                || source.read(cx).caret_position() != target.position
+            {
+                return;
+            }
+            let mut guard = self.edit_guard(cx);
+            guard.owner = Some((invocation.plugin.clone(), invocation.generation));
+            match choice.action {
+                velk_commands::ChoiceAction::Edit { edit } => {
+                    self.apply_guarded_outcome(velk_commands::Outcome::Edit { edit }, guard, cx)
+                }
+                velk_commands::ChoiceAction::Semantic { payload } => {
+                    let mut invocation = invocation;
+                    invocation.command.handler = velk_commands::Handler::Semantic { payload };
+                    self.execute_plugin_command(invocation, None, guard, cx);
+                }
+                velk_commands::ChoiceAction::Location { .. } => {}
+            }
+            return;
+        }
+        let epoch = source.read(cx).completion_epoch();
+        if let Some(state) = self.buffer.semantic.as_mut()
+            && let Some(pending) = &mut state.command
+            && !pending.cancelled
+            && pending.completion_epoch != epoch
+        {
+            pending.cancelled = state.service.cancel_command(pending.request).is_ok();
+        }
+        let refresh = source.read(cx).completion_refresh();
+        let Some(state) = self.buffer.semantic.as_mut() else {
+            return;
+        };
+        if !source.read(cx).completion_active() {
+            state.completion = None;
+            return;
+        }
+        if state.command.is_some() || refresh.is_none() {
+            return;
+        }
+        let Some(invocation) = state.completion.clone() else {
+            return;
+        };
+        let mut guard = self.edit_guard(cx);
+        guard.owner = Some((invocation.plugin.clone(), invocation.generation));
+        self.execute_plugin_command(invocation, None, guard, cx);
+        if let Some(pending) = self
+            .buffer
+            .semantic
+            .as_mut()
+            .and_then(|state| state.command.as_mut())
+        {
+            pending.completion_refresh = true;
+        }
+    }
+    fn sync_semantic_snapshot_for(
         &mut self,
         source: Entity<velk_editor_widget::Editor>,
         cx: &mut Context<'_, Self>,
@@ -190,11 +283,32 @@ impl Document {
                     && editor.buffer().revision() == request.revision
                     && editor.caret_position() == request.position;
                 drop(editor);
-                if valid && self.command_owner_loaded(&pending.plugin, pending.generation) {
-                    match result {
+                let completion_view = active.editor.clone();
+                if valid && !pending.cancelled && self.guard_valid(&pending.guard, cx) {
+                    match result.and_then(|outcome| {
+                        outcome.validate()?;
+                        Ok(outcome)
+                    }) {
+                        Ok(velk_commands::Outcome::Completions { items }) => {
+                            if completion_view.read(cx).completion_epoch()
+                                == pending.completion_epoch
+                                && (!pending.completion_refresh
+                                    || completion_view.read(cx).completion_active())
+                            {
+                                self.buffer.semantic.as_mut().unwrap().completion =
+                                    Some(pending.invocation);
+                                completion_view.update(cx, |editor, _| {
+                                    editor.show_completions(items, pending.completion_refresh)
+                                });
+                                self.notice(None);
+                            }
+                        }
                         Ok(outcome) => self.apply_guarded_outcome(outcome, pending.guard, cx),
                         Err(error) => self.notice(Some(error)),
                     }
+                }
+                if let Some(source) = self.buffer.as_ref().map(|active| active.editor.clone()) {
+                    self.sync_completion_for(source, cx);
                 }
             }
 
@@ -202,6 +316,10 @@ impl Document {
                 tracing::debug!(?status, "semantic status");
                 if !matches!(status, Status::Ready(_)) {
                     state.command = None;
+                    state.completion = None;
+                    active
+                        .editor
+                        .update(cx, |editor, _| editor.dismiss_completions());
                 }
                 if matches!(status, Status::Failed(_) | Status::Stopped) {
                     state.count = 0;
@@ -703,6 +821,7 @@ mod tests {
                     diagnostics: Vec::new(),
                     hover: None,
                     command: None,
+                    completion: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,
@@ -826,6 +945,7 @@ mod tests {
                     diagnostics: Vec::new(),
                     hover: None,
                     command: None,
+                    completion: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,
@@ -916,6 +1036,7 @@ mod tests {
                     diagnostics: Vec::new(),
                     hover: Some(request),
                     command: None,
+                    completion: None,
                     target: None,
                     hover_view: None,
                     next_request: 3,

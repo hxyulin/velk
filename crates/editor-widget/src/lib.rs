@@ -1,6 +1,7 @@
 //! RXUI editor view over the UI-independent Velk Core buffer.
 mod annotations;
 mod blink;
+mod completion;
 mod composition;
 mod horizontal;
 mod hover;
@@ -56,6 +57,7 @@ pub struct Editor {
     annotations: Option<Arc<Annotations>>,
     appearance: EditorAppearance,
     hover: hover::State,
+    completion: completion::State,
 }
 
 impl Default for Editor {
@@ -81,6 +83,7 @@ impl Default for Editor {
             annotations: Default::default(),
             appearance: Default::default(),
             hover: Default::default(),
+            completion: Default::default(),
         }
     }
 }
@@ -350,6 +353,9 @@ impl Editor {
     pub fn scroll_offset(&self) -> [f32; 2] {
         self.geometry.borrow().offset
     }
+    pub fn language(&self) -> Option<Language> {
+        self.language
+    }
     /// Set the document language. A selected syntax service parses off the UI thread.
     pub fn set_language(
         &mut self,
@@ -560,6 +566,7 @@ impl Editor {
         }
     }
     fn edited(&mut self) {
+        self.update_completion();
         self.document_revision = self.buffer.revision();
         let visual = self.editing.has_visual_selection();
         self.editing.synchronize(&self.buffer);
@@ -607,6 +614,9 @@ impl Editor {
         }
         let had_hover = self.has_hover();
         self.hide_hover();
+        if self.completion_key(event) {
+            return;
+        }
         use velk_editor_model::commands::{Key, Modifiers, Platform, key_command};
         let input_key = match &key.key {
             KeyboardKey::Escape => Some("Escape"),
@@ -702,6 +712,7 @@ impl Editor {
         }
         #[cfg(any(test, feature = "performance"))]
         let input_started = Instant::now();
+        self.dismiss_completions();
         let position = self.geometry.borrow().hit(event.local_position);
         if let Some(position) = position {
             #[cfg(any(test, feature = "performance"))]
@@ -993,6 +1004,9 @@ impl View for Editor {
                 .into_element()
                 .pointer_events(PointerEvents::Auto),
             );
+        }
+        if let Some(popup) = self.completion_popup(cx) {
+            root = root.child(popup);
         }
         root
     }

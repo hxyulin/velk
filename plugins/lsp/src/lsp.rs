@@ -226,6 +226,11 @@ async fn drive(
                     connection.request(id, &spec.method, params).await?;
                     command = Some((id, request, spec, Instant::now()+Duration::from_secs(10)));
                 }
+                Some(Input::CancelCommand(request)) => {
+                    if command.as_ref().is_some_and(|(_, current, _, _)| *current == request) {
+                        cancel_command(connection, session, &mut command, "Command cancelled").await?;
+                    }
+                }
                 Some(Input::CancelHover) => {
                     cancel_hover(connection, session, &mut pending, None).await?;
                 }

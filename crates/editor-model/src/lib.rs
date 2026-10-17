@@ -22,3 +22,5 @@ pub use commands::EditCommand;
 pub mod editing;
 
 pub mod views;
+
+pub mod workspace;

@@ -95,7 +95,11 @@ command error without sending a request. Supported response kinds include `locat
 actions and completion items. Parameters contain the current document URI and caret
 position using the negotiated encoding; references also include declarations.
 Other semantic backends can define their own payload schema and return the same
-neutral outcomes. They must complete each accepted command with `Event::Command`.
+neutral outcomes. They must complete each accepted command with `Event::Command`,
+including cancelled commands. `Input::CancelCommand` identifies one exact request;
+backends ignore cancellation for a different request. The LSP adapter translates
+this into `$/cancelRequest`. Cancellation releases the command slot only after its
+terminal event is consumed, preventing overlapping requests from losing results.
 
 The bundled LSP plugin declares:
 
@@ -128,6 +132,14 @@ and [rust-analyzer extensions](https://rust-analyzer.github.io/book/contributing
 services, and presentation adapters. Outcomes are:
 
 - `Edit`: a workspace text-edit proposal, validated and applied by the host.
+- `Completions`: caret-anchored suggestions that keep keyboard focus in the editor.
+  Up/Down selects, Enter/Tab accepts, and Escape dismisses. Typing filters the
+  current labels and requests fresh suggestions through the originating semantic
+  declaration. Old edit ranges remain unavailable until the current revision and
+  caret receive a matching response. Dismissed sessions cannot reopen from queued
+  responses; moving the caret, selecting text, or starting IME composition closes
+  the session. Initial invocation is explicit (Ctrl+Space), and snippet expansion
+  is not supported.
 - `Choices`: searchable results whose selection applies an edit or requests
   backend resolution, using the original source and provider guard.
 - `Message`: a status message.

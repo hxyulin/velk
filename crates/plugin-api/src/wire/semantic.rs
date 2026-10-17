@@ -123,6 +123,11 @@ pub fn with_input<R>(
             raw.request = request(*r);
             Ok(call(&raw))
         }
+        model::Input::CancelCommand(r) => {
+            raw.kind = CANCEL_COMMAND;
+            raw.request = request(*r);
+            Ok(call(&raw))
+        }
         model::Input::CancelHover => Ok(call(&raw)),
     }
 }
@@ -166,6 +171,7 @@ pub unsafe fn decode_input(raw: &SemanticInput) -> Result<model::Input, String> 
         }
         HOVER => model::Input::Hover(hover_request(raw.request)),
         CANCEL_HOVER => model::Input::CancelHover,
+        CANCEL_COMMAND => model::Input::CancelCommand(hover_request(raw.request)),
         _ => return Err("invalid semantic input kind".into()),
     })
 }
@@ -406,6 +412,7 @@ mod tests {
             model::Input::Saved(d),
             model::Input::Hover(r),
             model::Input::CancelHover,
+            model::Input::CancelCommand(r),
             model::Input::Command {
                 input: Some("new name".into()),
                 request: r,
@@ -422,7 +429,10 @@ mod tests {
                     assert_eq!(a.text, b.text);
                     assert_eq!(a.revision, b.revision);
                 }
-                (model::Input::Hover(a), model::Input::Hover(b)) => assert_eq!(*a, b),
+                (model::Input::Hover(a), model::Input::Hover(b))
+                | (model::Input::CancelCommand(a), model::Input::CancelCommand(b)) => {
+                    assert_eq!(*a, b)
+                }
                 (
                     model::Input::Command {
                         request: a,

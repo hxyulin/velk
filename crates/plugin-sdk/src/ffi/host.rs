@@ -125,3 +125,58 @@ pub(super) fn register<P: Plugin>(reg: &mut registry::Registrar<P>) -> Result<()
         )
     }
 }
+
+#[cfg(feature = "test-support")]
+pub(crate) fn mock(
+    handler: impl Fn(Request) -> Result<Response, String> + Send + Sync + 'static,
+) -> Host {
+    use std::sync::Arc;
+    type Handler = Box<dyn Fn(Request) -> Result<Response, String> + Send + Sync>;
+    unsafe extern "C" fn retain(context: *mut c_void) {
+        // SAFETY: mock owns one Arc reference for every Host clone.
+        unsafe { Arc::<Handler>::increment_strong_count(context.cast()) };
+    }
+    unsafe extern "C" fn release(context: *mut c_void) {
+        // SAFETY: every release consumes a reference acquired by mock or retain.
+        unsafe { Arc::<Handler>::decrement_strong_count(context.cast()) };
+    }
+    unsafe extern "C" fn request(
+        context: *mut c_void,
+        input: Bytes,
+        sink: ByteSink,
+        reply_context: *mut c_void,
+    ) -> i32 {
+        guard(|| {
+            // SAFETY: Host pins the Arc and supplies a valid, bounded input view.
+            let handler = unsafe { &*context.cast::<Handler>() };
+            let input = unsafe { std::slice::from_raw_parts(input.data, input.length) };
+            let response = serde_json::from_slice::<Request>(input)
+                .map_err(|error| error.to_string())
+                .and_then(handler);
+            let (status, bytes) = match response.and_then(|response| {
+                serde_json::to_vec(&response).map_err(|error| error.to_string())
+            }) {
+                Ok(bytes) => (OK, bytes),
+                Err(error) => (INVALID, error.into_bytes()),
+            };
+            // SAFETY: the caller owns the synchronous sink/context; bytes live through it.
+            unsafe {
+                sink(
+                    reply_context,
+                    Bytes {
+                        data: bytes.as_ptr(),
+                        length: bytes.len(),
+                    },
+                    status,
+                )
+            }
+        })
+    }
+    let handler: Arc<Handler> = Arc::new(Box::new(handler));
+    Host(HostServices {
+        context: Arc::into_raw(handler).cast_mut().cast(),
+        request,
+        retain,
+        release,
+    })
+}

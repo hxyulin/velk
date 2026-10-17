@@ -10,6 +10,8 @@ Velk is a native Rust editor built with RXUI. Use the pinned toolchain in
 - `prek install`: install file checks and Conventional Commit message validation.
 - `prek run --all-files`: run repository checks and formatters.
 - `cargo xtask test`: run workspace tests with the cached terminal build inputs.
+- `cargo xtask test-headless [filter]`: run model, widget, app-adapter, and SDK
+  fixture tests without opening a native window. See [docs/testing.md](docs/testing.md).
 - `cargo xtask test-plugins`: check native plugin loading and shared contracts.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: lint with
   Zig available on `PATH`, for example inside `nix develop`.
@@ -24,8 +26,8 @@ and any checks that could not run.
   snapshots, and UI-independent close/save policy. `crates/core-contracts` owns
   shared document coordinates and undo contracts; `plugins/undo` owns the default
   history engine and native provider.
-- `crates/editor-model` owns editing commands, key mapping, annotations, and text
-  projections without renderer dependencies.
+- `crates/editor-model` owns editing commands, key mapping, annotations, text
+  projections, and open-document identity/tab selection without renderer dependencies.
 - `crates/editor` adapts document lifecycle, saves, recovery, workspace state,
   and the shell. `crates/editor-widget` adapts Core to RXUI input and rendering.
 - Platform contracts and services live in `crates/`; feature plugins and their

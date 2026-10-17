@@ -319,10 +319,7 @@ fn completion(
             action,
         });
     }
-    Ok(Outcome::Choices {
-        title: "Completions".into(),
-        items,
-    })
+    Ok(Outcome::Completions { items })
 }
 fn completion_edit(
     item: lsp_types::CompletionItem,

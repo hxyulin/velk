@@ -350,6 +350,9 @@ impl Document {
             return Err("editor is busy; try the buffer operation again".into());
         }
         match request {
+            Request::FileOperation { operation } => {
+                self.mutate_project(operation, cx)?;
+            }
             Request::OpenBuffer { path } => {
                 self.open_path(path, cx);
             }
@@ -370,7 +373,7 @@ impl Document {
                 self.add_buffer(
                     None,
                     editor,
-                    format!("Untitled {}", self.next_buffer).into(),
+                    format!("Untitled {}", self.documents.next_id()).into(),
                     cx,
                 );
                 return Ok(Response::Created { id: self.buffer.id });

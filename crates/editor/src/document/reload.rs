@@ -137,7 +137,7 @@ impl Document {
         let active_id = current.map_or(0, |b| b.id);
         let editor = current.map(|b| b.editor.read(cx));
         let pending = session::Pending {
-            next_id: self.next_buffer,
+            next_id: self.documents.next_id(),
             id: active_id,
             buffers: self
                 .ids()

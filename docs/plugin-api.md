@@ -135,6 +135,7 @@ digits, hyphens or underscores. Use existing IDs consistently:
 
 - `workspace.read`: query the working directory and selected project root.
 - `filesystem.project.read`: read files and directories within the selected project.
+- `filesystem.project.write`: coordinate project file creation, rename/move, and deletion with open documents.
 - `editor.buffer.read`: enumerate buffers and inspect their current text.
 - `editor.buffer.write`: request validated, undoable document edits.
 - `editor.buffer.manage`: open, create, select, save, and close buffers.

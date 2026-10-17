@@ -31,8 +31,13 @@ model, re-exporting their existing types for callers embedding the widget.
 
 `velk-editor` supplies document facts to Core's lifecycle policy and performs
 native dialogs, file I/O, recovery, workspace state, settings, and shell effects.
-It still owns open document entities and path deduplication. This is not a
-loadable Core module or a complete platform-independent workspace implementation.
+The renderer-independent `velk_editor_model::workspace::Documents` registry owns
+stable document IDs, resolved-path deduplication, tab order, active selection,
+and close-neighbor policy. The native adapter owns entities, dialogs, file I/O,
+and per-document tasks. The registry performs no filesystem access, so another
+frontend or a headless test can supply path identities directly. Split placement
+remains in the model's `views::Layout`; registry validation checks its document
+references and active selection.
 
 Core emits parser-independent changes with document revisions, Unicode scalar
 ranges, and UTF-8 byte/line coordinates. `velk-syntax` supplies the neutral syntax

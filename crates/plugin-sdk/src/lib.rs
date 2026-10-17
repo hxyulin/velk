@@ -18,6 +18,8 @@ pub mod hooks {
     };
 }
 mod metadata;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 pub use velk_plugin_contracts as contracts;
 pub use velk_plugin_contracts::{
     Capability, CapabilityDeclaration, LanguageServer, PluginMetadata, commands, settings,

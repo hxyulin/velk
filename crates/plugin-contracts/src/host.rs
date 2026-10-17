@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub const PLUGIN_CALL: &str = "plugin.call";
 pub const WORKSPACE_READ: &str = "workspace.read";
 pub const PROJECT_READ: &str = "filesystem.project.read";
+pub const PROJECT_WRITE: &str = "filesystem.project.write";
 pub const DIAGNOSTICS_PUBLISH: &str = "editor.diagnostics.publish";
 pub const DIAGNOSTICS_READ: &str = "editor.diagnostics.read";
 pub const BUFFER_READ: &str = "editor.buffer.read";
@@ -48,6 +49,38 @@ pub enum FileKind {
     Symlink,
     Other,
 }
+/// Project-confined mutations coordinated with open document identities.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FileOperation {
+    CreateFile {
+        path: PathBuf,
+    },
+    CreateDirectory {
+        path: PathBuf,
+    },
+    Rename {
+        source: PathBuf,
+        destination: PathBuf,
+    },
+    /// Removes a file or an empty directory; open documents must be closed first.
+    Delete {
+        path: PathBuf,
+    },
+}
+impl FileOperation {
+    pub fn paths(&self) -> Vec<&std::path::Path> {
+        match self {
+            Self::Rename {
+                source,
+                destination,
+            } => vec![source, destination],
+            Self::CreateFile { path } | Self::CreateDirectory { path } | Self::Delete { path } => {
+                vec![path]
+            }
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
@@ -67,6 +100,9 @@ pub enum Request {
         path: PathBuf,
         /// Project-relative path from the last entry of the preceding page.
         after: Option<PathBuf>,
+    },
+    FileOperation {
+        operation: FileOperation,
     },
     Buffers,
     /// Replace one client's publication for a file. Empty diagnostics clear it.
@@ -123,6 +159,7 @@ impl Request {
         match self {
             Self::CallPlugin { .. } => PLUGIN_CALL,
             Self::Workspace => WORKSPACE_READ,
+            Self::FileOperation { .. } => PROJECT_WRITE,
             Self::Diagnostics => DIAGNOSTICS_READ,
             Self::PublishDiagnostics { .. } | Self::ClearDiagnostics { .. } => DIAGNOSTICS_PUBLISH,
             Self::ReadFile { .. } | Self::ReadDirectory { .. } => PROJECT_READ,
@@ -135,6 +172,18 @@ impl Request {
     }
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::FileOperation { operation } => {
+                if operation.paths().iter().any(|p| {
+                    p.as_os_str().is_empty()
+                        || p.components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir))
+                }) {
+                    return Err(
+                        "file operation paths must be nonempty and cannot contain parent traversal"
+                            .into(),
+                    );
+                }
+            }
             Self::CallPlugin {
                 provider,
                 hook,

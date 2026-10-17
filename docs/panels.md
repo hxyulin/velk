@@ -126,6 +126,8 @@ Binding, native calls, decoding and structural validation run outside the UI
 thread. The UI retains owned snapshots and cached visible row indices. RXUI's
 fixed-height virtual list constructs visible rows plus overscan. Rendering,
 scrolling, collapsing and expanding loaded branches make no plugin calls.
+Tree labels stay on one line with ellipsis overflow. Leading indentation is capped
+at 35% of the viewport width; trailing padding stays fixed so deep nodes remain readable.
 
 Hook handlers run on the serialized plugin worker and must return quickly.
 Filesystem traversal belongs on the provider's own cancellable worker; returning

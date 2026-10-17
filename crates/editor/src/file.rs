@@ -72,6 +72,12 @@ impl DiskStamp {
     }
 }
 impl FileState {
+    pub fn relocated(&self, path: PathBuf) -> Self {
+        Self {
+            path,
+            ..self.clone()
+        }
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }

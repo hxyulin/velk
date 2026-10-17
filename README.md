@@ -73,7 +73,8 @@ the terminal plugin is disabled in this example workspace.
   presets, and a plugin manager with enable, disable, and restart controls.
 - **Rust support:** highlighting through the Tree-sitter plugin and, with `rust-analyzer` installed,
   hover documentation and diagnostics through the language-service plugins.
-- **Bundled tools:** a watched file tree, literal search in the current buffer,
+- **Bundled tools:** a watched file tree with create, rename/move, and guarded delete
+  commands, literal search in the current buffer,
   CommonMark rendering, and a terminal backed by Ghostty's terminal library.
 
 ## Quickstart
@@ -169,7 +170,7 @@ required or optional capabilities with explanations. The plugin manager exposes
 this metadata alongside plugin state and controls. Plugins can also declare
 [command palette actions](docs/plugin-commands.md); bundled actions include
 definition/type/implementation navigation, references, formatting, rename, code
-actions, explicit completion, Rust parent modules, and macro expansion. Plugins
+actions, a caret completion popup, Rust parent modules, and macro expansion. Plugins
 propose [workspace text edits](docs/workspace-edits.md); the host validates targets
 and applies changes through document transactions. Per-instance
 [host services](docs/host-services.md) expose workspace context, project file
@@ -219,9 +220,10 @@ release-tested.
 
 Current limitations include:
 
-- Language integration focuses on Rust. Completion is explicitly invoked and
-  plain-text only; snippets, automatic suggestions, and server command execution
-  are not yet implemented.
+- Language integration focuses on Rust. Ctrl+Space opens a caret completion popup;
+  typing filters and refreshes suggestions, Up/Down selects, Enter/Tab accepts, and
+  Escape dismisses. Completion remains plain-text only; snippets, automatic initial
+  suggestions, and server command execution are not yet implemented.
 - Language-server clients and diagnostic publications are shared by workspace.
   Problems includes unopened files when the server publishes them; Velk does not
   independently scan every file. Pull diagnostics are supported for open buffers
@@ -237,6 +239,7 @@ Current limitations include:
 ## Documentation
 
 - [Documents, saving, and recovery](docs/document-foundation.md)
+- [Headless tests and plugin host mocks](docs/testing.md)
 - [Buffers](docs/buffers.md) and [edit transactions](docs/edit-transactions.md)
 - [Editor shell](docs/editor-shell.md), [panels](docs/panels.md), and
   [window reloading](docs/reloading.md)

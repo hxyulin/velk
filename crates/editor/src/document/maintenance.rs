@@ -51,7 +51,7 @@ impl Document {
         let key = RecoveryKey {
             views: views.clone(),
             active: self.buffer.as_ref().map_or(0, |b| b.id),
-            next_id: self.next_buffer,
+            next_id: self.documents.next_id(),
             root: self.workspace.root().map(std::path::Path::to_path_buf),
             documents: self
                 .ids()
@@ -99,7 +99,7 @@ impl Document {
             .collect();
         recovery.update(recovery::Pending {
             views,
-            next_id: self.next_buffer,
+            next_id: self.documents.next_id(),
             documents,
             active: self.buffer.as_ref().map_or(0, |b| b.id),
             workspace: self.workspace.clone(),
@@ -134,7 +134,8 @@ impl Document {
         }
     }
     fn check_disk(&mut self, cx: &mut Context<'_, Self>) {
-        if self.disk_check.is_some()
+        if self.file_operation.is_some()
+            || self.disk_check.is_some()
             || self.dialog.is_some()
             || self.lifecycle.close_intent().is_some()
         {

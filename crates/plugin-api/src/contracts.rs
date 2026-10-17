@@ -29,6 +29,7 @@ pub const SAVED: u32 = 2;
 pub const HOVER: u32 = 3;
 pub const CANCEL_HOVER: u32 = 4;
 pub const COMMAND: u32 = 5;
+pub const CANCEL_COMMAND: u32 = 6;
 pub const COMMAND_RESULT: u32 = 5;
 pub const STATUS: u32 = 1;
 pub const DIAGNOSTICS: u32 = 2;

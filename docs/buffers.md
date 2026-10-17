@@ -49,6 +49,13 @@ edits made during a save, aborts closing.
 
 ## Ownership and background work
 
+The UI-independent `velk_editor_model::workspace::Documents` registry owns document
+IDs, resolved file paths, deduplication, tab order and active-document selection.
+It can be tested without RXUI, an executor, or real files; filesystem adapters
+supply canonical paths. Untitled documents have no path identity, so matching
+display names never merge them. Closing a document retires its ID and chooses
+the next tab, falling back to the previous one at the end.
+
 The window owns shared plugins, panel contributions, settings and palette state.
 Each `BufferState` owns a shared document, its view entities and subscriptions,
 file identity, pending save, semantic service and find state. Buffer-local async callbacks capture a

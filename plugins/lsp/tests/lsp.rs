@@ -501,7 +501,7 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
                     assert_eq!(edit.documents[0].edits[0].text, "// formatted\n");
                 }
             }
-            Outcome::Choices { items, .. } => {
+            Outcome::Completions { items } | Outcome::Choices { items, .. } => {
                 assert_eq!(items.len(), if name == "complete" { 1 } else { 2 });
                 for item in items {
                     let ChoiceAction::Semantic { payload } = item.action else {

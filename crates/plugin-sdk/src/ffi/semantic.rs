@@ -85,6 +85,11 @@ pub(super) unsafe extern "C" fn input(instance: *mut c_void, raw: *const Semanti
             model::Input::Saved(d) => service.saved(d),
             model::Input::Hover(r) => service.hover(r),
             model::Input::CancelHover => service.cancel_hover(),
+            model::Input::CancelCommand(request) => {
+                if service.cancel_command(request).is_err() {
+                    return INVALID;
+                }
+            }
         };
         OK
     })

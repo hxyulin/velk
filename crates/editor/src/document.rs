@@ -2,6 +2,7 @@ mod buffer_events;
 mod buffers;
 mod closing;
 mod diagnostics;
+mod file_operations;
 mod grid;
 mod host_services;
 mod icons;
@@ -55,9 +56,8 @@ pub struct Document {
     views: views::State,
     window_status: Option<String>,
     inactive: std::collections::BTreeMap<u64, buffers::BufferState>,
-    next_buffer: u64,
+    documents: velk_editor_model::workspace::Documents,
     workspace: crate::workspace::Workspace,
-    buffer_order: Vec<u64>,
     background_buffer: bool,
     next_search: u64,
     lifecycle: velk_core::lifecycle::Lifecycle,
@@ -70,6 +70,7 @@ pub struct Document {
     host_requests: Option<Task>,
     buffer_events: buffer_events::Delivery,
     workspace_edit: Option<Task>,
+    file_operation: Option<Task>,
     navigation: velk_editor_model::navigation::History,
     command_result: Option<plugin_commands::ResultView>,
     pub window: Option<WindowHandle>,
@@ -175,7 +176,15 @@ impl Document {
         next_id: u64,
         panel_source: Option<velk_panels::NativePath>,
     ) -> Self {
-        let order = buffer.as_ref().map(|b| b.id).into_iter().collect();
+        let mut documents = velk_editor_model::workspace::Documents::new(next_id);
+        if let Some(buffer) = &buffer {
+            documents
+                .restore(
+                    buffer.id,
+                    buffer.file.as_ref().map(|file| file.path().to_path_buf()),
+                )
+                .expect("initial document has a valid unique identity");
+        }
         let editor_focus = rxui::FocusHandle::new();
         let views = views::State::new(buffer.as_ref(), editor_focus.clone());
         Self {
@@ -183,9 +192,8 @@ impl Document {
             buffer: buffer.into(),
             window_status: None,
             inactive: Default::default(),
-            next_buffer: next_id,
+            documents,
             workspace: Default::default(),
-            buffer_order: order,
             background_buffer: false,
             next_search: 0,
             lifecycle: Default::default(),
@@ -198,6 +206,7 @@ impl Document {
             host_requests: None,
             buffer_events: Default::default(),
             workspace_edit: None,
+            file_operation: None,
             navigation: Default::default(),
             command_result: None,
             window: None,
@@ -249,6 +258,7 @@ impl Document {
     }
     fn busy(&self) -> bool {
         self.workspace_edit.is_some()
+            || self.file_operation.is_some()
             || self.lifecycle.prompted_document().is_some()
             || self.buffer.as_ref().is_some_and(|b| b.saving.is_some())
             || self.dialog.is_some()
@@ -349,17 +359,16 @@ impl Document {
                     this.buffer.saving = None;
                     match result {
                         Ok(Ok(file)) => {
+                            this.documents
+                                .rename(buffer_id, Some(file.path().to_path_buf()))
+                                .expect("save destination was checked against open documents");
                             this.buffer.path = file.path().to_path_buf();
                             this.buffer.file = Some(file);
                             if changing_path {
                                 if let Some(state) = this.buffer.semantic.take() {
                                     state.service.shutdown();
                                 }
-                                let _ = this.buffer.editor.update(cx, |editor, _| {
-                                    editor.set_language(velk_editor_widget::Language::for_path(
-                                        &this.buffer.path,
-                                    ))
-                                });
+                                this.buffer.refresh_view_languages(cx);
                                 this.start_buffer_semantics(cx);
                             }
                             if let (Some(state), Some(snapshot)) = (
@@ -502,6 +511,7 @@ impl Document {
                     };
                     std::mem::swap(self.buffer.as_mut().unwrap(), &mut next);
                     self.inactive.insert(next.id, next);
+                    self.documents.select(id);
                     self.show_active_document(cx);
                     self.title();
                 }
@@ -585,7 +595,7 @@ impl View for Document {
         let next_buffer = cx
             .command(buffers::Next, |this, _, cx| this.cycle_buffer(false, cx))
             .label("Next buffer")
-            .enabled(self.buffer_order.len() > 1)
+            .enabled(self.documents.len() > 1)
             .shortcut(Shortcut::new(
                 KeyboardKey::Tab,
                 rxui::Modifiers {
@@ -596,7 +606,7 @@ impl View for Document {
         let previous_buffer = cx
             .command(buffers::Previous, |this, _, cx| this.cycle_buffer(true, cx))
             .label("Previous buffer")
-            .enabled(self.buffer_order.len() > 1)
+            .enabled(self.documents.len() > 1)
             .shortcut(Shortcut::new(
                 KeyboardKey::Tab,
                 rxui::Modifiers {
@@ -1011,162 +1021,4 @@ impl Document {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rxui::{BackgroundFuture, BlockingJob, Runtime, SpawnError, TaskExecutor};
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Default)]
-    pub(super) struct QueuedExecutor(Mutex<Vec<BlockingJob>>);
-    impl TaskExecutor for QueuedExecutor {
-        fn spawn(&self, _: BackgroundFuture) -> Result<(), SpawnError> {
-            Err(SpawnError::Unavailable)
-        }
-        fn spawn_blocking(&self, job: BlockingJob) -> Result<(), SpawnError> {
-            self.0.lock().unwrap().push(job);
-            Ok(())
-        }
-    }
-    impl QueuedExecutor {
-        pub(super) fn complete(&self, runtime: &mut Runtime) {
-            let jobs = std::mem::take(&mut *self.0.lock().unwrap());
-            std::thread::spawn(move || {
-                for job in jobs {
-                    job();
-                }
-            })
-            .join()
-            .unwrap();
-            runtime.poll_tasks();
-            runtime.flush().unwrap();
-        }
-    }
-    #[test]
-    fn async_save_persists_requested_snapshot_keeps_newer_edits_dirty_and_serializes_writes() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("file.txt");
-        std::fs::write(&path, "original").unwrap();
-        let (file, editor) = FileState::open(&path).unwrap();
-        let mut runtime = Runtime::new();
-        let executor = Arc::new(QueuedExecutor::default());
-        runtime.configure_tasks(executor.clone(), || {}).unwrap();
-        let editor = runtime.update(|cx| cx.new(|_| editor));
-        let document =
-            runtime.update(|cx| cx.new(|cx| Document::new(editor.clone(), file, path.clone(), cx)));
-        runtime.update(|cx| editor.update(cx, |e, _| e.insert("one")));
-        runtime.flush().unwrap();
-        runtime.update(|cx| {
-            assert!(document.read(cx).buffer.dirty);
-            document.update(cx, |d, cx| d.save(None, cx));
-            editor.update(cx, |e, _| e.insert("two"));
-            // A second save must not race the first one's rename/baseline.
-            document.update(cx, |d, cx| d.save(None, cx));
-            assert!(document.read(cx).buffer.saving.is_some());
-        });
-        assert_eq!(executor.0.lock().unwrap().len(), 1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
-        executor.complete(&mut runtime);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "oneoriginal");
-        runtime.update(|cx| {
-            assert!(editor.read(cx).buffer().is_dirty());
-            assert!(document.read(cx).buffer.dirty);
-            assert!(document.read(cx).buffer.saving.is_none());
-            assert!(document.read(cx).buffer.status.is_none());
-            assert_eq!(
-                editor.read(cx).buffer().text().to_string(),
-                "onetwooriginal"
-            );
-            document.update(cx, |d, cx| d.save(None, cx));
-        });
-        executor.complete(&mut runtime);
-        runtime.update(|cx| {
-            assert!(!editor.read(cx).buffer().is_dirty());
-            assert!(!document.read(cx).buffer.dirty);
-            assert!(editor.read(cx).buffer().can_undo());
-            // A failed subsequent save retains the last successful checkpoint.
-            editor.update(cx, |e, _| e.insert("three"));
-            std::fs::write(&path, "external").unwrap();
-            document.update(cx, |d, cx| d.save(None, cx));
-        });
-        executor.complete(&mut runtime);
-        runtime.update(|cx| {
-            assert!(editor.read(cx).buffer().is_dirty());
-            assert!(
-                document
-                    .read(cx)
-                    .buffer
-                    .status
-                    .as_ref()
-                    .unwrap()
-                    .contains("changed on disk")
-            );
-        });
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
-    }
-    #[test]
-    fn document_layout_reserves_status_height_and_keeps_editor_visible_on_resize() {
-        struct Measure;
-        impl rxui::TextMeasure for Measure {
-            fn measure(
-                &mut self,
-                _: rxui::ElementId,
-                request: rxui::TextRequest<'_>,
-            ) -> Result<[f32; 2], rxui::UiError> {
-                Ok([request.text.len() as f32 * 7., 18.])
-            }
-        }
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("file.txt");
-        std::fs::write(&path, "original").unwrap();
-        let (file, editor) = FileState::open(&path).unwrap();
-        let mut runtime = Runtime::new();
-        let document = runtime.update(|cx| {
-            let editor = cx.new(|_| editor);
-            cx.new(|cx| Document::new(editor, file, path, cx))
-        });
-        let mut ui = rxui::Ui::new(&mut runtime, document).unwrap();
-        for size in [[640., 400.], [320., 160.]] {
-            ui.prepare(&mut runtime, size, &mut Measure).unwrap();
-            let bounds = ui
-                .elements()
-                .find(|e| e.key == Some(&rxui::Key::from("editor-surface")))
-                .unwrap()
-                .bounds;
-            assert_eq!(bounds.width, size[0]);
-            assert!(
-                bounds.height >= size[1] - 74.,
-                "editor unexpectedly collapsed: {bounds:?}"
-            );
-            assert!(
-                bounds.height <= size[1] - 52.,
-                "editor obscures status: {bounds:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn failed_task_submission_keeps_edits_and_reports_error() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("file.txt");
-        std::fs::write(&path, "original").unwrap();
-        let (file, mut editor) = FileState::open(&path).unwrap();
-        editor.insert("x");
-        let mut runtime = Runtime::new();
-        runtime.update(|cx| {
-            let editor = cx.new(|_| editor);
-            let document = cx.new(|cx| Document::new(editor, file, path.clone(), cx));
-            document.update(cx, |d, cx| d.save(None, cx));
-            assert!(
-                document
-                    .read(cx)
-                    .buffer
-                    .status
-                    .as_ref()
-                    .unwrap()
-                    .contains("not configured")
-            );
-            assert!(document.read(cx).buffer.saving.is_none());
-        });
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
-    }
-}
+mod tests;

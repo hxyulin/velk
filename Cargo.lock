@@ -3110,7 +3110,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "rxui"
 version = "0.2.0-dev.0"
-source = "git+https://github.com/hxyulin/rxui?rev=85317cc69a095c6f4550f504580c7ba65113c082#85317cc69a095c6f4550f504580c7ba65113c082"
+source = "git+https://github.com/hxyulin/rxui?rev=9bd9feadab289cae2655db283d9d7c7c6412be64#9bd9feadab289cae2655db283d9d7c7c6412be64"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4145,6 +4145,7 @@ dependencies = [
  "unicode-bidi",
  "unicode-ident",
  "unicode-segmentation",
+ "velk-commands",
  "velk-core",
  "velk-editing",
  "velk-editor-model",

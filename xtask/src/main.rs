@@ -231,6 +231,34 @@ fn run() -> Result<(), String> {
             Path::new(&args[2]),
         );
     }
+    if action == "test-headless" {
+        let (root, _) = paths(release)?;
+        let mut command = cargo();
+        command.current_dir(root).args([
+            "test",
+            "--locked",
+            "-p",
+            "velk-core",
+            "-p",
+            "velk-core-contracts",
+            "-p",
+            "velk-commands",
+            "-p",
+            "velk-editor-model",
+            "-p",
+            "velk-editor-widget",
+            "-p",
+            "velk-editor",
+            "-p",
+            "velk-plugin-sdk",
+            "--features",
+            "velk-plugin-sdk/test-support",
+        ]);
+        if release {
+            command.arg("--release");
+        }
+        return checked(command.args(args));
+    }
     if action == "test-diagnostics" && args.is_empty() && !release {
         let (root, output) = paths(false)?;
         return diagnostics_smoke::run(&root, &output);
@@ -264,7 +292,7 @@ fn run() -> Result<(), String> {
     }
     if action == "help" {
         println!(
-            "cargo xtask setup-terminal\ncargo xtask test\ncargo xtask build [--release]\ncargo xtask plugins [--release]\ncargo xtask run [--release] -- [file]\ncargo xtask test-plugins [--release]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
+            "cargo xtask setup-terminal\ncargo xtask test\ncargo xtask test-headless [filter]\ncargo xtask build [--release]\ncargo xtask plugins [--release]\ncargo xtask run [--release] -- [file]\ncargo xtask test-plugins [--release]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
         );
         return Ok(());
     }

@@ -10,6 +10,7 @@ publish.workspace = true
 performance = []
 
 [dependencies]
+velk-commands.workspace = true
 velk-undo-tree.workspace = true
 velk-editing.workspace = true
 velk-editor-model.workspace = true

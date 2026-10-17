@@ -10,10 +10,12 @@ pub(super) struct Invoke {
     pub command: Declaration,
 }
 pub(super) struct Pending {
-    pub plugin: String,
-    pub generation: u64,
     pub request: velk_semantic::PositionRequest,
     pub guard: super::workspace_edits::Guard,
+    pub invocation: Invoke,
+    pub completion_refresh: bool,
+    pub completion_epoch: u64,
+    pub cancelled: bool,
 }
 pub(super) enum ResultView {
     Picker(super::picker::State),
@@ -244,7 +246,7 @@ impl Document {
         }
         self.execute_plugin_command(invocation, input, guard, cx);
     }
-    fn execute_plugin_command(
+    pub(super) fn execute_plugin_command(
         &mut self,
         invocation: Invoke,
         input: Option<String>,
@@ -267,6 +269,8 @@ impl Document {
         {
             return;
         }
+        let continuation = invocation.clone();
+        let completion_epoch = self.buffer.editor.read(cx).completion_epoch();
         match invocation.command.handler {
             Handler::Picker { .. } => unreachable!("pickers use their own live query flow"),
             Handler::Semantic { payload } => {
@@ -287,10 +291,12 @@ impl Document {
                 match state.service.command(request, payload, context.input) {
                     Ok(()) => {
                         state.command = Some(Pending {
-                            plugin: invocation.plugin,
-                            generation: invocation.generation,
                             request,
                             guard,
+                            invocation: continuation,
+                            completion_refresh: false,
+                            completion_epoch,
+                            cancelled: false,
                         })
                     }
                     Err(error) => self.notice(Some(error)),
@@ -371,6 +377,9 @@ impl Document {
                 }
             }
             Outcome::Edit { edit } => self.apply_workspace_edit(edit, guard, cx),
+            Outcome::Completions { .. } => {
+                self.notice(Some("Completion results require a semantic session".into()));
+            }
             Outcome::Choices { title, items } => {
                 if items.is_empty() {
                     self.notice(Some("No supported results at the caret".into()));
@@ -738,6 +747,7 @@ mod tests {
                     diagnostics: Vec::new(),
                     hover: None,
                     command: None,
+                    completion: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,
@@ -933,6 +943,208 @@ mod tests {
                 .any(|e| e.key == Some(&rxui::Key::from("command-result")))
         );
     }
+    #[test]
+    #[allow(unsafe_code)]
+    fn completion_popup_refreshes_latest_source_accepts_edits_and_rejects_dismissed_results() {
+        use rxui::{KeyEvent, Ui};
+        let mut harness = super::super::tests::Harness::new();
+        let path = harness.write_file("completion.rs", "pr");
+        harness
+            .request(velk_plugin_contracts::host::Request::OpenBuffer { path: path.clone() })
+            .unwrap();
+        harness.drain();
+        // SAFETY: this directory contains no plugin images.
+        let directory = tempfile::tempdir().unwrap();
+        let host =
+            unsafe { velk_plugin_host::Runtime::start(directory.path().to_path_buf()) }.unwrap();
+        let (service, session) = Service::external(|| {});
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |document, cx| {
+                let mut plugins = super::super::plugins::State::new(
+                    host.client(),
+                    velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
+                );
+                plugins.loaded.push(velk_plugin_host::PluginInfo {
+                    id: "test.commands".into(),
+                    version: "1".into(),
+                    generation: 1,
+                    loaded_path: directory.path().into(),
+                    description: String::new(),
+                    dependencies: Vec::new(),
+                    metadata: Default::default(),
+                    settings_values: Default::default(),
+                    settings_error: None,
+                    resident_code: false,
+                    hooks: vec![],
+                });
+                document.plugins = Some(plugins);
+                document.buffer.editor.update(cx, |editor, _| {
+                    editor.select_range(2..2);
+                });
+                document.buffer.semantic = Some(super::super::semantic::State {
+                    service: service.clone(),
+                    revision: 0,
+                    status: Status::Ready(Default::default()),
+                    count: 0,
+                    diagnostics: Vec::new(),
+                    hover: None,
+                    command: None,
+                    completion: None,
+                    target: None,
+                    hover_view: None,
+                    next_request: 1,
+                    task: None,
+                    render_task: None,
+                    renderer: std::sync::Arc::new(velk_markup::PlainText),
+                    notice: None,
+                });
+                document.invoke_plugin_command(invoke(), cx);
+            })
+        });
+        let next_request = || loop {
+            match session.try_next().expect("completion request queued") {
+                Input::Command { request, .. } => break request,
+                Input::Document(_) | Input::CancelHover => {}
+                other => panic!("unexpected completion input: {other:?}"),
+            }
+        };
+        let reply = |request: velk_semantic::PositionRequest| {
+            session.events().publish(Event::Command {
+                request,
+                result: Ok(Outcome::Completions {
+                    items: vec![velk_commands::Choice {
+                        title: "print".into(),
+                        detail: Some("Print a value".into()),
+                        action: velk_commands::ChoiceAction::Edit {
+                            edit: velk_commands::WorkspaceEdit {
+                                documents: vec![velk_commands::DocumentEdit {
+                                    path: path.clone(),
+                                    revision: Some(request.revision),
+                                    edits: vec![velk_commands::TextEdit {
+                                        start: Position {
+                                            line: 0,
+                                            column: 0,
+                                            encoding: Encoding::Utf32,
+                                        },
+                                        end: Position {
+                                            line: 0,
+                                            column: request.position as u32,
+                                            encoding: Encoding::Utf32,
+                                        },
+                                        text: "print".into(),
+                                    }],
+                                }],
+                            },
+                        },
+                    }],
+                }),
+            });
+            pollster::block_on(service.events.recv()).unwrap()
+        };
+        let event = reply(next_request());
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |d, cx| {
+                d.buffer.status = Some("No result at the caret".into());
+                d.semantic_event(event, cx);
+                assert!(d.buffer.status.is_none());
+            })
+        });
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |d, cx| {
+                assert!(d.command_result.is_none());
+                assert!(d.buffer.editor.read(cx).completion_active());
+                d.buffer.editor.update(cx, |editor, _| editor.insert("i"));
+            })
+        });
+        harness.runtime.flush().unwrap();
+        let old_request = next_request();
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |d, cx| {
+                d.buffer.editor.update(cx, |editor, _| editor.insert("n"))
+            })
+        });
+        harness.runtime.flush().unwrap();
+        let event = reply(old_request);
+        harness.runtime.update(|cx| {
+            harness
+                .document
+                .update(cx, |d, cx| d.semantic_event(event, cx))
+        });
+        harness.runtime.flush().unwrap();
+        let newest = next_request();
+        assert!(newest.revision > old_request.revision);
+        assert_eq!(newest.position, 4);
+        let event = reply(newest);
+        harness.runtime.update(|cx| {
+            harness
+                .document
+                .update(cx, |d, cx| d.semantic_event(event, cx))
+        });
+        let mut ui = Ui::new(&mut harness.runtime, harness.document.clone()).unwrap();
+        ui.prepare(&mut harness.runtime, [900., 600.], &mut Measure)
+            .unwrap();
+        assert!(
+            ui.elements()
+                .any(|element| element.key == Some(&rxui::Key::from("editor-completions")))
+        );
+        let source = ui
+            .elements()
+            .find(|element| element.key == Some(&rxui::Key::from("editor-surface")))
+            .unwrap()
+            .id;
+        ui.focus(source);
+        ui.key(
+            &mut harness.runtime,
+            KeyEvent {
+                key: KeyboardKey::Enter,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            },
+        )
+        .unwrap();
+        harness.drain();
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |d, cx| {
+                assert_eq!(
+                    d.buffer.editor.read(cx).buffer().text().to_string(),
+                    "print"
+                );
+                assert!(!d.buffer.editor.read(cx).completion_active());
+                d.invoke_plugin_command(invoke(), cx);
+                d.buffer
+                    .editor
+                    .update(cx, |editor, _| editor.dismiss_completions());
+            })
+        });
+        let event = reply(next_request());
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |d, cx| {
+                d.semantic_event(event, cx);
+                assert!(!d.buffer.editor.read(cx).completion_active());
+                d.invoke_plugin_command(invoke(), cx);
+            })
+        });
+        let request = loop {
+            match session.try_next().unwrap() {
+                Input::CancelCommand(_) | Input::Document(_) => {}
+                Input::Command { request, .. } => break request,
+                other => panic!("unexpected input: {other:?}"),
+            }
+        };
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |d, cx| {
+                d.split_editor(velk_editor_model::views::Axis::Horizontal, cx)
+            })
+        });
+        let event = reply(request);
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |d, cx| {
+                d.semantic_event(event, cx);
+                assert!(!d.buffer.editor.read(cx).completion_active());
+            })
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1120,6 +1332,7 @@ mod edit_interaction_tests {
                     diagnostics: Vec::new(),
                     hover: None,
                     command: None,
+                    completion: None,
                     target: None,
                     hover_view: None,
                     next_request: 1,

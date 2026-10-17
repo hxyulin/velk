@@ -12,6 +12,7 @@ There is no process-global current plugin, including in multi-plugin packs.
 | --- | --- |
 | `workspace.read` | `Workspace`: current working directory and selected project root |
 | `filesystem.project.read` | `ReadFile`, `ReadDirectory`: disk contents inside the project |
+| `filesystem.project.write` | `FileOperation`: coordinated create, rename/move, and deletion inside the project |
 | `editor.diagnostics.publish` | `PublishDiagnostics`, `ClearDiagnostics`: replace/clear this instance's workspace publications |
 | `editor.diagnostics.read` | `Diagnostics`: current buffer and saved-file workspace results |
 | `editor.buffer.read` | `Buffers`, `ReadBuffer`: metadata and current unsaved text |
@@ -51,6 +52,30 @@ are not atomic snapshots, so concurrent filesystem changes can affect traversal.
 JSON is limited to 1 MiB and response JSON to 4 MiB, including encoding overhead.
 An oversized buffer or encoded response returns an explicit error. Paths in this
 JSON contract must be representable as UTF-8.
+
+## Project mutations
+
+`FileOperation` queues `CreateFile`, `CreateDirectory`, `Rename`, or `Delete` on
+an I/O worker. Paths resolve inside the selected project root; parent traversal,
+symlink sources, and existing destinations are rejected. Parent directories must
+already exist. File moves use no-clobber hard-link publication and require the
+same filesystem. Directory moves reserve the destination before renaming on Unix;
+other platforms currently return an unsupported-operation error.
+
+Rename updates every affected open document path, preserves its ID/text/history,
+restarts language services, and publishes an authoritative buffer snapshot.
+Recovery captures the new identities. Existing persistent undo archives follow
+renamed files and open descendants of renamed directories. Archives for closed
+descendants keep their old path keys; there is no archive index to relocate them.
+Delete rejects paths containing open
+documents and removes only files or empty directories. Callers must provide an
+explicit user action before deletion; the Files frontend requires a typed
+`delete <path>` confirmation. `Accepted` acknowledges scheduling, with completion
+or errors reported in the editor. Document lifecycle operations are blocked while
+the mutation runs; ordinary typing remains available.
+
+These path checks are consistency safeguards, not a sandbox against concurrent
+external filesystem changes or trusted native code.
 
 ## Buffer operations
 

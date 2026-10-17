@@ -142,6 +142,17 @@ fn observe_editor(
     .expect("editor entity is live")
 }
 impl BufferState {
+    pub fn refresh_view_languages(&self, cx: &mut Context<'_, Document>) {
+        let language = Language::for_path(&self.path);
+        for view in &self.views {
+            view.editor.update(cx, |editor, _| {
+                editor.clear_annotations();
+                if let Err(error) = editor.set_language(language) {
+                    tracing::warn!(%error, "Cannot update document view language");
+                }
+            });
+        }
+    }
     pub fn new(
         id: u64,
         editor: Entity<Editor>,
@@ -219,7 +230,7 @@ impl Document {
         self.inactive.insert(id, buffer);
     }
     pub(super) fn ids(&self) -> Vec<u64> {
-        self.buffer_order.clone()
+        self.documents.ids().to_vec()
     }
     pub(super) fn any_saving(&self) -> bool {
         self.buffer.as_ref().is_some_and(|b| b.saving.is_some())
@@ -237,6 +248,7 @@ impl Document {
             return;
         }
         if let Some(mut buffer) = self.inactive.remove(&id) {
+            self.documents.select(id);
             self.buffer
                 .editor
                 .update(cx, |editor, _| editor.break_undo_group());
@@ -257,13 +269,9 @@ impl Document {
         }
     }
     pub(super) fn cycle_buffer(&mut self, backwards: bool, cx: &mut Context<'_, Self>) {
-        let ids = self.ids();
-        if ids.is_empty() {
-            return;
+        if let Some(id) = self.documents.adjacent(backwards) {
+            self.select_buffer(id, cx);
         }
-        let index = ids.iter().position(|id| *id == self.buffer.id).unwrap();
-        let offset = if backwards { ids.len() - 1 } else { 1 };
-        self.select_buffer(ids[(index + offset) % ids.len()], cx);
     }
     pub(super) fn add_buffer(
         &mut self,
@@ -273,18 +281,9 @@ impl Document {
         cx: &mut Context<'_, Self>,
     ) {
         let file = file.into();
-        let existing = self
-            .buffer
-            .iter()
-            .chain(self.inactive.values())
-            .find(|b| {
-                file.as_ref().is_some_and(|f| {
-                    b.file
-                        .as_ref()
-                        .is_some_and(|other| other.path() == f.path())
-                })
-            })
-            .map(|b| b.id);
+        let existing = file
+            .as_ref()
+            .and_then(|file| self.documents.find_path(file.path()));
         if let Some(id) = existing {
             self.select_buffer(id, cx);
             return;
@@ -299,16 +298,18 @@ impl Document {
             ));
             return;
         }
-        if self.buffer_order.len() >= 256 {
-            self.notice(Some(
-                "This workspace already has 256 open documents.".into(),
-            ));
-            return;
-        }
+        let identity = match self
+            .documents
+            .open(file.as_ref().map(|file| file.path().to_path_buf()))
+        {
+            Ok(identity) => identity.id(),
+            Err(error) => {
+                self.notice(Some(error));
+                return;
+            }
+        };
         let editor = cx.new(|_| editor);
-        let buffer = BufferState::new(self.next_buffer, editor, file, path, cx);
-        self.next_buffer += 1;
-        self.buffer_order.push(buffer.id);
+        let buffer = BufferState::new(identity, editor, file, path, cx);
         self.cancel_search(cx);
         if let Some(old) = self.buffer.replace(buffer) {
             self.inactive.insert(old.id, old);
@@ -340,21 +341,29 @@ impl Document {
         for restored in buffers {
             let editor = cx.new(|_| restored.editor);
             let id = if restored.id == 0 {
-                self.next_buffer
+                self.documents.next_id()
             } else {
                 restored.id
             };
+            if let Err(error) = self.documents.restore(
+                id,
+                restored.file.as_ref().map(|file| file.path().to_path_buf()),
+            ) {
+                self.notice(Some(format!("Document could not be restored: {error}")));
+                continue;
+            }
             let mut buffer = BufferState::new(id, editor, restored.file, restored.path, cx);
             buffer.search.open = restored.search_open;
             buffer.search.query = restored.search_query;
             buffer.search.preserve_selection = true;
-            self.next_buffer = self.next_buffer.max(buffer.id + 1);
-            self.buffer_order.push(buffer.id);
             self.inactive.insert(buffer.id, buffer);
         }
-        self.buffer_order.retain(|id| *id != active);
-        self.buffer_order
-            .insert(active_index.min(self.buffer_order.len()), active);
+        let mut order = self.ids();
+        order.retain(|id| *id != active);
+        order.insert(active_index.min(order.len()), active);
+        self.documents
+            .reorder(order)
+            .expect("restored tab order is a permutation");
     }
     pub fn restore_recovered(
         &mut self,
@@ -365,13 +374,18 @@ impl Document {
         cx: &mut Context<'_, Self>,
     ) {
         self.workspace = workspace;
-        self.next_buffer = self.next_buffer.max(next_id);
+        self.documents.reserve_ids(next_id);
         self.panels.ui.root = self.workspace.root().map(velk_panels::NativePath::new);
         for restored in documents {
             let editor = cx.new(|_| restored.editor);
+            if let Err(error) = self.documents.restore(
+                restored.id,
+                restored.file.as_ref().map(|file| file.path().to_path_buf()),
+            ) {
+                self.notice(Some(format!("Document could not be recovered: {error}")));
+                continue;
+            }
             let buffer = BufferState::new(restored.id, editor, restored.file, restored.path, cx);
-            self.next_buffer = self.next_buffer.max(restored.id + 1);
-            self.buffer_order.push(restored.id);
             self.inactive.insert(restored.id, buffer);
         }
         if self.panels.ui.source.is_none() {
@@ -385,12 +399,16 @@ impl Document {
                             .map(|f| velk_panels::NativePath::new(f.path()))
                     });
         }
-        self.buffer_order.sort_by_key(|id| {
+        let mut recovered_order = self.ids();
+        recovered_order.sort_by_key(|id| {
             order
                 .iter()
                 .position(|other| other == id)
                 .unwrap_or(order.len())
         });
+        self.documents
+            .reorder(recovered_order)
+            .expect("recovered tab order is a permutation");
     }
     pub fn start_all_semantics(&mut self, cx: &mut Context<'_, Self>) {
         for id in self.ids() {
@@ -420,7 +438,7 @@ impl Document {
         self.add_buffer(
             None,
             crate::undo::editor(""),
-            PathBuf::from(format!("Untitled {}", self.next_buffer)),
+            PathBuf::from(format!("Untitled {}", self.documents.next_id())),
             cx,
         );
     }
@@ -556,6 +574,12 @@ impl Document {
         self.restore_focus_pending = true;
     }
     fn open_request(&mut self, request: OpenRequest, cx: &mut Context<'_, Self>) {
+        if self.file_operation.is_some() {
+            self.notice(Some(
+                "Wait for the file operation to finish before opening a file.".into(),
+            ));
+            return;
+        }
         if self.lifecycle.close_intent().is_some() || self.reloading() {
             return;
         }
@@ -580,13 +604,13 @@ impl Document {
             origin,
         } = request;
         let open: Vec<_> = self
-            .buffer
+            .documents
+            .ids()
             .iter()
-            .chain(self.inactive.values())
-            .filter_map(|b| {
-                b.file
-                    .as_ref()
-                    .map(|file| (file.path().to_path_buf(), b.id))
+            .filter_map(|id| {
+                self.documents
+                    .path(*id)
+                    .map(|path| (path.to_path_buf(), *id))
             })
             .collect();
         match cx.try_spawn_blocking(
@@ -702,22 +726,19 @@ impl Document {
         if ids.len() == 1 {
             self.cancel_search(cx);
             self.buffer.take();
-            self.buffer_order.clear();
+            self.documents.close(ids[0]);
             self.window_status = None;
             self.title();
             self.schedule_recovery(cx);
             self.restore_focus_pending = true;
             return;
         }
-        let index = ids.iter().position(|id| *id == self.buffer.id).unwrap();
-        let next = if index + 1 < ids.len() {
-            ids[index + 1]
-        } else {
-            ids[index - 1]
-        };
-        let next = self.inactive.remove(&next).unwrap();
+        self.documents.close(self.buffer.id);
+        let next = self
+            .inactive
+            .remove(&self.documents.active().unwrap())
+            .unwrap();
         self.cancel_search(cx);
-        self.buffer_order.retain(|id| *id != self.buffer.id);
         self.buffer.replace(next);
         self.show_active_document(cx);
         if self.buffer.search.open {
@@ -891,6 +912,57 @@ mod tests {
             let editor = cx.new(|_| editor);
             cx.new(|cx| Document::new(editor, file, path.to_path_buf(), cx))
         })
+    }
+    #[test]
+    fn background_operations_preserve_workspace_selection_and_save_as_updates_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original.rs");
+        let destination = directory.path().join("renamed.txt");
+        std::fs::write(&original, "original").unwrap();
+        let mut runtime = Runtime::new();
+        let executor = Arc::new(QueuedExecutor::default());
+        runtime.configure_tasks(executor.clone(), || {}).unwrap();
+        let document = create(&mut runtime, &original);
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.add_buffer(None, crate::undo::editor("other"), "Untitled".into(), cx);
+                assert_eq!(this.documents.active(), Some(2));
+                this.with_buffer(1, cx, |this, _| {
+                    assert_eq!(this.buffer.id, 1);
+                    assert_eq!(this.documents.active(), Some(2));
+                });
+                this.select_buffer(1, cx);
+                this.buffer.refresh_view_languages(cx);
+                this.split_editor(velk_editor_model::views::Axis::Horizontal, cx);
+                assert_eq!(this.buffer.views.len(), 2);
+                assert!(
+                    this.buffer
+                        .views
+                        .iter()
+                        .all(|view| view.editor.read(cx).language() == Some(Language::Rust))
+                );
+                this.save_to(Some(destination.clone()), None, cx);
+            });
+        });
+        executor.complete(&mut runtime);
+        runtime.update(|cx| {
+            let this = document.read(cx);
+            let canonical = std::fs::canonicalize(&destination).unwrap();
+            assert_eq!(this.documents.find_path(&canonical), Some(1));
+            assert_eq!(
+                this.documents
+                    .find_path(&std::fs::canonicalize(&original).unwrap()),
+                None
+            );
+            assert_eq!(this.documents.active(), Some(1));
+            assert!(
+                this.buffer
+                    .views
+                    .iter()
+                    .all(|view| view.editor.read(cx).language().is_none())
+            );
+            this.documents.validate_layout(&this.views.layout).unwrap();
+        });
     }
     #[test]
     fn closing_last_document_keeps_a_real_empty_window_and_new_open_reuse_no_ids() {

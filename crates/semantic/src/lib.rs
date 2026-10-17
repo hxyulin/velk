@@ -86,6 +86,8 @@ pub enum Input {
     Document(DocumentSnapshot),
     Hover(PositionRequest),
     CancelHover,
+    /// Cancel one exact outstanding command; its terminal event still releases the slot.
+    CancelCommand(PositionRequest),
     Saved(DocumentSnapshot),
 }
 
@@ -330,7 +332,7 @@ impl Service {
     ) -> (Arc<Self>, Session) {
         let provider_retired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let command_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (commands, command_pending) = async_channel::bounded(1);
+        let (commands, command_pending) = async_channel::bounded(2);
         let (command, command_results) = async_channel::bounded(1);
         let (documents, documents_pending) = async_channel::bounded(1);
         let (hovers, hovers_pending) = async_channel::bounded(1);
@@ -457,6 +459,13 @@ impl Service {
                 .store(false, std::sync::atomic::Ordering::Release);
             return Err(format!("command queue unavailable: {error}"));
         }
+        self.signal();
+        Ok(())
+    }
+    pub fn cancel_command(&self, request: PositionRequest) -> Result<(), String> {
+        self.commands
+            .try_send(Input::CancelCommand(request))
+            .map_err(|error| error.to_string())?;
         self.signal();
         Ok(())
     }
@@ -620,6 +629,44 @@ mod tests {
 #[cfg(test)]
 mod command_tests {
     use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_can_follow_a_queued_command_and_waits_for_its_terminal_event() {
+        let (service, session) = Service::external(|| {});
+        let request = PositionRequest {
+            id: 9,
+            revision: 2,
+            position: 1,
+        };
+        service
+            .command(request, serde_json::Value::Null, None)
+            .unwrap();
+        service.cancel_command(request).unwrap();
+        assert!(
+            matches!(session.try_next(), Some(Input::Command { request: target, .. }) if target == request)
+        );
+        assert!(
+            matches!(session.try_next(), Some(Input::CancelCommand(target)) if target == request)
+        );
+        assert!(
+            service
+                .command(request, serde_json::Value::Null, None)
+                .is_err()
+        );
+        session.events().publish(Event::Command {
+            request,
+            result: Err("cancelled".into()),
+        });
+        assert!(
+            matches!(service.events.recv().await.unwrap(), Event::Command { request: target, .. } if target == request)
+        );
+        service
+            .command(
+                PositionRequest { id: 10, ..request },
+                serde_json::Value::Null,
+                None,
+            )
+            .unwrap();
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn commands_keep_their_result_until_consumed_and_do_not_share_hover_slots() {
         let (service, session) = Service::external(|| {});

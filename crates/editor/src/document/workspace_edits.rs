@@ -177,8 +177,15 @@ impl Document {
                 }
             }
         }
-        if self.buffer_order.len() + closed.len() > 256 {
+        if self.documents.len() + closed.len() > 256 {
             return Err("Workspace edit would exceed 256 open documents".into());
+        }
+        let mut documents = self.documents.clone();
+        let mut closed_ids = Vec::with_capacity(closed.len());
+        for (file, _, _) in &closed {
+            let id = documents.next_id();
+            documents.restore(id, Some(file.path().to_path_buf()))?;
+            closed_ids.push(id);
         }
         let mut count = closed.len();
         for (id, transaction) in open {
@@ -194,12 +201,10 @@ impl Document {
                 }
             });
         }
-        for (file, editor, path) in closed {
+        self.documents = documents;
+        for ((file, editor, path), id) in closed.into_iter().zip(closed_ids) {
             let editor = cx.new(|_| editor);
-            let id = self.next_buffer;
-            self.next_buffer += 1;
             let buffer = BufferState::new(id, editor, file, path, cx);
-            self.buffer_order.push(id);
             if self.buffer.as_ref().is_none() {
                 self.buffer.replace(buffer);
                 self.restore_focus_pending = true;

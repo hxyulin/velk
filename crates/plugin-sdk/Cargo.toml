@@ -20,6 +20,7 @@ path = "tests/fixtures/duplicate-pack.rs"
 crate-type = ["cdylib"]
 
 [features]
+test-support = []
 markup = ["dep:velk-markup"]
 
 [dependencies]
