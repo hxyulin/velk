@@ -1335,7 +1335,9 @@ mod tests {
         let Ok(graphics) = pollster::block_on(rxui::astrelis::GraphicsContext::headless()) else {
             return;
         };
-        let buffer = crate::Buffer::new(include_str!("../../editor/src/main.rs"));
+        let buffer = crate::Buffer::new(
+            "use std::sync::Arc;\nstruct Document { value: usize }\nfn main() {\n    let document = Arc::new(Document { value: 42 });\n    println!(\"{}\", document.value);\n}\n",
+        );
         let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
             .update(0, buffer.text(), &[], || false)

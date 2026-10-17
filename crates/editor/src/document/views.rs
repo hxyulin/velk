@@ -160,9 +160,10 @@ impl Document {
             return;
         }
         if let Some(buffer) = self.buffer.as_ref() {
-            buffer
-                .editor
-                .update(cx, |editor, _| editor.cancel_composition());
+            buffer.editor.update(cx, |editor, _| {
+                editor.break_undo_group();
+                editor.cancel_composition();
+            });
         }
         self.cancel_key_chord();
         self.views.layout.active = id;
@@ -581,6 +582,27 @@ mod tests {
                 assert!(editor.mark_saved(checkpoint));
             });
             assert!(!second.read(cx).buffer().is_dirty());
+        });
+    }
+    #[test]
+    fn opening_another_document_and_returning_ends_the_original_typing_group() {
+        let (mut runtime, document, _directory) = document();
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.buffer
+                    .editor
+                    .update(cx, |editor, _| editor.insert("a"));
+                this.add_buffer(None, Editor::new("other"), "other".into(), cx);
+                this.select_buffer(1, cx);
+                this.buffer.editor.update(cx, |editor, _| {
+                    editor.insert("b");
+                    editor.execute(velk_editor_model::EditCommand::Undo);
+                });
+                assert_eq!(
+                    this.buffer.editor.read(cx).buffer().text().to_string(),
+                    "aalpha\nbeta\n"
+                );
+            })
         });
     }
     #[test]

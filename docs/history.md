@@ -1,0 +1,56 @@
+# Undo history
+
+Velk keeps one undo tree per document, shared by its views. Undo/redo acts on
+that history from the focused pane; other panes' selections follow each edit.
+Typing and repeated deletion group until a caret move, another command, a view
+switch, a save, or one second of inactivity. Paste and IME commits are separate
+undo steps. Programmatic multi-edit transactions stay atomic.
+
+Editing after undo keeps the previous future as another branch. Ordinary redo
+follows the most recently edited or visited branch. Alternative branches are
+available through Core's linked Rust `redo_branches` and `redo_branch` APIs;
+a branch picker is not implemented in the shell.
+
+## RAM and recovery
+
+History uses reversible text patches, separate from the live Rope. By default,
+a document retains at most 128 history entries and 64 MiB of patch data and
+entry overhead. Inactive branch leaves are pruned first, then old ancestors.
+An individual edit larger than the budget may have no retained undo entry.
+Recovery/save snapshots held by background workers can keep data alive beyond
+these limits until their work completes.
+
+Recovery and Reload Window serialize the exact retained tree, including every
+replacement in a transaction and the preferred redo branches. Restoring a rename
+or a multi-caret edit therefore preserves the mapping of peer carets during
+subsequent undo/redo. Encoding does not scan pairs of historical document
+snapshots to discover edits.
+
+## Optional disk undo
+
+Set `VELK_UNDO_DIR` to a directory outside the project before starting Velk:
+
+```sh
+VELK_UNDO_DIR="$HOME/.local/state/velk/undo" \
+  cargo xtask run --release -- path/to/file.rs
+```
+
+After a successful file save, the save worker atomically writes that snapshot's
+undo tree to the directory. Reopening the same canonical file path loads the
+archive on the file worker only if its text matches the current file. Different
+on-disk text starts fresh history. Missing archives are normal; damaged or
+unreadable archives are logged and do not prevent opening the file. Archive
+write failures are logged independently of a successful source-file save.
+
+Archives survive normal application exit and are separate from crash recovery.
+They retain prior and deleted text. Files use opaque names derived from canonical
+paths; new archives use private temporary-file permissions. Remove the directory
+to clear persistent history, and unset the variable to disable it. No directory
+is created when the feature is disabled. There is no archive cleanup UI or
+background garbage collector yet.
+
+This is persistent storage for the bounded tree captured at Save, not unlimited
+history or automatic paging of older entries from disk. Unsaved work and newer
+history continue to use recovery. A file changed away from an archived state
+will not inherit its undo tree. Archives and recovery use an internal format
+that may change during early development without migration.

@@ -52,13 +52,7 @@ impl History {
             .filter(|a| a.buffer == buffer)
         {
             for edit in changes {
-                anchor.position = if anchor.position < edit.replaced.start {
-                    anchor.position
-                } else if anchor.position <= edit.replaced.end {
-                    edit.replaced.start + edit.inserted
-                } else {
-                    anchor.position - edit.replaced.len() + edit.inserted
-                };
+                anchor.position = edit.map_position(anchor.position, velk_core::Affinity::After);
             }
         }
     }

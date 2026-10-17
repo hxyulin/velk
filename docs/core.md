@@ -38,9 +38,9 @@ to Tree-sitter input edits; the editor does not depend on its parser or grammar.
 cheap snapshots, borrowed chunks, and coordinate conversion. An abstract storage
 interface is deferred until a concrete replacement or binary boundary requires it.
 
-Buffer snapshot encoding remains version 1 so existing recovery and reload data
-continue to work. That process format is not a promise of compatibility between
-arbitrary engine implementations.
+Internal snapshot encoding remains version 1 during development. Its shape can
+change without migrations; older development recovery files and undo archives
+may be rejected. It is not a compatibility promise between engine implementations.
 
 Run Core's editing, Unicode, transaction, and history tests without building the
 native frontend or terminal:
@@ -68,6 +68,47 @@ provider state such as Vim modes and tracked pairs. The application owns file
 identity, saves, recovery, search, and one semantic service per document. A split
 creates another widget over the same document; it does not reopen the file or
 start another document service.
+
+## History and position tracking
+
+The live Rope is separate from `RamHistory`, a tree of reversible patches.
+Each patch retains inserted and removed text and its original change coordinates;
+there is no historical Rope per entry and no whole-document diff during encoding.
+Each transaction is one history node unless the caller explicitly groups input.
+Editing after undo retains the alternative branch. `redo()` follows the preferred
+child, `redo_branches()` lists alternatives, and `redo_branch(state)` selects one.
+State IDs remain unique when grouped entries are extended, so old snapshots and
+saved checkpoints cannot accidentally identify newer text.
+
+The default RAM limits are 128 entries and 64 MiB of retained patch data and
+entry overhead per document. `set_history_limits` changes these linked Rust
+limits. Pruning removes the oldest inactive branch leaves before advancing the
+root along the active path. A patch larger than the budget can leave its edit
+without an undo entry. The limit excludes live text, allocator bookkeeping,
+and immutable snapshots still held by recovery/save workers.
+
+`BufferSnapshot` captures the current text, checkpoint, exact undo tree, and
+preferred branches. Immutable entries share their data with the live tree until
+modified. Encoding and validation run off the UI thread. Restore checks graph
+connectivity, patch contents, Unicode selections, coordinates, and limits.
+`write_archive(path)` atomically replaces a disk archive;
+`Buffer::read_archive(path, expected_text)` can reject a stale file baseline.
+These are blocking APIs for workers, not a disk paging layer. Disk archives
+preserve the retained RAM tree; they do not extend its retention budget.
+See [history.md](history.md) for application integration.
+
+`begin_undo_group` / `end_undo_group` group compatible typing, backspace, or delete
+operations from one view, with a one-second idle boundary. Caret movement, saves,
+undo/redo, view changes, paste, IME commits, and separate commands end a run.
+A frontend must end a run before capturing an asynchronous save checkpoint.
+Headless callers that do not request grouping keep one step per transaction.
+
+`Change::map_position` and `map_selection` define anchor mapping with explicit
+before/after insertion affinity. Core views, navigation, pair tracking, visual
+selections, and multiple carets use these rules. Consumers of `edits_since` must
+invalidate their cached positions when it returns `None`; silently reusing an
+expired position is not supported. Core view selections follow edits directly
+and are independent of this bounded journal.
 
 ## Commands and lifecycle
 

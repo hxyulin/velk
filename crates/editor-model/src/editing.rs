@@ -84,6 +84,12 @@ impl Session {
             .and_then(|selection| selection.block.as_ref())
             .is_some();
         if !block && self.multiple.is_none() {
+            if self.visual.is_some() && command.clone().apply(buffer) {
+                self.visual = None;
+                self.input = Default::default();
+                self.synchronize(buffer);
+                return Ok(true);
+            }
             return Ok(false);
         }
         match command {
@@ -123,6 +129,8 @@ impl Session {
             }
             _ => {
                 self.multiple = None;
+                self.visual = None;
+                self.input = Default::default();
                 return Ok(false);
             }
         }
@@ -135,13 +143,17 @@ impl Session {
     pub fn synchronize(&mut self, buffer: &Buffer) {
         if self
             .visual
-            .as_ref()
-            .is_some_and(|selection| !selection.valid(buffer))
+            .as_mut()
+            .is_some_and(|selection| !selection.synchronize(buffer))
         {
             self.visual = None;
             self.input = Default::default();
         }
-        if self.multiple.as_ref().is_some_and(|set| !set.valid(buffer)) {
+        if self
+            .multiple
+            .as_mut()
+            .is_some_and(|set| !set.synchronize(buffer))
+        {
             self.multiple = None;
         }
         if buffer.revision() == self.revision {
@@ -154,15 +166,8 @@ impl Session {
                     {
                         return false;
                     }
-                    let map = |position| {
-                        if position < change.replaced.start {
-                            position
-                        } else {
-                            position - change.replaced.len() + change.inserted
-                        }
-                    };
-                    pair.open = map(pair.open);
-                    pair.close = map(pair.close);
+                    pair.open = change.map_position(pair.open, velk_core::Affinity::After);
+                    pair.close = change.map_position(pair.close, velk_core::Affinity::After);
                     true
                 });
             }

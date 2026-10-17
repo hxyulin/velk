@@ -278,6 +278,11 @@ impl Document {
             let editor = self.buffer.editor.read(cx);
             (editor.buffer().text(), editor.buffer().checkpoint())
         };
+        self.buffer
+            .editor
+            .update(cx, |editor, _| editor.break_undo_group());
+        let undo_snapshot = crate::undo::Store::from_env()
+            .map(|store| (store, self.buffer.editor.read(cx).buffer().snapshot()));
         let saved_revision = self.buffer.editor.read(cx).buffer().revision();
         let buffer_id = self.buffer.id;
         let saved_snapshot = self
@@ -315,7 +320,7 @@ impl Document {
                             "save dequeued"
                         );
                     }
-                    match destination {
+                    let saved = match destination {
                         Some(path) => FileState::save_as(file, path, text, &occupied),
                         None => {
                             let file =
@@ -326,7 +331,13 @@ impl Document {
                                 file.save(text)
                             }
                         }
+                    }?;
+                    if let Some((store, snapshot)) = undo_snapshot
+                        && let Err(error) = store.save(saved.path(), snapshot)
+                    {
+                        tracing::warn!(%error, "file saved but undo archive could not be written");
                     }
+                    Ok::<_, std::io::Error>(saved)
                 })
             },
             move |this, result, cx| {

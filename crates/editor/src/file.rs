@@ -93,7 +93,16 @@ impl FileState {
             endings: [0; 3],
             after_cr: false,
         };
-        let editor = Buffer::from_reader(&mut reader)?;
+        let mut editor = Buffer::from_reader(&mut reader)?;
+        if let Some(store) = crate::undo::Store::from_env() {
+            match store.load(&path, &editor.text()) {
+                Ok(Some(restored)) => editor = restored,
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "cannot restore undo archive")
+                }
+            }
+        }
         let max = reader.endings.iter().copied().max().unwrap();
         let index = reader.endings.iter().position(|&n| n == max).unwrap();
         let ending = [LineEnding::Lf, LineEnding::CrLf, LineEnding::Cr][index];

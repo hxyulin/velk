@@ -13,6 +13,42 @@ pub(super) struct VisualSelection {
     columns: Option<(usize, usize)>,
 }
 impl VisualSelection {
+    pub fn synchronize(&mut self, buffer: &Buffer) -> bool {
+        if self.revision == buffer.revision() {
+            return self.valid(buffer);
+        }
+        let Some(changes) = buffer.edits_since(self.revision) else {
+            return false;
+        };
+        let selected_text = !self.projected.is_empty();
+        for change in &changes {
+            self.anchor = change.map_position(self.anchor, velk_core::Affinity::After);
+            self.head = change.map_position(self.head, velk_core::Affinity::After);
+            self.projected = change.map_selection(self.projected, velk_core::Affinity::After);
+        }
+        if selected_text && self.projected.is_empty() {
+            return false;
+        }
+        let snap = |position: usize| {
+            if buffer.is_grapheme_boundary(position) {
+                position
+            } else {
+                buffer.next_grapheme_boundary(position.min(buffer.text().len_chars()))
+            }
+        };
+        self.anchor = snap(self.anchor);
+        self.head = snap(self.head);
+        self.projected.anchor = snap(self.projected.anchor);
+        self.projected.head = snap(self.projected.head);
+        if let Some(block) = &mut self.block {
+            if !block.synchronize(buffer) {
+                return false;
+            }
+            self.columns = Some((column(buffer, self.anchor), column(buffer, self.head)));
+        }
+        self.revision = buffer.revision();
+        self.valid(buffer)
+    }
     pub fn valid(&self, buffer: &Buffer) -> bool {
         buffer.revision() == self.revision && buffer.selection() == self.projected
     }
@@ -463,4 +499,44 @@ pub(super) fn apply(buffer: &mut Buffer, action: Action) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn visual_block_regions_follow_peer_edits_without_losing_the_mode() {
+        let mut buffer = Buffer::new("ab\ncd");
+        let mut visual = None;
+        let mut multiple = None;
+        apply_visual(
+            &mut buffer,
+            Action::Select {
+                mode: Some(SelectionKind::Block),
+            },
+            &mut visual,
+            &mut multiple,
+        )
+        .unwrap();
+        apply_visual(
+            &mut buffer,
+            Action::Move {
+                motion: Motion::Down,
+                count: 1,
+            },
+            &mut visual,
+            &mut multiple,
+        )
+        .unwrap();
+        let mut peer = buffer.new_view();
+        peer.set_caret(0, false);
+        peer.insert("x\n");
+        let visual = visual.as_mut().unwrap();
+        assert!(visual.synchronize(&buffer));
+        assert_eq!(visual.kind, SelectionKind::Block);
+        let regions = &visual.block.as_ref().unwrap().regions;
+        assert_eq!(regions[0].caret, 2);
+        assert_eq!(regions[1].caret, 5);
+        assert_eq!(visual.head, 5);
+    }
 }

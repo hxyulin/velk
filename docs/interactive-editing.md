@@ -77,7 +77,11 @@ non-capturing input and `command` for capturing input. User [keybindings](keybin
 match this ID rather than the display label, which may include counts or prefixes.
 
 State is local to each editor view, reset when its provider is replaced or deselected,
-and is not serialized into recovery data. Unloaded provider leases decline and
+and is not serialized into recovery data. Peer edits rebase visual ranges and
+secondary carets while the required change sequence is available. Expired change
+sequences or overlapping/collapsed secondary regions cancel that transient
+selection state. Local paste, deletion, and ordinary navigation still exit visual
+selection as appropriate. Unloaded provider leases decline and
 release modal capture. If an active capturing provider fails validation or
 execution, the editor consumes input and logs the error to avoid inserting
 command text. Selecting Standard editing restores ordinary input.

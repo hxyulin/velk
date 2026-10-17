@@ -5,6 +5,7 @@ mod recovery;
 mod session;
 mod settings;
 mod theme;
+mod undo;
 mod workspace;
 
 use rxui::{WeakEntity, prelude::*};

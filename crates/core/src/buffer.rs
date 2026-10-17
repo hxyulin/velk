@@ -1,4 +1,6 @@
+mod history;
 mod session;
+pub use history::{HistoryLimits, RedoBranch, UndoGroup};
 mod views;
 use ropey::{Rope, RopeBuilder};
 pub use session::BufferSnapshot;
@@ -15,7 +17,7 @@ pub use views::{Buffer, TextDocument};
 
 use crate::{Change, graphemes};
 
-const HISTORY_LIMIT: usize = 128;
+const CHANGE_LOG_LIMIT: usize = 128;
 
 /// A directed selection, in Unicode scalar (Ropey character) offsets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -114,20 +116,16 @@ struct Snapshot {
     state: u64,
 }
 
-#[derive(Clone)]
-struct History {
-    snapshot: Snapshot,
-    edits: Vec<Change>,
-}
-
 /// Rope document and editing state, independent of RXUI and the graphics host.
 /// Newlines are normalized to LF. All caret positions are grapheme boundaries.
 struct DocumentState {
     views: std::collections::BTreeMap<u64, views::State>,
     next_view: u64,
     current: Snapshot,
-    undo: VecDeque<History>,
-    redo: Vec<History>,
+    history: history::RamHistory,
+    group: Option<history::Group>,
+    previous_group: Option<history::Group>,
+    merge_group: bool,
     revision: u64,
     document: u64,
     next_state: u64,
@@ -189,8 +187,10 @@ impl DocumentState {
                 selection: Selection::default(),
                 state: 0,
             },
-            undo: VecDeque::new(),
-            redo: Vec::new(),
+            history: history::RamHistory::default(),
+            group: None,
+            previous_group: None,
+            merge_group: false,
             revision: 0,
             document,
             next_state: 1,
@@ -256,11 +256,11 @@ impl DocumentState {
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
+        self.history.entries.contains_key(&self.current.state)
     }
 
     pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
+        self.history.preferred.contains_key(&self.current.state)
     }
 
     /// Clamp and snap an external character offset to the preceding grapheme edge.
@@ -404,54 +404,67 @@ impl DocumentState {
     }
 
     pub fn undo(&mut self) {
-        if let Some(previous) = self.undo.pop_back() {
-            for edit in previous.edits.iter().rev() {
-                self.revision += 1;
-                self.record(edit.inverse(self.revision));
-            }
-            self.redo.push(History {
-                snapshot: std::mem::replace(&mut self.current, previous.snapshot),
-                edits: previous.edits,
-            });
-            self.changed();
+        let Some(entry) = self.history.entries.get(&self.current.state).cloned() else {
+            return;
+        };
+        self.history
+            .preferred
+            .insert(entry.parent, self.current.state);
+        for patch in entry.patches.iter().rev() {
+            let change = patch.change.inverse(self.revision + 1);
+            self.current.text.remove(change.replaced.clone());
+            self.current
+                .text
+                .insert(change.replaced.start, &patch.removed);
+            self.revision += 1;
+            self.record(change);
         }
+        self.current.state = entry.parent;
+        self.current.selection = entry.before;
+        self.changed();
     }
 
     pub fn redo(&mut self) {
-        if let Some(next) = self.redo.pop() {
-            for edit in &next.edits {
-                self.revision += 1;
-                let mut edit = edit.clone();
-                edit.revision = self.revision;
-                self.record(edit);
-            }
-            self.undo.push_back(History {
-                snapshot: std::mem::replace(&mut self.current, next.snapshot),
-                edits: next.edits,
-            });
-            self.changed();
+        let Some(&state) = self.history.preferred.get(&self.current.state) else {
+            return;
+        };
+        self.redo_branch(state);
+    }
+
+    fn redo_branch(&mut self, state: u64) -> bool {
+        let Some(entry) = self
+            .history
+            .entries
+            .get(&state)
+            .filter(|entry| entry.parent == self.current.state)
+            .cloned()
+        else {
+            return false;
+        };
+        self.history.preferred.insert(self.current.state, state);
+        for patch in &entry.patches {
+            let mut change = patch.change.clone();
+            change.revision = self.revision + 1;
+            self.current.text.remove(change.replaced.clone());
+            self.current
+                .text
+                .insert(change.replaced.start, &patch.inserted);
+            self.revision += 1;
+            self.record(change);
         }
+        self.current.state = state;
+        self.current.selection = entry.after;
+        self.changed();
+        true
     }
 
     fn record(&mut self, edit: Change) {
         for view in self.views.values_mut() {
-            let map = |position: usize| {
-                if position < edit.replaced.start {
-                    position
-                } else if position <= edit.replaced.end {
-                    edit.replaced.start + edit.inserted
-                } else {
-                    position - edit.replaced.len() + edit.inserted
-                }
-            };
-            view.selection = Selection {
-                anchor: map(view.selection.anchor),
-                head: map(view.selection.head),
-            };
+            view.selection = edit.map_selection(view.selection, crate::Affinity::After);
             view.goal_column = None;
         }
         self.edits.push_back(edit);
-        if self.edits.len() > HISTORY_LIMIT {
+        if self.edits.len() > CHANGE_LOG_LIMIT {
             self.edits.pop_front();
         }
     }
@@ -471,6 +484,7 @@ impl DocumentState {
             .sort_by_key(|edit| (edit.range.start, edit.range.end));
         let mut next = self.current.clone();
         let mut edits = Vec::with_capacity(transaction.edits.len());
+        let mut patches = Vec::with_capacity(transaction.edits.len());
         for edit in transaction.edits.into_iter().rev() {
             let text = if edit.text.contains('\r') {
                 normalize(&edit.text)
@@ -484,19 +498,7 @@ impl DocumentState {
             next.text.remove(edit.range.clone());
             next.text.insert(edit.range.start, &text);
             let inserted = text.chars().count();
-            let map = |position: usize| {
-                if position < edit.range.start {
-                    position
-                } else if position <= edit.range.end {
-                    edit.range.start + inserted
-                } else {
-                    position - edit.range.len() + inserted
-                }
-            };
-            next.selection = Selection {
-                anchor: map(next.selection.anchor),
-                head: map(next.selection.head),
-            };
+            let removed: Arc<str> = before.slice(edit.range.clone()).to_string().into();
             edits.push(Change::between(
                 self.revision + edits.len() as u64 + 1,
                 &before,
@@ -504,6 +506,15 @@ impl DocumentState {
                 edit.range,
                 inserted,
             ));
+            next.selection = edits
+                .last()
+                .unwrap()
+                .map_selection(next.selection, crate::Affinity::After);
+            patches.push(history::Patch {
+                change: edits.last().unwrap().clone(),
+                removed,
+                inserted: text.into(),
+            });
         }
         if let Some(selection) = transaction.selection {
             if selection.anchor > next.text.len_chars() || selection.head > next.text.len_chars() {
@@ -536,17 +547,20 @@ impl DocumentState {
         next.state = self.next_state;
         self.next_state += 1;
         let previous = std::mem::replace(&mut self.current, next);
-        self.redo.clear();
         for edit in &edits {
             self.record(edit.clone());
         }
         self.revision += edits.len() as u64;
-        self.undo.push_back(History {
-            snapshot: previous,
-            edits,
-        });
-        if self.undo.len() > HISTORY_LIMIT {
-            self.undo.pop_front();
+        self.history.commit(
+            self.current.state,
+            previous.state,
+            previous.selection,
+            self.current.selection,
+            patches,
+            self.group.is_some() && self.merge_group && previous.state != self.saved.state,
+        );
+        if self.group.is_some() {
+            self.merge_group = true;
         }
         self.goal_column = None;
         Ok(true)

@@ -592,7 +592,7 @@ mod tests {
         }
     }
     #[test]
-    fn external_edits_and_selections_invalidate_visual_anchors() {
+    fn explicit_selection_and_replacement_of_the_visual_range_cancel_visual_mode() {
         let mut buffer = Buffer::new("abc");
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "vl");
@@ -606,6 +606,21 @@ mod tests {
         session.synchronize(&buffer);
         assert!(!session.has_visual_selection());
         assert_eq!(session.caret_position(&buffer), buffer.selection().head);
+    }
+    #[test]
+    fn peer_edits_before_the_visual_range_preserve_mode_and_selected_text() {
+        let mut buffer = Buffer::new("abc");
+        let mut session = session(&mut buffer);
+        keys(&mut session, &mut buffer, "vl");
+        let mut peer = buffer.new_view();
+        peer.set_caret(0, false);
+        peer.insert("X");
+        session.synchronize(&buffer);
+        assert!(session.has_visual_selection());
+        assert_eq!(session.input_state().label, "VISUAL");
+        assert_eq!(session.selected_text(&buffer), "ab");
+        keys(&mut session, &mut buffer, "d");
+        assert_eq!(buffer.text().to_string(), "Xc");
     }
     #[test]
     fn visual_block_projects_disjoint_rows_and_deletes_atomically() {

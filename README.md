@@ -64,7 +64,8 @@ the terminal plugin is disabled in this example workspace.
 - **Plugin-provided editing:** Tab / Shift+Tab indentation, aligned newlines, matching brackets, and selection wrapping.
 - **Documents that survive interruptions:** untitled and file-backed buffers,
   Save As, Save All, atomic file replacement, disk-change conflict protection,
-  and separate recovery snapshots with undo history.
+  and separate recovery snapshots with exact undo trees. Typing groups into undo
+  steps; [optional disk undo](docs/history.md) retains saved history across sessions.
 - **A persistent workspace:** tab order, selections, scroll positions, workspace
   roots, and recovery state. Closing the final tab leaves the window open with
   New and Open actions.

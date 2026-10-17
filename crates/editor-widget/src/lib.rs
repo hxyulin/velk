@@ -122,14 +122,18 @@ impl Editor {
         (!label.is_empty()).then_some(label.as_str())
     }
     fn keymap(&mut self, key: &str, control: bool, alt: bool, meta: bool, text: bool) -> bool {
-        self.interactive(velk_editing::Intent::Key(velk_editing::input::Key {
+        let handled = self.interactive(velk_editing::Intent::Key(velk_editing::input::Key {
             key: key.into(),
             text,
             control,
             alt,
             meta,
             state: Default::default(),
-        }))
+        }));
+        if handled {
+            self.buffer.break_undo_group();
+        }
+        handled
     }
     fn bind_keymap_shortcut<const SLOT: usize>(
         &self,
@@ -196,9 +200,13 @@ impl Editor {
             && self.composition.is_none()
             && self.interactive(velk_editing::Intent::Type(text.into()))
         {
+            self.buffer.break_undo_group();
             return;
         }
-        if source == rxui::TextInsertSource::Paste {
+        if matches!(
+            source,
+            rxui::TextInsertSource::Paste | rxui::TextInsertSource::Ime
+        ) {
             self.execute(EditCommand::Paste(text));
         } else {
             self.insert(text);
@@ -368,6 +376,10 @@ impl Editor {
         self.geometry.borrow().metrics
     }
 
+    pub fn break_undo_group(&mut self) {
+        self.buffer.break_undo_group();
+    }
+
     pub fn buffer(&self) -> &Buffer {
         &self.buffer
     }
@@ -418,6 +430,31 @@ impl Editor {
 
     /// Apply editor intent and refresh syntax, annotations, hover, and caret state.
     pub fn execute(&mut self, command: EditCommand<'_>) -> bool {
+        let group = match &command {
+            EditCommand::Insert(text)
+                if !text.contains(['\n', '\r']) && self.buffer.selection().is_empty() =>
+            {
+                Some(velk_core::UndoGroup::Typing)
+            }
+            EditCommand::Backspace if self.buffer.selection().is_empty() => {
+                Some(velk_core::UndoGroup::Backspace)
+            }
+            EditCommand::Delete if self.buffer.selection().is_empty() => {
+                Some(velk_core::UndoGroup::Delete)
+            }
+            _ => None,
+        };
+        if let Some(kind) = group {
+            self.buffer.begin_undo_group(kind);
+        } else {
+            self.buffer.break_undo_group();
+        }
+        let accepted = self.execute_inner(command);
+        self.buffer.end_undo_group();
+        accepted
+    }
+
+    fn execute_inner(&mut self, command: EditCommand<'_>) -> bool {
         self.note_input();
         #[cfg(any(test, feature = "performance"))]
         {
@@ -428,11 +465,7 @@ impl Editor {
         }
         let was_visual = self.editing.has_visual_selection();
         match self.editing.edit_command(&mut self.buffer, &command) {
-            Ok(true) => {
-                if was_visual && !self.editing.has_visual_selection() {
-                    self.keymap("", false, false, false, false);
-                }
-            }
+            Ok(true) => {}
             Ok(false) => {
                 if !command.apply(&mut self.buffer) {
                     return false;
@@ -442,6 +475,9 @@ impl Editor {
                 tracing::warn!(%error, "multi-selection edit failed");
                 return false;
             }
+        }
+        if was_visual && !self.editing.has_visual_selection() {
+            self.keymap("", false, false, false, false);
         }
         self.composition = None;
         self.edited();
@@ -453,6 +489,7 @@ impl Editor {
         &mut self,
         transaction: Transaction,
     ) -> Result<bool, TransactionError> {
+        self.buffer.break_undo_group();
         let changed = self.buffer.apply_transaction(transaction)?;
         self.composition = None;
         self.edited();
@@ -1352,6 +1389,39 @@ mod interactive_tests {
         fn evaluate(&self, _: &velk_editing::Request) -> Result<velk_editing::Decision, String> {
             Err("provider failure".into())
         }
+    }
+    #[test]
+    fn keyboard_typing_and_deletion_group_but_paste_ime_and_motion_are_boundaries() {
+        let mut editor = Editor::new("");
+        for text in ["a", "b", "c"] {
+            editor.committed_text(text, rxui::TextInsertSource::Keyboard);
+        }
+        editor.execute(EditCommand::Undo);
+        assert_eq!(editor.buffer().text().to_string(), "");
+        editor.execute(EditCommand::Redo);
+        for _ in 0..2 {
+            assert!(!editor.keymap("Backspace", false, false, false, false));
+            editor.execute(EditCommand::Backspace);
+        }
+        assert_eq!(editor.buffer().text().to_string(), "a");
+        editor.execute(EditCommand::Undo);
+        assert_eq!(editor.buffer().text().to_string(), "abc");
+        for source in [rxui::TextInsertSource::Paste, rxui::TextInsertSource::Ime] {
+            editor.committed_text("X", source);
+            editor.committed_text("Y", rxui::TextInsertSource::Keyboard);
+            editor.execute(EditCommand::Undo);
+            assert_eq!(editor.buffer().text().to_string(), "abcX");
+            editor.execute(EditCommand::Undo);
+            assert_eq!(editor.buffer().text().to_string(), "abc");
+        }
+        editor.committed_text("d", rxui::TextInsertSource::Keyboard);
+        editor.execute(EditCommand::Horizontal {
+            right: false,
+            extend: false,
+        });
+        editor.committed_text("e", rxui::TextInsertSource::Keyboard);
+        editor.execute(EditCommand::Undo);
+        assert_eq!(editor.buffer().text().to_string(), "abcd");
     }
     #[test]
     fn failed_or_oversized_indentation_never_replaces_selected_text() {

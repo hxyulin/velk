@@ -71,6 +71,81 @@ impl Buffer {
     pub fn restore(bytes: &[u8]) -> Result<Self, String> {
         DocumentState::restore(bytes).map(Self::from_state)
     }
+    /// Read an exact undo-tree archive on a blocking/startup thread.
+    /// If supplied, expected text must match before attaching its history.
+    pub fn read_archive(path: &std::path::Path, expected: Option<&Rope>) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let buffer = Self::restore(&bytes)?;
+        if expected.is_some_and(|text| *text != buffer.text()) {
+            return Err("undo archive does not match the current file".into());
+        }
+        Ok(buffer)
+    }
+    /// Begin one input operation. Pair with `end_undo_group`; selection movement,
+    /// saves, undo, and redo end a typing run. The inactivity limit is one second.
+    pub fn begin_undo_group(&mut self, kind: UndoGroup) {
+        let mut document = self.document.0.lock().unwrap();
+        let selection = document.views[&self.id].selection;
+        let time = std::time::Instant::now();
+        document.merge_group = document.previous_group.as_ref().is_some_and(|last| {
+            last.view == self.id
+                && last.kind == kind
+                && last.state == document.current.state
+                && last.selection == selection
+                && time.duration_since(last.time) < std::time::Duration::from_secs(1)
+        });
+        document.group = Some(history::Group {
+            view: self.id,
+            kind,
+            state: document.current.state,
+            selection,
+            time,
+        });
+    }
+    pub fn end_undo_group(&mut self) {
+        let mut document = self.document.0.lock().unwrap();
+        if document
+            .group
+            .as_ref()
+            .is_some_and(|group| group.view != self.id)
+        {
+            return;
+        }
+        if let Some(mut group) = document.group.take()
+            && group.state != document.current.state
+        {
+            group.state = document.current.state;
+            group.selection = document.views[&self.id].selection;
+            group.time = std::time::Instant::now();
+            document.previous_group = Some(group);
+        }
+        document.merge_group = false;
+    }
+    pub fn break_undo_group(&mut self) {
+        let mut document = self.document.0.lock().unwrap();
+        document.group = None;
+        document.previous_group = None;
+        document.merge_group = false;
+    }
+    pub fn history_limits(&self) -> HistoryLimits {
+        self.read(|d| d.history.limits)
+    }
+    pub fn set_history_limits(&mut self, limits: HistoryLimits) {
+        self.update(|d| {
+            d.history.limits = limits;
+            d.history.prune(d.current.state);
+        });
+    }
+    pub fn history_bytes(&self) -> usize {
+        self.read(|d| d.history.bytes())
+    }
+    pub fn redo_branches(&self) -> Vec<RedoBranch> {
+        self.read(|d| d.history.branches(d.current.state))
+    }
+    pub fn redo_branch(&mut self, state: u64) -> bool {
+        self.break_undo_group();
+        self.update(|d| d.redo_branch(state))
+    }
     pub fn document(&self) -> TextDocument {
         self.document.clone()
     }
@@ -91,6 +166,15 @@ impl Buffer {
     }
     fn update<R>(&self, run: impl FnOnce(&mut DocumentState) -> R) -> R {
         let mut document = self.document.0.lock().unwrap();
+        if document
+            .group
+            .as_ref()
+            .is_some_and(|group| group.view != self.id)
+        {
+            document.group = None;
+            document.previous_group = None;
+            document.merge_group = false;
+        }
         let view = document.views[&self.id];
         document.current.selection = view.selection;
         document.goal_column = view.goal_column;
@@ -139,6 +223,7 @@ impl Buffer {
         self.read(DocumentState::can_redo)
     }
     pub fn mark_saved(&mut self, checkpoint: Checkpoint) -> bool {
+        self.break_undo_group();
         self.update(|d| d.mark_saved(checkpoint))
     }
     pub fn is_grapheme_boundary(&self, position: usize) -> bool {
@@ -165,12 +250,14 @@ impl Buffer {
         self.read(|d| d.edits_since(revision))
     }
     pub fn set_caret(&mut self, position: usize, extend: bool) {
+        self.break_undo_group();
         self.update(|d| d.set_caret(position, extend));
     }
     pub fn set_selection_preserving_column(&mut self, selection: Selection) {
         self.update(|d| d.set_selection_preserving_column(selection));
     }
     pub fn select_all(&mut self) {
+        self.break_undo_group();
         self.update(DocumentState::select_all);
     }
     pub fn insert(&mut self, text: &str) {
@@ -183,24 +270,30 @@ impl Buffer {
         self.update(DocumentState::delete);
     }
     pub fn undo(&mut self) {
+        self.break_undo_group();
         self.update(DocumentState::undo);
     }
     pub fn redo(&mut self) {
+        self.break_undo_group();
         self.update(DocumentState::redo);
     }
     pub fn clamp_caret_to_line_character(&mut self) {
         self.update(DocumentState::clamp_caret_to_line_character);
     }
     pub fn horizontal(&mut self, right: bool, extend: bool) {
+        self.break_undo_group();
         self.update(|d| d.horizontal(right, extend));
     }
     pub fn vertical(&mut self, down: bool, extend: bool) {
+        self.break_undo_group();
         self.update(|d| d.vertical(down, extend));
     }
     pub fn line_edge(&mut self, end: bool, extend: bool) {
+        self.break_undo_group();
         self.update(|d| d.line_edge(end, extend));
     }
     pub fn document_edge(&mut self, end: bool, extend: bool) {
+        self.break_undo_group();
         self.update(|d| d.document_edge(end, extend));
     }
     pub fn apply_transaction(
@@ -218,6 +311,38 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn idle_input_ends_a_typing_group_without_sleeping() {
+        let mut buffer = Buffer::new("");
+        buffer.begin_undo_group(UndoGroup::Typing);
+        buffer.insert("a");
+        buffer.end_undo_group();
+        buffer
+            .document
+            .0
+            .lock()
+            .unwrap()
+            .previous_group
+            .as_mut()
+            .unwrap()
+            .time = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        buffer.begin_undo_group(UndoGroup::Typing);
+        buffer.insert("b");
+        buffer.end_undo_group();
+        buffer.undo();
+        assert_eq!(buffer.text().to_string(), "a");
+    }
+    #[test]
+    fn an_interleaved_view_cannot_join_another_views_open_group() {
+        let mut first = Buffer::new("");
+        let mut second = first.new_view();
+        first.begin_undo_group(UndoGroup::Typing);
+        first.insert("a");
+        second.insert("b");
+        first.end_undo_group();
+        first.undo();
+        assert_eq!(first.text().to_string(), "a");
+    }
     #[test]
     fn views_share_text_history_and_checkpoints_but_keep_independent_carets() {
         let mut first = Buffer::new("first\nsecond\n");

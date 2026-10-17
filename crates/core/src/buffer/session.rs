@@ -1,13 +1,11 @@
-//! Owned, versioned document state. Rope clones are cheap on the UI thread;
-//! flattening/delta encoding and validation belong on a background/startup thread.
+//! Exact history archives. Encoding, validation, and disk I/O belong on a worker.
 use super::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 pub struct BufferSnapshot {
     current: Snapshot,
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
+    history: history::RamHistory,
     revision: u64,
     next_state: u64,
     saved_state: u64,
@@ -17,141 +15,182 @@ pub struct BufferSnapshot {
 struct State {
     version: u32,
     text: String,
-    selection: [usize; 2],
+    selection: Selection,
     state: u64,
     revision: u64,
     next_state: u64,
     saved_state: u64,
     goal_column: Option<usize>,
-    undo: Vec<Step>,
-    redo: Vec<Step>,
-}
-#[derive(Serialize, Deserialize)]
-struct Step {
-    start: usize,
-    removed: usize,
-    text: String,
-    selection: [usize; 2],
-    state: u64,
-}
-fn difference(from: &Rope, to: &Rope) -> (Range<usize>, String) {
-    let prefix = from
-        .chars()
-        .zip(to.chars())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let suffix = from
-        .chars_at(from.len_chars())
-        .reversed()
-        .zip(to.chars_at(to.len_chars()).reversed())
-        .take(from.len_chars().min(to.len_chars()) - prefix)
-        .take_while(|(a, b)| a == b)
-        .count();
-    (
-        prefix..from.len_chars() - suffix,
-        to.slice(prefix..to.len_chars() - suffix).to_string(),
-    )
-}
-fn steps<'a>(mut from: &'a Rope, history: impl Iterator<Item = &'a Snapshot>) -> Vec<Step> {
-    history
-        .map(|entry| {
-            let snapshot = entry;
-            let (range, text) = difference(from, &snapshot.text);
-            from = &snapshot.text;
-            Step {
-                start: range.start,
-                removed: range.len(),
-                text,
-                selection: [snapshot.selection.anchor, snapshot.selection.head],
-                state: snapshot.state,
-            }
-        })
-        .collect()
+    history: history::RamHistory,
 }
 impl BufferSnapshot {
+    pub fn is_saved(&self) -> bool {
+        self.current.state == self.saved_state
+    }
+    /// An archive captured for a successful save must use that snapshot's state.
+    pub fn mark_saved(&mut self) {
+        self.saved_state = self.current.state;
+    }
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec(&State {
             version: 1,
             text: self.current.text.to_string(),
-            selection: [self.current.selection.anchor, self.current.selection.head],
+            selection: self.current.selection,
             state: self.current.state,
             revision: self.revision,
             next_state: self.next_state,
             saved_state: self.saved_state,
             goal_column: self.goal_column,
-            undo: steps(&self.current.text, self.undo.iter().rev()),
-            redo: steps(&self.current.text, self.redo.iter().rev()),
+            history: self.history.clone(),
         })
         .map_err(|e| e.to_string())
     }
+
+    /// Atomically replace a disk archive. The caller chooses its retention and
+    /// access policy and runs this blocking operation outside the editing thread.
+    pub fn write_archive(&self, path: &std::path::Path) -> Result<(), String> {
+        use std::io::Write;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        temporary
+            .write_all(&self.encode()?)
+            .map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        temporary.persist(path).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
-fn selection(text: &Rope, [anchor, head]: [usize; 2]) -> Result<Selection, String> {
-    if [anchor, head]
+fn valid_selection(text: &Rope, selected: Selection) -> Result<(), String> {
+    if [selected.anchor, selected.head]
         .iter()
         .any(|&p| p > text.len_chars() || !graphemes::is_boundary(text, p))
     {
-        return Err("invalid session selection".into());
+        return Err("invalid history selection".into());
     }
-    Ok(Selection { anchor, head })
+    Ok(())
 }
-fn history(
-    current: &Snapshot,
-    steps: Vec<Step>,
-    undo: bool,
-    next_state: u64,
-) -> Result<Vec<History>, String> {
-    let mut from = current.text.clone();
-    let mut result = Vec::new();
-    for step in steps {
-        let end = step
-            .start
-            .checked_add(step.removed)
-            .ok_or("invalid session range")?;
-        if end > from.len_chars() || step.state >= next_state || step.text.contains('\r') {
-            return Err("invalid session history".into());
-        }
-        let mut text = from.clone();
-        text.remove(step.start..end);
-        text.insert(step.start, &step.text);
-        let selected = selection(&text, step.selection)?;
-        let edit = if undo {
-            Change::between(
-                0,
-                &text,
-                &from,
-                step.start..step.start + step.text.chars().count(),
-                step.removed,
-            )
-        } else {
-            Change::between(0, &from, &text, step.start..end, step.text.chars().count())
-        };
-        result.push(History {
-            snapshot: Snapshot {
-                text: text.clone(),
-                selection: selected,
-                state: step.state,
-            },
-            edits: vec![edit],
-        });
-        from = text;
+fn apply_patch(text: &mut Rope, patch: &history::Patch, inverse: bool) -> Result<(), String> {
+    if patch.change.replaced.start > patch.change.replaced.end
+        || patch.change.replaced.len() != patch.removed.chars().count()
+        || patch.change.inserted != patch.inserted.chars().count()
+    {
+        return Err("invalid history patch lengths".into());
     }
-    result.reverse();
-    Ok(result)
+    let (removed, inserted) = if inverse {
+        (&patch.inserted, &patch.removed)
+    } else {
+        (&patch.removed, &patch.inserted)
+    };
+    let start = patch.change.replaced.start;
+    let end = start
+        .checked_add(removed.chars().count())
+        .ok_or("invalid history range")?;
+    if end > text.len_chars()
+        || text.slice(start..end) != removed.as_ref()
+        || removed.contains('\r')
+        || inserted.contains('\r')
+    {
+        return Err("history patch does not match its document".into());
+    }
+    let before = text.clone();
+    text.remove(start..end);
+    text.insert(start, inserted);
+    let expected = Change::between(
+        patch.change.revision,
+        &before,
+        text,
+        start..end,
+        inserted.chars().count(),
+    );
+    let actual = if inverse {
+        patch.change.inverse(patch.change.revision)
+    } else {
+        patch.change.clone()
+    };
+    if expected != actual {
+        return Err("invalid history coordinates".into());
+    }
+    Ok(())
+}
+fn validate_history(state: &State, text: &Rope) -> Result<(), String> {
+    let history = &state.history;
+    if history.entries.len() > history.limits.entries
+        || history.bytes() > history.limits.bytes
+        || history.root >= state.next_state
+        || history.entries.iter().any(|(&id, entry)| {
+            id >= state.next_state
+                || !history.preferred.contains_key(&entry.parent)
+                || id <= entry.parent
+                || entry.parent < history.root
+                || entry.patches.is_empty()
+        })
+        || history.preferred.iter().any(|(&parent, child)| {
+            history
+                .entries
+                .get(child)
+                .is_none_or(|entry| entry.parent != parent)
+        })
+    {
+        return Err("invalid history tree".into());
+    }
+    let changes = history
+        .entries
+        .values()
+        .try_fold(0u64, |sum, entry| {
+            sum.checked_add(entry.patches.len() as u64)
+        })
+        .ok_or("history revision overflow")?;
+    state
+        .revision
+        .checked_add(changes)
+        .ok_or("history revision overflow")?;
+    let mut children = std::collections::BTreeMap::<u64, Vec<_>>::new();
+    for (&id, entry) in &history.entries {
+        children.entry(entry.parent).or_default().push((id, entry));
+    }
+    let mut root = text.clone();
+    let mut cursor = state.state;
+    while cursor != history.root {
+        let entry = history
+            .entries
+            .get(&cursor)
+            .ok_or("history current state is disconnected")?;
+        for patch in entry.patches.iter().rev() {
+            apply_patch(&mut root, patch, true)?;
+        }
+        cursor = entry.parent;
+    }
+    let mut queue = vec![(history.root, root)];
+    let mut visited = 0;
+    while let Some((parent, text)) = queue.pop() {
+        for &(id, entry) in children.get(&parent).map_or(&[][..], Vec::as_slice) {
+            valid_selection(&text, entry.before)?;
+            let mut next = text.clone();
+            for patch in &entry.patches {
+                apply_patch(&mut next, patch, false)?;
+            }
+            valid_selection(&next, entry.after)?;
+            queue.push((id, next));
+            visited += 1;
+        }
+    }
+    if visited != history.entries.len() {
+        return Err("disconnected history branch".into());
+    }
+    Ok(())
 }
 impl DocumentState {
     pub fn snapshot(&self) -> BufferSnapshot {
         BufferSnapshot {
             current: self.current.clone(),
-            undo: self
-                .undo
-                .iter()
-                .map(|entry| entry.snapshot.clone())
-                .collect(),
-            redo: self
-                .redo
-                .iter()
-                .map(|entry| entry.snapshot.clone())
-                .collect(),
+            history: self.history.clone(),
             revision: self.revision,
             next_state: self.next_state,
             saved_state: self.saved.state,
@@ -159,9 +198,8 @@ impl DocumentState {
         }
     }
     pub fn restore(bytes: &[u8]) -> Result<Self, String> {
-        let state: State = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let mut state: State = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         if state.version != 1
-            || state.undo.len() + state.redo.len() > HISTORY_LIMIT
             || state.text.contains('\r')
             || state.state >= state.next_state
             || state.saved_state >= state.next_state
@@ -170,11 +208,14 @@ impl DocumentState {
         {
             return Err("invalid or unsupported buffer session".into());
         }
-        let mut buffer = Self::from_rope(Rope::from_str(&state.text));
-        buffer.current.selection = selection(&buffer.current.text, state.selection)?;
+        state.history.recount();
+        let text = Rope::from_str(&state.text);
+        valid_selection(&text, state.selection)?;
+        validate_history(&state, &text)?;
+        let mut buffer = Self::from_rope(text);
+        buffer.current.selection = state.selection;
         buffer.current.state = state.state;
-        buffer.undo = history(&buffer.current, state.undo, true, state.next_state)?.into();
-        buffer.redo = history(&buffer.current, state.redo, false, state.next_state)?;
+        buffer.history = state.history;
         buffer.revision = state.revision;
         buffer.next_state = state.next_state;
         buffer.saved.state = state.saved_state;
@@ -196,7 +237,7 @@ mod tests {
         buffer.insert("three");
         buffer.undo();
         let bytes = buffer.snapshot().encode().unwrap();
-        assert!(bytes.len() < buffer.text().len_bytes() + 2048);
+        assert!(bytes.len() < buffer.text().len_bytes() + 4096);
         let mut restored = Buffer::restore(&bytes).unwrap();
         assert_eq!(restored.text(), buffer.text());
         assert_eq!(restored.selection(), buffer.selection());

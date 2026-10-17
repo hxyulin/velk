@@ -237,6 +237,9 @@ impl Document {
             return;
         }
         if let Some(mut buffer) = self.inactive.remove(&id) {
+            self.buffer
+                .editor
+                .update(cx, |editor, _| editor.break_undo_group());
             self.cancel_search(cx);
             std::mem::swap(self.buffer.as_mut().unwrap(), &mut buffer);
             self.inactive.insert(buffer.id, buffer);
@@ -245,6 +248,9 @@ impl Document {
                 self.restart_search(cx);
             }
             self.show_active_document(cx);
+            self.buffer
+                .editor
+                .update(cx, |editor, _| editor.break_undo_group());
             self.title();
             self.schedule_recovery(cx);
             self.restore_focus_pending = true;
