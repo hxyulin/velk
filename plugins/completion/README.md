@@ -23,3 +23,8 @@ provider trigger character, with a 150 ms initial debounce. The `automatic` and
 triggers. Ctrl+Space always remains available. LSP checks character triggers
 against its running server; the word source does not activate on punctuation.
 Providers supply separate display titles, filter text, sort text and stable IDs.
+
+Selected suggestions can show plain-text or Markdown documentation in a bounded,
+scrollable panel. Markdown uses the editor's selected markup provider. LSP fetches
+missing documentation only for the highlighted item, without applying completion
+edits until acceptance.

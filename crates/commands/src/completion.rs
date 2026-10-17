@@ -11,6 +11,12 @@ pub struct Item {
     pub filter_text: String,
     pub sort_text: String,
     pub choice: Choice,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<Documentation>,
+    /// Opaque semantic command that returns `Outcome::Document` for this item.
+    /// Resolving documentation must not apply the item's edit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documentation_resolve: Option<serde_json::Value>,
 }
 impl From<Choice> for Item {
     fn from(choice: Choice) -> Self {
@@ -19,6 +25,8 @@ impl From<Choice> for Item {
             filter_text: choice.title.clone(),
             sort_text: choice.title.clone(),
             choice,
+            documentation: None,
+            documentation_resolve: None,
         }
     }
 }
@@ -40,11 +48,45 @@ impl Item {
                 return Err("invalid completion metadata".into());
             }
         }
+        if let Some(documentation) = &self.documentation {
+            documentation.validate()?;
+        }
+        if let Some(payload) = &self.documentation_resolve
+            && serde_json::to_vec(payload)
+                .map_err(|e| e.to_string())?
+                .len()
+                > 16 * 1024
+        {
+            return Err("completion documentation payload exceeds 16 KiB".into());
+        }
         if self.id.is_empty() {
             return Err("missing completion identity".into());
         }
         Ok(())
     }
+}
+
+/// Raw provider documentation. Markdown is parsed by the selected markup service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Documentation {
+    pub text: String,
+    pub markdown: bool,
+}
+impl Documentation {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.text.len() > 64 * 1024 || self.text.contains('\0') {
+            return Err("invalid completion documentation".into());
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentationTarget {
+    pub target: Target,
+    pub epoch: u64,
+    pub id: String,
+    pub source: Option<(String, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,6 +290,8 @@ mod metadata_tests {
     use super::*;
     fn item(id: &str, label: &str, filter: &str) -> Item {
         Item {
+            documentation: None,
+            documentation_resolve: None,
             id: id.into(),
             filter_text: filter.into(),
             sort_text: id.into(),
@@ -307,6 +351,15 @@ mod metadata_tests {
         assert!(candidate.validate().is_err());
         candidate.sort_text = "x".into();
         candidate.filter_text = "x".repeat(4097);
+        assert!(candidate.validate().is_err());
+        candidate.filter_text = "x".into();
+        candidate.documentation = Some(Documentation {
+            text: "x".repeat(64 * 1024 + 1),
+            markdown: true,
+        });
+        assert!(candidate.validate().is_err());
+        candidate.documentation = None;
+        candidate.documentation_resolve = Some(serde_json::json!({"data":"x".repeat(16 * 1024)}));
         assert!(candidate.validate().is_err());
     }
 }

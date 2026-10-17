@@ -2,6 +2,7 @@ mod buffer_events;
 mod buffers;
 mod closing;
 mod collections;
+mod completion_documentation;
 mod diagnostics;
 mod file_operations;
 mod grid;
@@ -71,6 +72,7 @@ pub struct Document {
     collection: Option<collections::State>,
     next_collection: u64,
     automatic_completion: Option<Task>,
+    completion_documentation: Option<completion_documentation::State>,
     deferred_choice: Option<(velk_commands::ChoiceAction, workspace_edits::Guard)>,
     host_requests: Option<Task>,
     buffer_events: buffer_events::Delivery,
@@ -211,6 +213,7 @@ impl Document {
             collection: None,
             next_collection: 1,
             automatic_completion: None,
+            completion_documentation: None,
             deferred_choice: None,
             host_requests: None,
             buffer_events: Default::default(),

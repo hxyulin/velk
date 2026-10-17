@@ -6,7 +6,7 @@ pub const COMMAND: &str = "velk.completion.complete";
 pub use velk_commands::contributions::{Collection, Contribution};
 
 pub const AUTOMATIC: &str = "velk.completion.automatic";
-pub use velk_commands::completion::Item;
+pub use velk_commands::completion::{Documentation, Item};
 
 /// Explicit requests use no input. Automatic requests carry the committed text;
 /// language providers decide whether their current capabilities support it.

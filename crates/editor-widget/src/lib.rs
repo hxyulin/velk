@@ -3,6 +3,7 @@ mod annotations;
 mod blink;
 mod completion;
 mod composition;
+mod documentation;
 mod horizontal;
 mod hover;
 mod surface;

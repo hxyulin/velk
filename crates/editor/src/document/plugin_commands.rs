@@ -17,6 +17,7 @@ pub(super) struct Pending {
     pub completion_epoch: u64,
     pub cancelled: bool,
     pub collection: Option<(u64, usize)>,
+    pub documentation: Option<velk_commands::completion::DocumentationTarget>,
 }
 pub(super) enum ResultView {
     Picker(super::picker::State),
@@ -308,6 +309,7 @@ impl Document {
                             completion_epoch,
                             cancelled: false,
                             collection: None,
+                            documentation: None,
                         })
                     }
                     Err(error) => self.notice(Some(error)),

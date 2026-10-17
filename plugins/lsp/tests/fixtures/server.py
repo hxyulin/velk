@@ -141,6 +141,7 @@ while (message := read()) is not None:
         ]}})
     elif method == "completionItem/resolve":
         item = dict(params)
+        item["documentation"] = {"kind": "markdown", "value": "**Complete a call**.\n\nUse `complete_call()` to insert a call with its import."}
         item["additionalTextEdits"] = [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "use support::complete_call;\n"}]
         send({"id": message["id"], "result": item})
     elif method in ["textDocument/definition", "textDocument/typeDefinition", "textDocument/implementation", "textDocument/references", "experimental/parentModule"]:

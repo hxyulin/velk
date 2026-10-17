@@ -2,7 +2,7 @@ use crate::Editor;
 use rxui::{Element, prelude::*};
 use velk_commands::{
     completion::Item,
-    completion::{Session, Target},
+    completion::{DocumentationTarget, Session, Target},
 };
 
 #[derive(Default)]
@@ -11,6 +11,8 @@ pub(super) struct State {
     accepted: Option<(Target, Item)>,
     generation: u64,
     typed: Option<(Target, String)>,
+    documentation: Option<(DocumentationTarget, std::sync::Arc<velk_markup::Document>)>,
+    scroll: rxui::ScrollHandle,
 }
 impl Editor {
     fn completion_target(&self) -> Target {
@@ -61,6 +63,50 @@ impl Editor {
     pub fn completion_choice(&self) -> Option<&Item> {
         self.completion.session.as_ref()?.choice()
     }
+    pub fn completion_documentation_target(&self) -> Option<DocumentationTarget> {
+        let session = self
+            .completion
+            .session
+            .as_ref()
+            .filter(|session| session.ready)?;
+        let item = session.choice()?;
+        let source = match &item.action {
+            velk_commands::ChoiceAction::Contributed {
+                plugin, generation, ..
+            } => Some((plugin.clone(), *generation)),
+            _ => None,
+        };
+        Some(DocumentationTarget {
+            target: session.target,
+            epoch: self.completion.generation,
+            id: item.id.clone(),
+            source,
+        })
+    }
+    pub fn completion_documentation(&self) -> Option<&velk_markup::Document> {
+        let (target, document) = self.completion.documentation.as_ref()?;
+        (self.completion_documentation_target().as_ref() == Some(target))
+            .then_some(document.as_ref())
+    }
+    pub fn resolve_completion_documentation(
+        &mut self,
+        target: DocumentationTarget,
+        document: std::sync::Arc<velk_markup::Document>,
+    ) -> bool {
+        if self.completion_documentation_target().as_ref() != Some(&target) {
+            return false;
+        }
+        if self
+            .completion
+            .documentation
+            .as_ref()
+            .is_none_or(|(old, _)| *old != target)
+        {
+            self.completion.scroll = Default::default();
+        }
+        self.completion.documentation = Some((target, document));
+        true
+    }
     pub fn completion_active(&self) -> bool {
         self.completion.session.is_some()
     }
@@ -81,6 +127,7 @@ impl Editor {
         self.completion.session = None;
         self.completion.accepted = None;
         self.completion.typed = None;
+        self.completion.documentation = None;
         self.completion.generation += 1;
     }
     pub(super) fn update_completion(&mut self) {
@@ -150,7 +197,20 @@ impl Editor {
             geometry.origin[0] + caret.x,
             geometry.origin[1] + caret.y + caret.height,
         ];
-        let width = (geometry.viewport[0] - 24.).clamp(120., 420.);
+        let has_documentation = session.choice().is_some_and(|item| {
+            item.documentation.is_some() || item.documentation_resolve.is_some()
+        });
+        let alongside = has_documentation && geometry.viewport[0] >= 680.;
+        let width = if alongside {
+            300.
+        } else {
+            (geometry.viewport[0] - 24.).clamp(120., 420.)
+        };
+        let total_width = if alongside {
+            (geometry.viewport[0] - 24.).min(740.)
+        } else {
+            width
+        };
         let max_chars = ((width - 16.) / 10.).max(4.) as usize;
         let summary = |text: &str| {
             let first = text.lines().next().unwrap_or_default();
@@ -198,10 +258,53 @@ impl Editor {
                 )),
             );
         }
+        let mut content = if alongside { row() } else { column() }
+            .gap(0.)
+            .child(rows.width(width));
+        if has_documentation {
+            let body = match self.completion_documentation() {
+                Some(document) if !document.text().trim().is_empty() => {
+                    crate::documentation::body(document)
+                }
+                Some(_) => label("No documentation available").color(ThemeColor::TextMuted),
+                None => label("Loading documentation…").color(ThemeColor::TextMuted),
+            };
+            let panel_width = if alongside {
+                total_width - width
+            } else {
+                width
+            };
+            content = content.child(
+                column()
+                    .gap(6.)
+                    .padding(8.)
+                    .width(panel_width)
+                    .child(
+                        label("Documentation")
+                            .font_size(11.)
+                            .color(ThemeColor::TextMuted),
+                    )
+                    .child(
+                        scroll_area(
+                            body.selectable(true)
+                                .font_size(13.)
+                                .color(ThemeColor::Text)
+                                .fill_width(),
+                        )
+                        .handle(self.completion.scroll.clone())
+                        .scrollbar_style(ScrollbarStyle::platform())
+                        .fill_width()
+                        .into_element()
+                        .key("completion-documentation")
+                        .max_height((geometry.viewport[1] * 0.35).clamp(60., 220.))
+                        .accessibility_label("Completion documentation"),
+                    ),
+            );
+        }
         Some(
-            popover(anchor, rows)
+            popover(anchor, content)
                 .key("editor-completions")
-                .width(width)
+                .width(total_width)
                 .padding(0.)
                 .gap(0.)
                 .autofocus(false)
@@ -332,5 +435,91 @@ mod typing_tests {
         editor.committed_text("r", rxui::TextInsertSource::Keyboard);
         editor.insert("x");
         assert!(editor.take_completion_typing().is_none());
+    }
+}
+
+#[cfg(test)]
+mod documentation_tests {
+    use super::*;
+    use std::sync::Arc;
+    fn item(id: &str) -> Item {
+        let mut item: Item = velk_commands::Choice {
+            title: id.into(),
+            detail: None,
+            action: velk_commands::ChoiceAction::Semantic {
+                payload: Default::default(),
+            },
+        }
+        .into();
+        item.documentation = Some(velk_commands::completion::Documentation {
+            text: "Documentation".into(),
+            markdown: false,
+        });
+        item
+    }
+    #[test]
+    fn selection_revision_and_dismissal_reject_stale_documentation() {
+        let mut editor = Editor::new("");
+        editor.show_completions(vec![item("alpha"), item("beta")], false);
+        let old = editor.completion_documentation_target().unwrap();
+        assert!(editor.resolve_completion_documentation(
+            old.clone(),
+            Arc::new(velk_markup::Document::plain("Alpha docs"))
+        ));
+        editor.completion.session.as_mut().unwrap().next(false);
+        assert!(editor.completion_documentation().is_none());
+        assert!(!editor.resolve_completion_documentation(
+            old,
+            Arc::new(velk_markup::Document::plain("Late alpha docs"))
+        ));
+        let current = editor.completion_documentation_target().unwrap();
+        editor.insert("b");
+        assert!(editor.completion_documentation_target().is_none());
+        assert!(!editor.resolve_completion_documentation(
+            current,
+            Arc::new(velk_markup::Document::plain("Old revision"))
+        ));
+        editor.show_completions(vec![item("beta")], true);
+        let current = editor.completion_documentation_target().unwrap();
+        editor.dismiss_completions();
+        assert!(!editor.resolve_completion_documentation(
+            current,
+            Arc::new(velk_markup::Document::plain("After dismissal"))
+        ));
+    }
+    #[test]
+    fn documentation_panel_is_bounded_scrollable_and_does_not_scroll_the_document() {
+        let graphics = pollster::block_on(rxui::astrelis::GraphicsContext::headless()).unwrap();
+        let mut editor = Editor::new("");
+        editor.show_completions(vec![item("alpha")], false);
+        let target = editor.completion_documentation_target().unwrap();
+        editor.resolve_completion_documentation(
+            target,
+            Arc::new(velk_markup::Document::plain(
+                "Documentation line\n".repeat(100),
+            )),
+        );
+        let mut test = rxui::TestUi::new(&graphics, [900, 500], editor).unwrap();
+        test.painter_mut().fonts_mut().load_system_fonts();
+        test.prepare().unwrap();
+        let bounds = test
+            .element("completion-documentation")
+            .unwrap()
+            .unwrap()
+            .bounds;
+        assert!(bounds.height > 40. && bounds.height <= 220., "{bounds:?}");
+        assert!(bounds.width <= 440.);
+        let point = [bounds.x + bounds.width / 2., bounds.y + bounds.height / 2.];
+        let (runtime, ui, _) = test.parts();
+        ui.wheel(runtime, point, [0., 100.], Default::default())
+            .unwrap();
+        assert!(ui.elements().any(|element| element.scroll_offset[1] > 0.));
+        test.read(|editor| assert_eq!(editor.geometry.borrow().offset, [0., 0.]));
+        test.prepare().unwrap();
+        assert!(
+            test.ui()
+                .elements()
+                .any(|element| element.scroll_offset[1] > 0.)
+        );
     }
 }

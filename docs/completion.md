@@ -140,10 +140,42 @@ to trigger kind 2 with `triggerCharacter`; explicit, typing and refresh requests
 kind 1. The word source declines character invocations. Active sessions retain the
 existing immediate refresh and stale-edit rejection behavior.
 
+## Selected-item documentation
+
+An item can supply `documentation: Some(Documentation { text, markdown })`.
+Plain text is displayed literally; Markdown uses the selected documentation markup
+provider, with a literal fallback while formatting runs or when the provider fails.
+The popup shows a bounded, selectable, scrollable documentation panel beside the
+list in wide views and below it in narrow views. Scrolling documentation does not
+scroll the buffer. Formatting preserves the current item's documentation scroll.
+
+Semantic contributors can instead supply `documentation_resolve`, an opaque
+semantic command payload. The command must return `Outcome::Document`; set its
+`language` to `Some("markdown")` for Markdown, or leave it unset for plain text.
+The host resolves only the highlighted item, shares the normal semantic command
+slot, and remembers the attempt for the current selection. Inline documentation
+takes precedence over a resolve payload. Documentation bodies are limited to
+64 KiB and resolve payloads to 16 KiB, in addition to existing transport budgets.
+
+LSP preserves inline `CompletionItem.documentation`, advertises Markdown/plain-text
+support and documentation resolution, and uses `completionItem/resolve` when a
+selected item has no inline documentation and the server supports resolution.
+Resolving documentation returns content only, even if the server also supplies
+additional edits. Acceptance is a separate revision-checked action; it may resolve
+the item again to obtain edits such as imports.
+
+Selection, revision, caret, view, dismissal epoch, source identity and provider
+generation guard both resolution and asynchronous formatting. Changing selection
+or dismissing cancels pending documentation work. If acceptance happens while a
+request is running, cancellation's terminal event releases the slot before the
+acceptance resolve proceeds. A failed or empty response displays no documentation
+and does not turn into an editor command or apply edits. Links are styled as text;
+rendering does not fetch URLs or execute link actions.
+
 ## Current limits
 
-There is no snippet expansion, item documentation, cross-provider deduplication,
-or configurable source priority yet. LSP still skips snippet and command-based
+There is no snippet expansion, cross-provider deduplication, or configurable
+source priority yet. LSP still skips snippet and command-based
 items. Automatic IME completion and retriggering incomplete LSP lists with trigger
 kind 3 are deferred. Plugin lifecycle operations dismiss the collection; provider
 generation checks also reject results from retired sources.

@@ -126,7 +126,7 @@ fn render_feature_walkthrough() {
     std::fs::create_dir(project.join("src")).unwrap();
     std::fs::write(project.join("Cargo.toml"), "[package]\nname = \"velk-feature-walkthrough\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[workspace]\n").unwrap();
     let path = project.join("src/main.rs");
-    let text = "fn greeting(name: &str) -> String {\n    format!(\"Hello, {name}!\")\n}\n\nfn main() {\n    let name = \"Velk\";\n    gre\n}\n";
+    let text = "/// Builds a **greeting** for `name`.\nfn greeting(name: &str) -> String {\n    format!(\"Hello, {name}!\")\n}\n\nfn main() {\n    let name = \"Velk\";\n    gre\n}\n";
     std::fs::write(&path, text).unwrap();
     let output = root.join("target/feature-demo/captures");
     std::fs::create_dir_all(&output).unwrap();
@@ -163,6 +163,7 @@ fn render_feature_walkthrough() {
                 doc.enable_selected_plugins(
                     plugins.client(),
                     Some(vec![
+                        "velk.markdown".into(),
                         "velk.tree-sitter".into(),
                         "velk.lsp".into(),
                         "velk.completion".into(),
@@ -331,6 +332,21 @@ fn render_feature_walkthrough() {
             .unwrap();
     }
     assert!(lsp_selected(&mut capture));
+    wait(
+        &mut capture,
+        "selected completion documentation rendered by Markdown plugin",
+        |doc, cx| {
+            doc.buffer
+                .editor
+                .read(cx)
+                .completion_documentation()
+                .is_some_and(|document| {
+                    document.text().contains("Builds a greeting")
+                        && document.runs.iter().any(|run| run.style.bold)
+                })
+        },
+    );
+    shot(&mut capture, &output, "completion-documentation");
     shot(&mut capture, &output, "completion-popup");
     assert!(
         capture.element("editor-completions").unwrap().is_some(),
@@ -600,7 +616,7 @@ fn render_feature_walkthrough() {
             );
         })
     });
-    std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout; unload LSP; automatic completion after keyboard typing in untitled buffer; undo completion.\n").unwrap();
+    std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; selected-item documentation rendered by Markdown plugin; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout; unload LSP; automatic completion after keyboard typing in untitled buffer; undo completion.\n").unwrap();
     drop(capture);
     drop(plugins);
 }

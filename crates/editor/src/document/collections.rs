@@ -157,6 +157,7 @@ impl Document {
     pub(super) fn cancel_collection(&mut self, dismiss: bool, cx: &mut Context<'_, Self>) {
         if dismiss {
             self.automatic_completion = None;
+            self.cancel_completion_documentation();
         }
         if let Some(state) = self.collection.take() {
             // The terminal event still owns the semantic slot until cancellation

@@ -21,6 +21,7 @@ pub(super) enum ResultKind {
     ResolvedAction,
     Completion,
     ResolvedCompletion,
+    CompletionDocumentation,
 }
 impl Request {
     pub fn decode(payload: Value, capabilities: &Value) -> Result<Self, String> {
@@ -146,6 +147,21 @@ impl Request {
                 resolved_action(value, encoding, source, version, documents)?
             }
             ResultKind::Completion => completion(value, encoding, source, request, capabilities)?,
+            ResultKind::CompletionDocumentation => {
+                let item: lsp_types::CompletionItem =
+                    serde_json::from_value(value).map_err(|e| e.to_string())?;
+                let documentation = completion_documentation(item.documentation);
+                Outcome::Document {
+                    title: item.label,
+                    text: documentation
+                        .as_ref()
+                        .map(|doc| doc.text.clone())
+                        .unwrap_or_default(),
+                    language: documentation
+                        .filter(|doc| doc.markdown)
+                        .map(|_| "markdown".into()),
+                }
+            }
             ResultKind::ResolvedCompletion => {
                 let item = serde_json::from_value(value).map_err(|e| e.to_string())?;
                 Outcome::Edit {
@@ -333,6 +349,19 @@ fn completion(
         let id =
             serde_json::to_string(&(&item.label, &item.detail, &item.kind, &item.label_details))
                 .map_err(|e| e.to_string())?;
+        let documentation = completion_documentation(item.documentation.clone());
+        let documentation_resolve = if documentation.is_none()
+            && capabilities.pointer("/completionProvider/resolveProvider") == Some(&json!(true))
+        {
+            let payload = json!({"method":"completionItem/resolve","result":"completion_documentation","capability":null,"parameters":item});
+            (serde_json::to_vec(&payload)
+                .map_err(|e| e.to_string())?
+                .len()
+                <= 12 * 1024)
+                .then_some(payload)
+        } else {
+            None
+        };
         let action = if item.data.is_some()
             && capabilities.pointer("/completionProvider/resolveProvider") == Some(&json!(true))
         {
@@ -351,6 +380,8 @@ fn completion(
             }
         };
         items.push(velk_completion_contracts::Item {
+            documentation,
+            documentation_resolve,
             id,
             filter_text,
             sort_text,
@@ -363,6 +394,27 @@ fn completion(
     }
     Ok(Outcome::Completions { items })
 }
+fn completion_documentation(
+    documentation: Option<lsp_types::Documentation>,
+) -> Option<velk_completion_contracts::Documentation> {
+    let (mut text, markdown) = match documentation? {
+        lsp_types::Documentation::String(text) => (text, false),
+        lsp_types::Documentation::MarkupContent(content) => (
+            content.value,
+            content.kind == lsp_types::MarkupKind::Markdown,
+        ),
+    };
+    let mut end = text.len().min(64 * 1024);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(velk_completion_contracts::Documentation { text, markdown })
+}
+
 fn completion_edit(
     item: lsp_types::CompletionItem,
     encoding: Encoding,
@@ -458,5 +510,37 @@ mod completion_trigger_tests {
             .params("file:///test.rs", lsp_types::Position::new(0, 4), None, &[])
             .unwrap();
         assert_eq!(params["context"], json!({"triggerKind":1}));
+    }
+}
+
+#[cfg(test)]
+mod documentation_tests {
+    use super::*;
+    #[test]
+    fn documentation_preserves_format_and_bounds_unicode_without_splitting_characters() {
+        let plain = completion_documentation(Some(lsp_types::Documentation::String(
+            "**literal text**".into(),
+        )))
+        .unwrap();
+        assert!(!plain.markdown);
+        assert_eq!(plain.text, "**literal text**");
+        let markdown = completion_documentation(Some(lsp_types::Documentation::MarkupContent(
+            lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: "# Title\n\n`code`".into(),
+            },
+        )))
+        .unwrap();
+        assert!(markdown.markdown);
+        assert!(markdown.text.contains("`code`"));
+        let bounded =
+            completion_documentation(Some(lsp_types::Documentation::String("界".repeat(30000))))
+                .unwrap();
+        assert!(bounded.text.len() <= 64 * 1024);
+        bounded.validate().unwrap();
+        assert!(
+            completion_documentation(Some(lsp_types::Documentation::String(" \n".into())))
+                .is_none()
+        );
     }
 }

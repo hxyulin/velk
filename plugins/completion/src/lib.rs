@@ -513,6 +513,8 @@ mod activation_tests {
             command: command.into(),
             outcome: Ok(Outcome::Completions {
                 items: vec![velk_completion_contracts::Item {
+                    documentation: None,
+                    documentation_resolve: None,
                     id: id.into(),
                     filter_text: "other".into(),
                     sort_text: sort.into(),

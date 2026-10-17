@@ -224,7 +224,7 @@ Current limitations include:
 
 - Language integration focuses on Rust. Ctrl+Space opens a caret completion popup;
   typing filters and refreshes suggestions, Up/Down selects, Enter/Tab accepts, and
-  Escape dismisses. Automatic suggestions start after two identifier characters or
+  Escape dismisses. Selected suggestions can show formatted documentation. Automatic suggestions start after two identifier characters or
   supported provider trigger characters, and can be disabled in plugin settings.
   Completion remains plain-text only; snippets and server command execution are
   not yet implemented.

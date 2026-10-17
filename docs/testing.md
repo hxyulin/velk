@@ -68,8 +68,8 @@ than the user's settings, recovery store, workspace, or installed plugins.
 
 An opt-in GPU walkthrough exercises the real bundled plugins and installed
 `rust-analyzer`. It uses an isolated temporary Rust project, never the user's
-files. It checks Ctrl+Space, typing and refreshing completion, keyboard selection
-and acceptance, shared views, rename with unsaved text, saving/undo/redo, file and
+files. It checks Ctrl+Space, typing and refreshing completion, selected-item documentation
+through the Markdown plugin, keyboard selection and acceptance, shared views, rename with unsaved text, saving/undo/redo, file and
 directory creation, deletion guards, and closing the final document. It then
 unloads LSP and checks automatic document-word completion after real keyboard
 input, acceptance, and undo in an untitled buffer.
@@ -114,3 +114,9 @@ across label changes and incremental results, trigger declarations/settings,
 keyboard versus paste/IME/programmatic input, dismissal and movement invalidation,
 and actual LSP wire contexts. Unsupported trigger characters must not send a server
 request. These deterministic tests do not require an installed language server.
+
+Completion documentation tests cover canceled and late semantic replies, accepting
+while documentation resolution owns the command slot, literal fallback without an
+executor, metadata format and size limits, and a bounded independent scroll area.
+The LSP fixture returns documentation together with import edits, verifying that
+reading documentation cannot apply those edits.

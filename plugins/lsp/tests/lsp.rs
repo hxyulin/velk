@@ -1052,3 +1052,117 @@ async fn completion_triggers_use_server_capabilities_and_forward_the_invocation_
         serde_json::json!({"triggerKind":2,"triggerCharacter":":"})
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn selected_completion_documentation_resolves_without_returning_or_applying_edits() {
+    use velk_plugin_sdk::{
+        Plugin,
+        commands::{Handler, Outcome},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("source.rs");
+    let logfile = dir.path().join("completion-docs.jsonl");
+    let service = Service::start(backend(&logfile, "normal")).unwrap();
+    service.update(document(&path, 7, "fn old() {}"));
+    until(&service.events, |event| {
+        matches!(event, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let Handler::Semantic { payload } = velk_plugin_lsp::Lsp::contributions()
+        .remove(0)
+        .command
+        .handler
+    else {
+        panic!()
+    };
+    service
+        .command(
+            PositionRequest {
+                id: 1,
+                revision: 7,
+                position: 6,
+            },
+            payload,
+            None,
+        )
+        .unwrap();
+    let Event::Command {
+        result: Ok(Outcome::Completions { mut items }),
+        ..
+    } = until(&service.events, |event| {
+        matches!(event, Event::Command { .. })
+    })
+    .await
+    else {
+        panic!()
+    };
+    let item = items.remove(0);
+    assert!(item.documentation.is_none());
+    service
+        .command(
+            PositionRequest {
+                id: 2,
+                revision: 7,
+                position: 6,
+            },
+            item.documentation_resolve.unwrap(),
+            None,
+        )
+        .unwrap();
+    let Event::Command { result, .. } = until(&service.events, |event| {
+        matches!(event, Event::Command { .. })
+    })
+    .await
+    else {
+        panic!()
+    };
+    let Outcome::Document { text, language, .. } = result.unwrap() else {
+        panic!("documentation resolution returned an edit")
+    };
+    assert_eq!(language.as_deref(), Some("markdown"));
+    assert!(text.contains("**Complete a call**"));
+    // Accepting remains a separate resolve, with checked edits including imports.
+    let velk_plugin_sdk::commands::ChoiceAction::Semantic { payload } = item.choice.action else {
+        panic!()
+    };
+    service
+        .command(
+            PositionRequest {
+                id: 3,
+                revision: 7,
+                position: 6,
+            },
+            payload,
+            None,
+        )
+        .unwrap();
+    let Event::Command {
+        result: Ok(Outcome::Edit { edit }),
+        ..
+    } = until(&service.events, |event| {
+        matches!(event, Event::Command { .. })
+    })
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(edit.documents[0].revision, Some(7));
+    assert_eq!(edit.documents[0].edits.len(), 2);
+    service.shutdown_and_join().unwrap();
+    let messages = log(&logfile);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["method"] == "completionItem/resolve")
+            .count(),
+        2
+    );
+    let capabilities = &messages
+        .iter()
+        .find(|message| message["method"] == "initialize")
+        .unwrap()["params"]["capabilities"];
+    assert_eq!(
+        capabilities["textDocument"]["completion"]["completionItem"]["documentationFormat"],
+        serde_json::json!(["markdown", "plaintext"])
+    );
+}

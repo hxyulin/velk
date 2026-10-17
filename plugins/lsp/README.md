@@ -77,3 +77,8 @@ continue using push diagnostics.
 
 This does not implement workspace pull, partial reports, related-document pull
 reports, or dynamic diagnostic registration; those capabilities are not advertised.
+
+Completion items preserve inline documentation and can lazily resolve missing
+documentation for the selected suggestion. The client advertises Markdown and
+plain text. Documentation resolution never applies returned edits; accepting a
+completion remains a separate checked edit operation, including import resolution.

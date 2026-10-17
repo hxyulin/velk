@@ -106,33 +106,10 @@ impl Editor {
                 annotation.card.title, annotation.card.body
             )));
         }
-        spans.extend(document.runs.iter().map(|run| {
-            let mut span = rxui::span(run.text.clone());
-            let style = &run.style;
-            if style.bold {
-                span = span.bold();
-            }
-            if style.italic {
-                span = span.italic();
-            }
-            if style.code {
-                span = span.monospace().color(ThemeColor::Text);
-            }
-            if style.strikethrough {
-                span = span.strikethrough();
-            }
-            if style.heading > 0 {
-                span = span.font_size(19. - f32::from(style.heading.min(6)));
-            }
-            // Retain the destination in the document for a future host link
-            // action; rendering never opens URLs or executes command URIs.
-            if style.link.is_some() {
-                span = span.underline().color(ThemeColor::Accent);
-            }
-            span
-        }));
+        spans.extend(crate::documentation::spans(document));
         rxui::rich_text(spans)
     }
+
     pub fn request_hover_at_caret(&mut self) {
         self.hide_hover();
         if !self.hover.enabled || self.composition.is_some() {

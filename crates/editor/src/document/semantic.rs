@@ -86,7 +86,8 @@ impl Document {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         let changed = self.sync_semantic_snapshot_for(source.clone(), cx);
-        self.sync_completion_for(source, cx);
+        self.sync_completion_for(source.clone(), cx);
+        self.sync_completion_documentation(source, cx);
         changed
     }
     fn sync_completion_for(
@@ -282,6 +283,15 @@ impl Document {
                 };
                 if pending.request != request {
                     state.command = Some(pending);
+                    return;
+                }
+                if let Some(target) = pending.documentation {
+                    self.receive_completion_documentation(target, pending.cancelled, result, cx);
+                    self.start_collection_semantic(cx);
+                    self.drain_deferred_choice(cx);
+                    if let Some(source) = self.buffer.as_ref().map(|buffer| buffer.editor.clone()) {
+                        self.sync_completion_documentation(source, cx);
+                    }
                     return;
                 }
                 if let Some((id, index)) = pending.collection {
