@@ -4056,6 +4056,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "velk-completion-matching"
+version = "0.0.0-dev"
+dependencies = [
+ "nucleo-matcher",
+]
+
+[[package]]
 name = "velk-core"
 version = "0.0.0-dev"
 dependencies = [
@@ -4248,9 +4255,9 @@ dependencies = [
 name = "velk-plugin-completion"
 version = "0.0.0-dev"
 dependencies = [
- "nucleo-matcher",
  "serde_json",
  "velk-completion-contracts",
+ "velk-completion-matching",
  "velk-plugin-sdk",
 ]
 

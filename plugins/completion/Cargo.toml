@@ -11,7 +11,7 @@ name = "velk_plugin_completion"
 path = "examples/standalone.rs"
 crate-type = ["cdylib"]
 [dependencies]
-nucleo-matcher = "0.3"
+velk-completion-matching.workspace = true
 velk-plugin-sdk.workspace = true
 velk-completion-contracts.workspace = true
 serde_json = "1"

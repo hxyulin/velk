@@ -1,0 +1,13 @@
+[package]
+name = "velk-completion-matching"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+nucleo-matcher = "0.3"
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"
