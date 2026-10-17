@@ -1,4 +1,5 @@
 //! Default completion policy and an independent document-word contributor.
+pub mod frontend;
 pub mod matching;
 mod merge;
 use velk_completion_contracts::{Collection, Contribution, TOPIC};
@@ -67,6 +68,7 @@ impl Plugin for Completion {
     }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
         reg.matching::<matching::DefaultPolicy>()?;
+        reg.completion_frontend::<frontend::Popup>()?;
         reg.provide(
             hooks::Request(velk_completion_contracts::AUTOMATIC),
             |this: &mut Self, bytes: &[u8]| {

@@ -161,6 +161,7 @@ The bundled pack contains:
 - `velk.autopairs`: matching brackets, selection wrapping, closer skipping, and paired deletion.
 - `velk.vim`: opt-in Normal, Insert, and Visual modes (including blocks) with [basic Vim motions](plugins/vim/README.md).
 - `velk.completion`: [completion](docs/completion.md) from optional contributors, with automatic triggers and Ctrl+Space.
+- `velk.completion.compact`: an optional compact completion frontend, selected with `completion_frontend`.
 - `velk.completion.words`: document-word suggestions, including untitled buffers.
 - `velk.autosave`: opt-in saves after an idle delay.
 - `velk.quick-open`: fuzzy project file opening with Cmd/Ctrl+P.
@@ -228,7 +229,7 @@ Current limitations include:
   supported provider trigger characters, and can be disabled in plugin settings.
   Snippet placeholders support Tab/Shift+Tab navigation and mirrored editing.
   Snippet variables, transforms, and server command execution remain deferred.
-  The local completion matcher is a replaceable plugin service.
+  The completion frontend and local matcher are independently replaceable plugin services.
 - Language-server clients and diagnostic publications are shared by workspace.
   Problems includes unopened files when the server publishes them; Velk does not
   independently scan every file. Pull diagnostics are supported for open buffers

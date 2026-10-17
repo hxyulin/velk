@@ -103,6 +103,7 @@ pub struct Report {
     >,
     pub syntax: std::collections::BTreeMap<String, std::sync::Arc<dyn velk_syntax::Provider>>,
     pub editing: velk_editing::Providers,
+    pub completion_frontends: velk_plugin_contracts::commands::completion::frontend::Providers,
     pub matching: velk_plugin_contracts::commands::completion::matching::Policies,
     pub loaded: usize,
     /// Owned snapshot after this operation, including unchanged active plugins.
@@ -558,6 +559,7 @@ impl Runtime {
                     let result = events.map(|events| Report {
                         editing: manager.editing_providers(),
                         matching: manager.matching_providers(),
+                        completion_frontends: manager.completion_frontends(),
                         syntax: manager.syntax_providers(),
                         undo: manager.undo_providers(),
                         loaded: manager.plugins().count(),

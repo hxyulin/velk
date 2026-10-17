@@ -306,12 +306,52 @@ parent default removes its nested stops. Sessions belong to a view; new views an
 redo do not recreate them. Placeholder selection uses the existing selection and
 multi-caret renderer.
 
+## Replaceable frontends
+
+The editor setting `completion_frontend` selects a presentation service separately
+from sources, merging, and `completion_matching_provider`. It applies to the next
+completion session without restarting the plugin:
+
+- `velk.completion`: the default menu with candidate details and documentation
+  alongside or below it according to viewport width.
+- `velk.completion.compact`: up to ten title-only rows without documentation.
+
+Both are bundled native providers. Custom providers implement
+`commands::completion::frontend::Provider` and register with
+`Registrar::completion_frontend::<YourFrontend>()`. This is a synchronous,
+reentrant, stateless service; implementations must perform bounded CPU work and
+must not wait for the plugin worker or host services.
+
+`Snapshot` contains already filtered/ranked candidate titles and details, the
+selected visible index, viewport dimensions, readiness, and whether documentation
+exists. It contains no edit payloads, source handles, or document text. `View`
+chooses displayed rows, their titles/details, list width, and hidden/below/alongside
+documentation dimensions. Row indices identify the original ranked candidates;
+rows must retain ranked order. A frontend can choose its visible window without changing ranking or acceptance.
+The selected candidate must appear in the returned rows. The host renders these
+controls using its theme and accessibility roles. Arrow keys, Enter/Tab, Escape,
+pointer acceptance, focus, snippet precedence, and checked document edits remain
+shared behavior.
+
+The platform command contracts own these presentation primitives because the
+editor widget consumes them. Feature contribution and activation protocols remain
+in `velk-completion-contracts`. No RXUI objects or Rust trait objects cross the
+native ABI: a named C table exchanges bounded JSON in caller-owned storage.
+The host validates row identities, unique indices, selected-row visibility, text
+sizes, finite dimensions, and transport bounds. There are at most 1,000 input
+candidates and 32 output rows; presentation text is truncated to 1,024 Unicode
+scalars per field before dispatch. Frontend output is cached until its snapshot
+or selected provider changes. Retirement prevents further native calls; failure,
+invalid output, or an unavailable provider uses a minimal title/detail menu.
+The session releases its code lease on acceptance or dismissal. Pointer handlers
+also check session epoch, target revision/position, and candidate identity.
+
 ## Current limits
 
 LSP still skips command-based items. Automatic IME completion is deferred.
 Deduplication is conservative for deferred actions and differing position encodings. Plugin lifecycle operations dismiss the collection; provider
 generation checks also reject results from retired sources.
 
-The first extraction retains shared popup/session mechanics in the platform. A
-separate frontend protocol is appropriate when there is a concrete second
-presentation, rather than moving RXUI types across the plugin boundary.
+The frontend currently describes a caret menu using shared controls. Arbitrary
+RXUI trees, custom input handlers, inline ghost text, and plugin-defined styling
+are outside this contract.

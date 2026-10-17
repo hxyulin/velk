@@ -95,6 +95,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         "velk.lsp",
         "velk.completion",
         "velk.completion.words",
+        "velk.completion.compact",
         "velk.language-server.rust-analyzer",
         velk_search::DEFAULT_BACKEND,
         "velk.files.backend",

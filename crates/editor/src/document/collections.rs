@@ -276,7 +276,17 @@ impl Document {
                         .get(&self.shell.store.preferences.completion_matching_provider)
                 })
                 .cloned();
+            let frontend = self
+                .plugins
+                .as_ref()
+                .and_then(|state| {
+                    state
+                        .completion_frontends
+                        .get(&self.shell.store.preferences.completion_frontend)
+                })
+                .cloned();
             editor.update(cx, |editor, _| {
+                editor.set_completion_frontend(frontend);
                 editor.show_completions_with_policy(Vec::new(), false, policy)
             });
         }

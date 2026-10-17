@@ -142,3 +142,11 @@ pub use syntax::*;
 
 mod matching;
 pub use matching::*;
+
+/// Reentrant UI-local presentation. JSON views are bounded by the frontend contract;
+/// all pointers borrow caller storage for this call, with no retained context.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CompletionFrontendApi {
+    pub present: unsafe extern "C" fn(Bytes, *mut u8, usize, *mut usize) -> i32,
+}

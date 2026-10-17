@@ -173,6 +173,7 @@ mod tests {
             markdown: None,
             syntax: None,
             matching: None,
+            completion_frontend: None,
             undo: None,
             language: Some(LanguageApi {
                 context: NonNull::<c_void>::dangling().as_ptr(),

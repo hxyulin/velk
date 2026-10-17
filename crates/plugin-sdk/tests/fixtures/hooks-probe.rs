@@ -79,6 +79,7 @@ impl Plugin for Probe {
         })?;
         reg.editing::<EditingProbe>()?;
         reg.matching::<MatchingProbe>()?;
+        reg.completion_frontend::<FrontendProbe>()?;
         reg.provide(
             velk_plugin_sdk::hooks::CommandHandler {
                 name: "test.command",
@@ -169,5 +170,32 @@ impl velk_plugin_sdk::commands::completion::matching::Policy for MatchingProbe {
                     .then_some([candidate.len() as u64, 0, 0, 0])
             })
             .collect())
+    }
+}
+
+#[derive(Debug, Default)]
+struct FrontendProbe;
+impl velk_plugin_sdk::commands::completion::frontend::Provider for FrontendProbe {
+    fn present(
+        &self,
+        snapshot: &velk_plugin_sdk::commands::completion::frontend::Snapshot,
+    ) -> Result<velk_plugin_sdk::commands::completion::frontend::View, String> {
+        use velk_plugin_sdk::commands::completion::frontend::*;
+        if snapshot
+            .candidates
+            .first()
+            .is_some_and(|c| c.title == "panic")
+        {
+            panic!("frontend panic");
+        }
+        let mut view = Fallback.present(snapshot)?;
+        if snapshot
+            .candidates
+            .first()
+            .is_some_and(|c| c.title == "invalid")
+        {
+            view.rows[0].candidate = 9999;
+        }
+        Ok(view)
     }
 }

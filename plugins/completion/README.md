@@ -52,3 +52,11 @@ these settings. Similarity remains the primary ranking criterion.
 Incomplete LSP lists retain a source-local continuation so further typing uses
 trigger kind 3 until the server returns a complete list. Dismissal, source retirement,
 and a fresh completion session do not reuse the old continuation.
+
+Presentation is independently replaceable through the editor setting
+`completion_frontend`. The default `velk.completion` frontend displays details and
+documentation; `velk.completion.compact` displays up to ten title-only rows.
+Changes apply to the next completion session. Both use the same providers,
+matching, keyboard behavior, and checked edit application. Custom native plugins
+register a stateless `commands::completion::frontend::Provider` with
+`Registrar::completion_frontend`; no RXUI types cross the native boundary.

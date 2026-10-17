@@ -21,6 +21,7 @@ pub struct Preferences {
     pub markdown_provider: String,
     pub syntax_provider: String,
     pub completion_matching_provider: String,
+    pub completion_frontend: String,
     pub undo_provider: String,
     pub indentation_provider: String,
     pub pairing_provider: String,
@@ -44,6 +45,7 @@ impl Default for Preferences {
             markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
             syntax_provider: velk_syntax::DEFAULT_PROVIDER.into(),
             completion_matching_provider: "velk.completion".into(),
+            completion_frontend: "velk.completion".into(),
             undo_provider: velk_core::history::DEFAULT_PROVIDER.into(),
             indentation_provider: "velk.indentation".into(),
             pairing_provider: "velk.autopairs".into(),
@@ -215,6 +217,7 @@ impl Preferences {
             "markdown_provider"
                 | "syntax_provider"
                 | "completion_matching_provider"
+                | "completion_frontend"
                 | "undo_provider"
                 | "indentation_provider"
                 | "pairing_provider"
@@ -409,6 +412,23 @@ fn completion_matching_providers(
     }
     choices
 }
+fn completion_frontends(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    let mut choices = vec![(
+        "velk.completion".into(),
+        "Completion (bundled default)".into(),
+    )];
+    for plugin in plugins {
+        if plugin
+            .hooks
+            .iter()
+            .any(|hook| hook == velk_commands::completion::frontend::HOOK)
+            && !choices.iter().any(|(id, _)| id == &plugin.id)
+        {
+            choices.push((plugin.id.clone(), plugin.metadata.name.clone()));
+        }
+    }
+    choices
+}
 fn syntax_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
     let mut choices = vec![(
         velk_syntax::DEFAULT_PROVIDER.into(),
@@ -518,6 +538,12 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         key: "undo_provider".into(), title: "Undo provider".into(),
         description: "History engine for newly opened documents. Existing documents retain their provider and history. Bundled undo is the fallback.".into(),
         category: Category::Plugins, control: Control::Choice(undo_providers),
+    },
+    Setting {
+        plugin: None, keywords: "completion popup menu presentation compact".into(), default: Value::Null,
+        key: "completion_frontend".into(), title: "Completion frontend".into(),
+        description: "Plugin that presents ranked suggestions. Applies to the next completion session. A minimal menu is used when unavailable.".into(),
+        category: Category::Plugins, control: Control::Choice(completion_frontends),
     },
     Setting {
         plugin: None, keywords: "completion ranking fuzzy typo matcher".into(), default: Value::Null,

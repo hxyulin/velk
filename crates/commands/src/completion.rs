@@ -1,4 +1,5 @@
 //! Headless suggestion selection. Edits are usable only against their exact source.
+pub mod frontend;
 pub mod matching;
 use crate::Choice;
 use serde::{Deserialize, Serialize};

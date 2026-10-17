@@ -179,6 +179,7 @@ fn render_feature_walkthrough() {
                         "velk.lsp".into(),
                         "velk.completion".into(),
                         "velk.completion.words".into(),
+                        "velk.completion.compact".into(),
                         "velk.language-server.rust-analyzer".into(),
                         "velk.files.backend".into(),
                         "velk.files".into(),
@@ -360,6 +361,45 @@ fn render_feature_walkthrough() {
     );
     shot(&mut capture, &output, "completion-documentation");
     shot(&mut capture, &output, "completion-popup");
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            let compact = doc
+                .plugins
+                .as_ref()
+                .unwrap()
+                .completion_frontends
+                .get("velk.completion.compact")
+                .unwrap()
+                .clone();
+            doc.buffer.editor.update(cx, |editor, _| {
+                editor.set_completion_frontend(Some(compact))
+            });
+        })
+    });
+    shot(&mut capture, &output, "completion-compact");
+    assert!(
+        capture
+            .element("completion-documentation")
+            .unwrap()
+            .is_none()
+    );
+    assert!(lsp_selected(&mut capture));
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            let popup = doc
+                .plugins
+                .as_ref()
+                .unwrap()
+                .completion_frontends
+                .get("velk.completion")
+                .unwrap()
+                .clone();
+            doc.buffer
+                .editor
+                .update(cx, |editor, _| editor.set_completion_frontend(Some(popup)));
+        })
+    });
+
     assert!(
         capture.element("editor-completions").unwrap().is_some(),
         "rust-analyzer returned no visible suggestions"

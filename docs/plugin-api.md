@@ -46,9 +46,9 @@ editor; typing does not queue behind lifecycle work or LSP requests. See
 [interactive editing](interactive-editing.md) for roles, limits, input routing,
 provider settings, and the bundled indentation and autopairs implementations.
 
-## Completion matching and snippets
+## Completion presentation, matching, and snippets
 
-Completion providers, merge/activation policy, and local matching are independently
+Completion providers, merge/activation policy, presentation, and local matching are independently
 replaceable. Generic collection inputs carry activation and opaque per-source
 continuation state; completion results can return a continuation for the next
 refresh. The host scopes it to the collection and provider generation, without
@@ -60,7 +60,12 @@ host calls. Retired leases fall back safely while pinning native code until drop
 Completion actions can return a `commands::snippet::SnippetEdit`, identifying the
 primary replacement and expanded placeholder ranges alongside a workspace edit.
 The host keeps atomic edit validation; editor-model owns navigation and mirrored
-editing. See [completion](completion.md) for contracts, selection settings, supported
+editing. A stateless `commands::completion::frontend::Provider` registers through
+`Registrar::completion_frontend`; its C table exchanges bounded snapshots and
+declarative rows/layouts. `completion_frontend` selects this service independently
+of the matcher. The host owns accessibility, focus, keyboard input and checked
+acceptance, validates output, and falls back safely after retirement or failure.
+See [completion](completion.md) for contracts, selection settings, supported
 snippet syntax, lifecycle, and limits.
 
 ## Workspace and buffer host services

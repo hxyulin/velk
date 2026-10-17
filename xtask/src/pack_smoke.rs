@@ -29,6 +29,29 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .iter()
                 .any(|r| r.style.bold)
         );
+        let popup = manager.completion_frontend("velk.completion")?;
+        let compact = manager.completion_frontend("velk.completion.compact")?;
+        let snapshot = velk_plugin_contracts::commands::completion::frontend::Snapshot {
+            candidates: vec![
+                velk_plugin_contracts::commands::completion::frontend::Candidate {
+                    title: "print".into(),
+                    detail: Some("detail".into()),
+                },
+            ],
+            selected: 0,
+            viewport: [900., 500.],
+            documentation: true,
+            ready: true,
+        };
+        assert_ne!(
+            popup.present(&snapshot)?.documentation,
+            compact.present(&snapshot)?.documentation
+        );
+        manager.unload("velk.completion.compact");
+        assert!(compact.present(&snapshot).is_err());
+        assert!(popup.present(&snapshot).is_ok());
+        assert_eq!(manager.load()?.len(), 1);
+        drop((popup, compact));
         let search = manager.bind_hook(velk_search::DEFAULT_BACKEND, velk_search::HOOK)?;
         file_backend_smoke(&mut manager)?;
         let project = tempfile::tempdir().map_err(|e| e.to_string())?;

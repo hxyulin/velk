@@ -1,6 +1,7 @@
 #![allow(unsafe_code)]
 use crate::{Event, PluginSpec, read_manifest};
 mod code;
+mod completion_frontend;
 mod editing;
 mod hooks;
 mod matching;
@@ -50,6 +51,7 @@ struct Generation {
     markdown: Option<MarkupApi>,
     syntax: Option<SyntaxApi>,
     matching: Option<MatchingApi>,
+    completion_frontend: Option<CompletionFrontendApi>,
     undo: Option<UndoApi>,
     language: Option<LanguageApi>,
     semantic: Option<SemanticApi>,
@@ -105,6 +107,7 @@ impl Generation {
             markdown: None,
             syntax: None,
             matching: None,
+            completion_frontend: None,
             undo: None,
             language: None,
             semantic: None,
@@ -831,6 +834,7 @@ mod tests {
                 markdown: None,
                 syntax: None,
                 matching: None,
+                completion_frontend: None,
                 undo: None,
                 language: None,
                 semantic: None,
@@ -997,6 +1001,7 @@ pub(super) mod test_provider {
                 markdown: None,
                 syntax: None,
                 matching: None,
+                completion_frontend: None,
                 undo: None,
                 language: None,
                 semantic: None,

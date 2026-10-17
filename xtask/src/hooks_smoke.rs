@@ -35,6 +35,24 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     unsafe {
         manager.load()?;
     }
+    let frontend = manager.completion_frontend("test.hooks")?;
+    let mut snapshot = velk_plugin_contracts::commands::completion::frontend::Snapshot {
+        candidates: vec![
+            velk_plugin_contracts::commands::completion::frontend::Candidate {
+                title: "valid".into(),
+                detail: None,
+            },
+        ],
+        selected: 0,
+        viewport: [800., 600.],
+        documentation: false,
+        ready: true,
+    };
+    assert_eq!(frontend.present(&snapshot)?.rows[0].title, "valid");
+    for title in ["invalid", "panic"] {
+        snapshot.candidates[0].title = title.into();
+        assert!(frontend.present(&snapshot).is_err());
+    }
     let matching = manager.matching_provider("test.hooks")?;
     assert_eq!(
         matching.scores("ing", &["long ending", "ring", "no"])?,
@@ -145,6 +163,9 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     assert!(copy.exists(), "matching lease also pins native code");
     assert!(matching.scores("ing", &["ring"]).is_err());
     drop(matching);
+    assert!(copy.exists(), "frontend lease pins native code");
+    assert!(frontend.present(&snapshot).is_err());
+    drop(frontend);
     assert!(!copy.exists());
     assert_eq!(owned, input);
     assert_eq!(

@@ -1,5 +1,6 @@
 use crate::Editor;
 use rxui::{Element, prelude::*};
+use velk_commands::completion::frontend::{self, Provider};
 use velk_commands::{
     completion::Item,
     completion::{DocumentationTarget, Session, Target},
@@ -13,6 +14,8 @@ pub(super) struct State {
     typed: Option<(Target, String)>,
     documentation: Option<(DocumentationTarget, std::sync::Arc<velk_markup::Document>)>,
     scroll: rxui::ScrollHandle,
+    frontend: Option<std::sync::Arc<dyn frontend::Provider>>,
+    view: std::cell::RefCell<Option<(frontend::Snapshot, frontend::View)>>,
 }
 impl Editor {
     fn completion_target(&self) -> Target {
@@ -74,6 +77,50 @@ impl Editor {
             ));
         }
         self.hide_hover();
+    }
+    /// Select presentation for this session without changing candidates or matching.
+    pub fn set_completion_frontend(
+        &mut self,
+        provider: Option<std::sync::Arc<dyn frontend::Provider>>,
+    ) {
+        self.completion.frontend = provider;
+        *self.completion.view.borrow_mut() = None;
+    }
+    fn completion_view(&self) -> Option<frontend::View> {
+        let session = self.completion.session.as_ref()?;
+        let snapshot = frontend::Snapshot {
+            candidates: session
+                .visible
+                .iter()
+                .map(|i| frontend::Candidate {
+                    title: session.items[*i].title.chars().take(1024).collect(),
+                    detail: session.items[*i]
+                        .detail
+                        .as_ref()
+                        .map(|s| s.chars().take(1024).collect()),
+                })
+                .collect(),
+            selected: session.selected,
+            viewport: self.geometry.borrow().viewport,
+            documentation: session.choice().is_some_and(|item| {
+                item.documentation.is_some() || item.documentation_resolve.is_some()
+            }),
+            ready: session.ready,
+        };
+        if let Some((previous, view)) = self.completion.view.borrow().as_ref()
+            && previous == &snapshot
+        {
+            return Some(view.clone());
+        }
+        let view = self
+            .completion
+            .frontend
+            .as_ref()
+            .and_then(|provider| provider.present(&snapshot).ok())
+            .filter(|view| view.validate(&snapshot).is_ok())
+            .or_else(|| frontend::Fallback.present(&snapshot).ok())?;
+        *self.completion.view.borrow_mut() = Some((snapshot, view.clone()));
+        Some(view)
     }
     /// Currently highlighted proposal, which may still await a refreshed revision.
     pub fn completion_choice(&self) -> Option<&Item> {
@@ -141,6 +188,8 @@ impl Editor {
     }
     pub fn dismiss_completions(&mut self) {
         self.completion.session = None;
+        self.completion.frontend = None;
+        *self.completion.view.borrow_mut() = None;
         self.completion.accepted = None;
         self.completion.typed = None;
         self.completion.documentation = None;
@@ -173,6 +222,8 @@ impl Editor {
         };
         self.completion.accepted = Some((session.target, choice));
         self.completion.session = None;
+        self.completion.frontend = None;
+        *self.completion.view.borrow_mut() = None;
     }
     pub(super) fn completion_key(&mut self, event: &KeyInput) -> bool {
         if self.completion.session.is_none() && event.event.key == KeyboardKey::Escape {
@@ -213,17 +264,12 @@ impl Editor {
             geometry.origin[0] + caret.x,
             geometry.origin[1] + caret.y + caret.height,
         ];
-        let has_documentation = session.choice().is_some_and(|item| {
-            item.documentation.is_some() || item.documentation_resolve.is_some()
-        });
-        let alongside = has_documentation && geometry.viewport[0] >= 680.;
-        let width = if alongside {
-            300.
-        } else {
-            (geometry.viewport[0] - 24.).clamp(120., 420.)
-        };
+        let view = self.completion_view()?;
+        let has_documentation = view.documentation != frontend::Documentation::Hidden;
+        let alongside = view.documentation == frontend::Documentation::Alongside;
+        let width = view.width.min((geometry.viewport[0] - 24.).max(120.));
         let total_width = if alongside {
-            (geometry.viewport[0] - 24.).min(740.)
+            (width + view.documentation_width).min((geometry.viewport[0] - 24.).max(120.))
         } else {
             width
         };
@@ -240,9 +286,11 @@ impl Editor {
             .gap(0.)
             .accessibility_role(SemanticRole::ListBox)
             .accessibility_label("Completions");
-        let first = session.selected.saturating_sub(3);
-        for (visible, index) in session.visible.iter().enumerate().skip(first).take(6) {
-            let item = &session.items[*index];
+        let epoch = self.completion.generation;
+        let target = session.target;
+        for item in &view.rows {
+            let visible = item.candidate;
+            let identity = session.items[session.visible[visible]].clone();
             let selected = visible == session.selected;
             let row = column()
                 .gap(2.)
@@ -265,9 +313,21 @@ impl Editor {
                 })
                 .on_pointer_down(cx.listener(
                     move |this, event: &PointerInput, _| {
-                        if let Some(session) = &mut this.completion.session {
-                            session.selected = visible;
+                        if this.completion.generation != epoch {
+                            return;
                         }
+                        let Some(session) = &mut this.completion.session else {
+                            return;
+                        };
+                        if session.target != target
+                            || session
+                                .visible
+                                .get(visible)
+                                .is_none_or(|i| session.items[*i] != identity)
+                        {
+                            return;
+                        }
+                        session.selected = visible;
                         this.accept_completion();
                         event.prevent_default();
                     },
@@ -312,7 +372,10 @@ impl Editor {
                         .fill_width()
                         .into_element()
                         .key("completion-documentation")
-                        .max_height((geometry.viewport[1] * 0.35).clamp(60., 220.))
+                        .max_height(
+                            view.documentation_height
+                                .min((geometry.viewport[1] - 24.).max(60.)),
+                        )
                         .accessibility_label("Completion documentation"),
                     ),
             );
@@ -507,6 +570,7 @@ mod documentation_tests {
     fn documentation_panel_is_bounded_scrollable_and_does_not_scroll_the_document() {
         let graphics = pollster::block_on(rxui::astrelis::GraphicsContext::headless()).unwrap();
         let mut editor = Editor::new("");
+        editor.set_completion_frontend(Some(Arc::new(velk_plugin_completion::frontend::Popup)));
         editor.show_completions(vec![item("alpha")], false);
         let target = editor.completion_documentation_target().unwrap();
         editor.resolve_completion_documentation(
@@ -683,5 +747,83 @@ mod snippet_keyboard_tests {
             test.read(|editor| assert_eq!(editor.selected_text(), selected));
         }
         test.read(|editor| assert!(!editor.snippet_active()));
+    }
+}
+
+#[cfg(test)]
+mod frontend_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    #[derive(Debug)]
+    struct Invalid(Arc<AtomicUsize>);
+    impl frontend::Provider for Invalid {
+        fn present(&self, snapshot: &frontend::Snapshot) -> Result<frontend::View, String> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            let mut view = frontend::Fallback.present(snapshot)?;
+            view.rows[0].candidate = 9999;
+            Ok(view)
+        }
+    }
+    #[test]
+    fn bad_frontend_falls_back_and_caches_until_selection_changes() {
+        let mut editor = Editor::new("");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(Invalid(calls.clone()));
+        editor.set_completion_frontend(Some(provider.clone()));
+        editor.show_completions(
+            (0..3)
+                .map(|i| {
+                    velk_commands::Choice {
+                        title: format!("item{i}"),
+                        detail: None,
+                        action: velk_commands::ChoiceAction::Semantic {
+                            payload: Default::default(),
+                        },
+                    }
+                    .into()
+                })
+                .collect(),
+            false,
+        );
+        assert_eq!(editor.completion_view().unwrap().rows[0].candidate, 0);
+        editor.completion_view();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        editor.completion.session.as_mut().unwrap().next(false);
+        editor.completion_view();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        editor.accept_completion();
+        assert_eq!(editor.take_completion().unwrap().1.title, "item1");
+        assert_eq!(Arc::strong_count(&provider), 1);
+    }
+    #[test]
+    fn compact_frontend_changes_rendering_without_changing_acceptance() {
+        let graphics = pollster::block_on(rxui::astrelis::GraphicsContext::headless()).unwrap();
+        let mut editor = Editor::new("");
+        editor.set_completion_frontend(Some(Arc::new(velk_plugin_completion::frontend::Compact)));
+        let mut item: Item = velk_commands::Choice {
+            title: "print".into(),
+            detail: Some("provider detail".into()),
+            action: velk_commands::ChoiceAction::Semantic {
+                payload: Default::default(),
+            },
+        }
+        .into();
+        item.documentation = Some(velk_commands::completion::Documentation {
+            text: "docs".into(),
+            markdown: false,
+        });
+        editor.show_completions(vec![item], false);
+        let mut test = rxui::TestUi::new(&graphics, [900, 500], editor).unwrap();
+        test.painter_mut().fonts_mut().load_system_fonts();
+        test.prepare().unwrap();
+        assert!(test.element("editor-completions").unwrap().is_some());
+        assert!(test.element("completion-documentation").unwrap().is_none());
+        test.read(|editor| {
+            assert_eq!(editor.completion_choice().unwrap().title, "print");
+            assert!(editor.completion_view().unwrap().rows[0].detail.is_none());
+        });
     }
 }
