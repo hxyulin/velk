@@ -251,7 +251,7 @@ mod tests {
     use velk_plugin_tree_sitter::Engine;
     use velk_syntax::Language;
     fn view(buffer: &Buffer) -> SyntaxView {
-        let snapshot = Engine::new(Language::Rust)
+        let snapshot = Engine::new(Language::new("rust"))
             .unwrap()
             .update(buffer.revision(), buffer.text(), &[], || false)
             .unwrap();
@@ -272,7 +272,7 @@ mod tests {
         let demand = Demand::new(Arc::new(
             Worker::new(
                 Arc::new(velk_plugin_tree_sitter::TreeSitter),
-                Language::Rust,
+                Language::new("rust"),
             )
             .unwrap(),
         ));
@@ -373,7 +373,7 @@ mod tests {
             "fn café() { let text = \"世界\"; }\n",
             std::sync::Arc::new(velk_undo_tree::Tree),
         );
-        let mut engine = Engine::new(Language::Rust).unwrap();
+        let mut engine = Engine::new(Language::new("rust")).unwrap();
         engine.update(0, buffer.text(), &[], || false).unwrap();
         for operation in 0..8 {
             match operation {
@@ -394,7 +394,7 @@ mod tests {
             let incremental = engine
                 .update(buffer.revision(), buffer.text(), &changes, || false)
                 .unwrap();
-            let fresh = Engine::new(Language::Rust)
+            let fresh = Engine::new(Language::new("rust"))
                 .unwrap()
                 .update(buffer.revision(), buffer.text(), &[], || false)
                 .unwrap();
@@ -413,7 +413,7 @@ mod tests {
             "fn café() { let text = \"世界\"; }\n",
             std::sync::Arc::new(velk_undo_tree::Tree),
         );
-        let mut engine = Engine::new(Language::Rust).unwrap();
+        let mut engine = Engine::new(Language::new("rust")).unwrap();
         engine.update(0, buffer.text(), &[], || false).unwrap();
         let length = buffer.text().len_chars();
         buffer
@@ -452,7 +452,7 @@ mod tests {
             let incremental = engine
                 .update(buffer.revision(), buffer.text(), &changes, || false)
                 .unwrap();
-            let fresh = Engine::new(Language::Rust)
+            let fresh = Engine::new(Language::new("rust"))
                 .unwrap()
                 .update(buffer.revision(), buffer.text(), &[], || false)
                 .unwrap();

@@ -88,6 +88,7 @@ fn stage(output: &Path, directory: &Path) -> Result<PluginSpec, String> {
 fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, String> {
     let artifact = stage_plugin(output, directory, ID, "velk_plugin_builtin")?;
     Ok([
+        "velk.language.rust",
         ID,
         "velk.tree-sitter",
         "velk.undo.tree",
@@ -114,12 +115,10 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
     ]
     .into_iter()
     .map(|id| PluginSpec {
+        interfaces: bundled_interfaces(id),
         id: id.into(),
         pack: true,
         dependencies: match id {
-            "velk.files" => vec!["velk.files.backend".into()],
-            "velk.quick-open" => vec!["velk.project.files".into()],
-            "velk.workspace-find" => vec!["velk.project.search".into()],
             "velk.language-server.rust-analyzer" => vec!["velk.lsp".into()],
             _ => Vec::new(),
         },
@@ -132,6 +131,50 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         ..artifact.clone()
     })
     .collect())
+}
+fn bundled_interfaces(id: &str) -> velk_plugin_contracts::interfaces::Interfaces {
+    use velk_plugin_contracts::interfaces::{Implementation, Interfaces, Requirement};
+    let mut interfaces = Interfaces::default();
+    for (provider, consumer, interface, title, hook) in [
+        (
+            "velk.files.backend",
+            "velk.files",
+            "velk.files.tree",
+            "File tree",
+            "velk.files.tree",
+        ),
+        (
+            "velk.project.files",
+            "velk.quick-open",
+            "velk.project.files",
+            "Project file queries",
+            "velk.project.query",
+        ),
+        (
+            "velk.project.search",
+            "velk.workspace-find",
+            "velk.project.search",
+            "Workspace text search",
+            "velk.project.query",
+        ),
+    ] {
+        if id == provider {
+            interfaces.implements.push(Implementation {
+                interface: interface.into(),
+                title: title.into(),
+                hook: hook.into(),
+                version: 1,
+            });
+        }
+        if id == consumer {
+            interfaces.requires.push(Requirement {
+                interface: interface.into(),
+                version: 1,
+                default_provider: provider.into(),
+            });
+        }
+    }
+    interfaces
 }
 fn build_standalone(root: &Path, release: bool) -> Result<(), String> {
     let mut command = cargo();
@@ -147,6 +190,8 @@ fn build_standalone(root: &Path, release: bool) -> Result<(), String> {
         "velk-plugin-snippets",
         "-p",
         "velk-plugin-completion",
+        "-p",
+        "velk-plugin-rust",
         "-p",
         "velk-plugin-rust-analyzer",
         "-p",
@@ -192,6 +237,7 @@ fn stage_plugin(
         temporary.persist(&target).map_err(|e| e.to_string())?;
     }
     Ok(PluginSpec {
+        interfaces: Default::default(),
         dependencies: Vec::new(),
         install_reason: Default::default(),
         id: id.into(),
@@ -367,6 +413,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     // Restage the real Markdown plugin at another immutable path. Loading
     // must leave the active generation alone until explicitly unloaded.
     let second = PluginSpec {
+        interfaces: Default::default(),
         library: PathBuf::from("restaged").join(library_name("velk_plugin_markdown")),
         ..first.clone()
     };
@@ -402,10 +449,12 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     manager.unload_all();
     for bad in [
         PluginSpec {
+            interfaces: Default::default(),
             library: "missing-library".into(),
             ..second.clone()
         },
         PluginSpec {
+            interfaces: Default::default(),
             digest: "0".repeat(64),
             ..second.clone()
         },
@@ -422,6 +471,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     publish(
         directory,
         vec![PluginSpec {
+            interfaces: Default::default(),
             dependencies: Vec::new(),
             install_reason: Default::default(),
             id: ID.into(),

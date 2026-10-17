@@ -45,6 +45,7 @@ impl Provider for Lease {
 }
 impl Lease {
     fn call(&self, request: Request) -> Result<Response, String> {
+        let _scope = velk_diagnostics::Scope::new("plugin.snippets", "velk_plugin_host", false);
         let active = self.active.read().map_err(|_| "snippet lease poisoned")?;
         if !*active {
             return Err("snippet provider retired".into());
@@ -53,26 +54,22 @@ impl Lease {
         if input.len() > snippet::MAX_BYTES {
             return Err("snippet request too large".into());
         }
-        let mut output = vec![0; snippet::MAX_BYTES];
-        let mut length = 0;
-        // SAFETY: the read guard excludes retirement and the code lease pins callbacks.
-        // Input and initialized output remain caller-owned throughout this call.
-        let status = unsafe {
-            (self.api.evaluate)(
-                Bytes {
-                    data: input.as_ptr(),
-                    length: input.len(),
-                },
-                output.as_mut_ptr(),
-                output.len(),
-                &mut length,
-            )
-        };
-        if status != OK || length > output.len() {
-            return Err("invalid snippet response".into());
-        }
+        let output = super::output::bounded_output(snippet::MAX_BYTES, |output, length| {
+            // SAFETY: the active read guard excludes retirement; code and caller storage stay live.
+            unsafe {
+                (self.api.evaluate)(
+                    Bytes {
+                        data: input.as_ptr(),
+                        length: input.len(),
+                    },
+                    output.as_mut_ptr(),
+                    output.len(),
+                    length,
+                )
+            }
+        })?;
         let response: Result<Response, String> =
-            serde_json::from_slice(&output[..length]).map_err(|e| e.to_string())?;
+            serde_json::from_slice(&output).map_err(|e| e.to_string())?;
         response
     }
 }

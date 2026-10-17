@@ -102,3 +102,5 @@ impl Tree {
         Ok(())
     }
 }
+
+pub const INTERFACE: &str = "velk.files.tree";

@@ -308,10 +308,9 @@ impl Document {
         let head = editor.caret_position().min(text.len_chars());
         let line = text.char_to_line(head);
         let column = head - text.line_to_char(line) + 1;
-        let language = match velk_editor_widget::Language::for_path(&self.buffer.path) {
-            Some(velk_editor_widget::Language::Rust) => "Rust",
-            None => "Plain Text",
-        };
+        let language = self
+            .file_type(&self.buffer.path)
+            .map_or_else(|| "Plain Text".to_owned(), |t| t.name);
         let mut right = row()
             .key("status-right")
             .flex_shrink(0.)

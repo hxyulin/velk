@@ -12,7 +12,7 @@ generation, dependency resolution, and load/unload controls.
 
 Run `cargo xtask setup-terminal` once to cache the pinned terminal build inputs.
 `cargo xtask build [--release]`, `plugins`, and `run` build/stage this pack.
-The manifest has seventeen entries selecting IDs from one content-addressed artifact:
+The manifest has twenty-four entries selecting IDs from one content-addressed artifact:
 
 ```json
 {

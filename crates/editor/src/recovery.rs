@@ -114,10 +114,8 @@ impl Saved {
                     return Err("invalid or duplicate recovered document identity".into());
                 }
                 let mut editor = crate::undo::restore_editor(d.buffer.as_bytes(), d.scroll)?;
-                if let Some(file) = &d.file {
-                    editor
-                        .set_language(velk_editor_widget::Language::for_path(file.path()))
-                        .map_err(|e| e.to_string())?;
+                if d.file.is_some() {
+                    editor.set_language(None).map_err(|e| e.to_string())?;
                 }
                 Ok(RestoredDocument {
                     id: d.id,

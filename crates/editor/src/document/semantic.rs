@@ -39,6 +39,11 @@ impl Document {
         renderer: Arc<dyn velk_markup::Renderer>,
         cx: &mut Context<'_, Self>,
     ) {
+        if let Some(previous) = self.buffer.semantic.take()
+            && !Arc::ptr_eq(&previous.service, &service)
+        {
+            previous.service.shutdown();
+        }
         let snapshot = self.semantic_snapshot(cx);
         service.update(snapshot.clone());
         self.buffer.semantic = Some(State {
@@ -71,7 +76,9 @@ impl Document {
                 .expect("semantic document is file-backed")
                 .path()
                 .to_path_buf(),
-            language: "rust".into(),
+            language: self
+                .file_type(&self.buffer.path)
+                .map_or_else(|| "plain".into(), |t| t.id),
             revision: editor.buffer().revision(),
             text: editor.buffer().text(),
         }
@@ -271,7 +278,9 @@ impl Document {
                 .expect("semantic document is file-backed")
                 .path()
                 .to_path_buf(),
-            language: "rust".into(),
+            language: editor
+                .language()
+                .map_or_else(|| "plain".into(), |l| l.as_str().into()),
             revision: buffer.revision(),
             text: buffer.text(),
         });
@@ -595,8 +604,8 @@ impl Document {
             return (0, None);
         };
         let notice = state.notice.clone().or_else(|| match &state.status {
-            Status::Starting => Some("rust-analyzer starting…".into()),
-            Status::Failed(error) => Some(format!("rust-analyzer unavailable: {error}")),
+            Status::Starting => Some("Language server starting…".into()),
+            Status::Failed(error) => Some(format!("Language server unavailable: {error}")),
             Status::Ready(_) | Status::Stopped => None,
         });
         (state.count, notice)

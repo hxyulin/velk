@@ -38,6 +38,8 @@ pub struct Capability {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginMetadata {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_types: Vec<crate::file_types::FileType>,
     pub commands: Vec<velk_commands::Declaration>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contributions: Vec<velk_commands::contributions::Contribution>,
@@ -49,6 +51,16 @@ pub struct PluginMetadata {
 }
 impl PluginMetadata {
     pub fn validate(&self) -> Result<(), String> {
+        if self.file_types.len() > 64 {
+            return Err("too many file types".into());
+        }
+        let mut types = std::collections::BTreeSet::new();
+        for file_type in &self.file_types {
+            file_type.validate()?;
+            if !types.insert(&file_type.id) {
+                return Err("duplicate file type".into());
+            }
+        }
         crate::settings::validate_schema(&self.settings)?;
         if self.commands.len() > 128 {
             return Err("too many plugin commands".into());

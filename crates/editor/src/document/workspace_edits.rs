@@ -5,7 +5,7 @@ use rxui::prelude::*;
 use std::{collections::BTreeMap, path::PathBuf};
 use velk_commands::{Context as CommandContext, WorkspaceEdit};
 use velk_core::{Buffer, Transaction};
-use velk_editor_widget::{Editor, Language};
+use velk_editor_widget::Editor;
 
 #[derive(Clone)]
 pub(super) struct Guard {
@@ -245,7 +245,7 @@ impl Document {
                     let path = file.path().to_path_buf();
                     let mut editor = Editor::from_buffer(buffer);
                     editor
-                        .set_language(Language::for_path(&path))
+                        .set_language(self.language_for_path(&path))
                         .map_err(|e| e.to_string())?;
                     closed.push((file, editor, path));
                 }

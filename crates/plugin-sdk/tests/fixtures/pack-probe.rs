@@ -4,6 +4,8 @@ use velk_plugin_sdk::{Plugin, Registrar, hooks};
 struct First(u8);
 #[derive(Default)]
 struct Second(u8);
+#[derive(Default)]
+struct Third(u8);
 macro_rules! plugin {
     ($ty:ty, $id:literal) => {
         impl Plugin for $ty {
@@ -40,6 +42,20 @@ macro_rules! plugin {
                     },
                 )?;
                 reg.provide(
+                    hooks::Request("test.pack.interface"),
+                    |_: &mut Self, input: &[u8]| {
+                        let call: velk_plugin_sdk::contracts::backend::Call =
+                            serde_json::from_slice(input).map_err(|e| e.to_string())?;
+                        Ok(format!(
+                            "{}:{}:{}",
+                            Self::ID,
+                            call.consumer.plugin,
+                            call.consumer.generation
+                        )
+                        .into_bytes())
+                    },
+                )?;
+                reg.provide(
                     hooks::Request("test.pack.increment"),
                     |this: &mut Self, _: &[u8]| {
                         this.0 += 1;
@@ -52,6 +68,7 @@ macro_rules! plugin {
 }
 plugin!(First, "test.pack.first");
 plugin!(Second, "test.pack.second");
+plugin!(Third, "test.pack.third");
 struct Fails;
 impl Default for Fails {
     fn default() -> Self {
@@ -65,4 +82,4 @@ impl Plugin for Fails {
         unreachable!()
     }
 }
-velk_plugin_sdk::export_plugin_pack!(First, Second, Fails);
+velk_plugin_sdk::export_plugin_pack!(First, Second, Third, Fails);

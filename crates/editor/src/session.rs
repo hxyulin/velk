@@ -46,9 +46,7 @@ pub struct SessionBuffer {
 impl SessionBuffer {
     pub fn editor(&self) -> Result<Editor, String> {
         let mut editor = crate::undo::restore_editor(self.buffer.as_bytes(), self.scroll)?;
-        editor
-            .set_language(velk_editor_widget::Language::for_path(&self.path))
-            .map_err(|e| e.to_string())?;
+        editor.set_language(None).map_err(|e| e.to_string())?;
         Ok(editor)
     }
 }

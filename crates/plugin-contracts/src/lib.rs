@@ -16,3 +16,7 @@ pub use velk_commands as commands;
 pub use velk_syntax as syntax;
 
 pub mod backend;
+
+pub mod interfaces;
+
+pub mod file_types;

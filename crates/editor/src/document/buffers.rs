@@ -142,12 +142,18 @@ fn observe_editor(
     .expect("editor entity is live")
 }
 impl BufferState {
-    pub fn refresh_view_languages(&self, cx: &mut Context<'_, Document>) {
-        let language = Language::for_path(&self.path);
+    pub fn refresh_view_languages(
+        &self,
+        language: Option<Language>,
+        cx: &mut Context<'_, Document>,
+    ) {
         for view in &self.views {
             view.editor.update(cx, |editor, _| {
+                if editor.language() == language {
+                    return;
+                }
                 editor.clear_annotations();
-                if let Err(error) = editor.set_language(language) {
+                if let Err(error) = editor.set_language(language.clone()) {
                     tracing::warn!(%error, "Cannot update document view language");
                 }
             });
@@ -425,13 +431,15 @@ impl Document {
             .editor
             .update(cx, |editor, _| editor.set_editing_providers(providers));
         if self.buffer.file.is_some()
-            && Language::for_path(&self.buffer.path) == Some(Language::Rust)
+            && self.language_for_path(&self.buffer.path).is_some()
             && let Some(plugins) = &self.plugins
         {
             match plugins.client.semantic_service() {
                 Ok(service) => self.enable_semantics(service, cx),
                 Err(error) => self.notice(Some(format!("Semantic service unavailable: {error}"))),
             }
+        } else if let Some(previous) = self.buffer.semantic.take() {
+            previous.service.shutdown();
         }
     }
     pub(super) fn new_buffer(&mut self, cx: &mut Context<'_, Self>) {
@@ -676,7 +684,7 @@ impl Document {
                                         }
                                     };
                                 let mut editor = Editor::from_buffer(buffer);
-                                match editor.set_language(Language::for_path(&path)) {
+                                match editor.set_language(None) {
                                     Ok(()) => {
                                         let canonical = file.path().to_path_buf();
                                         this.add_buffer(file, editor, path, cx);
@@ -936,14 +944,15 @@ mod tests {
                     assert_eq!(this.documents.active(), Some(2));
                 });
                 this.select_buffer(1, cx);
-                this.buffer.refresh_view_languages(cx);
+                this.buffer
+                    .refresh_view_languages(Some(Language::new("rust")), cx);
                 this.split_editor(velk_editor_model::views::Axis::Horizontal, cx);
                 assert_eq!(this.buffer.views.len(), 2);
                 assert!(
                     this.buffer
                         .views
                         .iter()
-                        .all(|view| view.editor.read(cx).language() == Some(Language::Rust))
+                        .all(|view| view.editor.read(cx).language() == Some(Language::new("rust")))
                 );
                 this.save_to(Some(destination.clone()), None, cx);
             });

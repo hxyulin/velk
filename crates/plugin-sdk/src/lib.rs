@@ -8,7 +8,7 @@ pub use velk_editing as editing;
 #[cfg(feature = "markup")]
 pub use velk_markup as markup;
 pub use velk_plugin_api as api;
-pub use velk_plugin_contracts::{buffers, host};
+pub use velk_plugin_contracts::{buffers, file_types, host, interfaces};
 pub use velk_semantic as semantic;
 pub mod hooks {
     #[cfg(feature = "markup")]
@@ -39,6 +39,9 @@ pub trait Plugin: Default + 'static {
         Vec::new()
     }
     fn contributions() -> Vec<commands::contributions::Contribution> {
+        Vec::new()
+    }
+    fn file_types() -> Vec<file_types::FileType> {
         Vec::new()
     }
     fn settings() -> Vec<settings::Definition> {

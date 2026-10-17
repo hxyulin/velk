@@ -228,7 +228,10 @@ impl Document {
                                     this.buffer.disk_stamp = None;
                                     this.buffer.disk_changed = false;
                                     this.buffer.disk_notice_dismissed = false;
-                                    this.buffer.refresh_view_languages(cx);
+                                    this.buffer.refresh_view_languages(
+                                        this.language_for_path(&this.buffer.path),
+                                        cx,
+                                    );
                                     this.start_buffer_semantics(cx);
                                 });
                             }

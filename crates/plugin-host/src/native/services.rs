@@ -28,11 +28,18 @@ impl Endpoint {
         };
         let directory = matches!(request, Request::ReadDirectory { .. });
         match request {
-            Request::CallPlugin {
-                provider,
-                hook,
-                input,
-            } => {
+            request @ (Request::CallPlugin { .. } | Request::CallInterface { .. }) => {
+                let (provider, hook, input, interface) = match request {
+                    Request::CallPlugin {
+                        provider,
+                        hook,
+                        input,
+                    } => (provider, hook, input, false),
+                    Request::CallInterface { interface, input } => {
+                        (String::new(), interface, input, true)
+                    }
+                    _ => unreachable!(),
+                };
                 if self.bridge.plugin_thread.lock().unwrap().as_ref()
                     == Some(&std::thread::current().id())
                 {
@@ -51,6 +58,7 @@ impl Endpoint {
                     .try_send(crate::Request::DependencyCall {
                         caller: self.plugin.clone(),
                         generation: self.generation,
+                        interface,
                         provider,
                         hook,
                         input,

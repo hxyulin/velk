@@ -53,8 +53,10 @@ host find bar. It can show matches in another panel or drive its own commands.
 
 ## Calling a backend
 
-Declare `plugin.call` in the frontend's capabilities and the backend's exact ID
-in its manifest dependencies. Store the per-instance `Host` from `attach_host`.
+Declare `plugin.call` in the frontend's capabilities and an interface requirement
+in its manifest. The selected implementation resolves into a dependency edge; see
+[interfaces](plugin-interfaces.md). Exact-ID dependencies remain available when a
+consumer specifically needs one implementation. Store the per-instance `Host` from `attach_host`.
 From an owned background worker:
 
 ```rust
@@ -71,7 +73,7 @@ fn begin(host: &Host, session: u64, id: u64) -> Result<project::Reply, String> {
         },
     };
     let input = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
-    let output = host.call_plugin(project::FILES_PROVIDER, project::HOOK, input)?;
+    let output = host.call_interface(project::FILES_INTERFACE, input)?;
     serde_json::from_slice(&output).map_err(|e| e.to_string())
 }
 ```
@@ -83,8 +85,8 @@ cancellation, result polling, optional idle invalidation checks, and joined
 teardown. Bundled frontend modules are complete examples.
 
 Calls go through the existing C host-services barrier and bounded plugin queue,
-never the UI. The host verifies the caller's generation and declared direct
-dependency, then wraps the request in `contracts::backend::Call`, containing its
+never the UI. The host resolves the declared interface and selected provider, verifies the caller's
+generation and resolved dependency, then wraps the request in `contracts::backend::Call`, containing its
 host-authenticated plugin ID and generation. A backend decodes that envelope
 with `backend::Sessions<T>` and handles the inner domain request. Each consumer
 has independent state; query IDs can overlap across frontends. A new generation

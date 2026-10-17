@@ -283,6 +283,13 @@ The [syntax service](syntax-services.md) uses a dedicated version-1 C table for
 worker-owned document sessions. Register a factory with `Registrar::syntax`; the
 bundled `velk.tree-sitter` plugin supplies the default Rust implementation.
 
+## Interfaces and file types
+
+See [plugin interfaces](plugin-interfaces.md) for implementation/requirement declarations,
+provider selection in Plugins, resolved dependency edges, and plugin-declared file
+associations. See [transport direction](plugin-transports.md) for ABI-safe Rust types,
+layout-aware fast paths, serialization research, and the planned Wasm experiment.
+
 ## Reusable feature backends and dependencies
 
 See [feature backends](feature-backends.md) for Core/Backend/Frontend boundaries,

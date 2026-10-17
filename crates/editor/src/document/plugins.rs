@@ -132,6 +132,26 @@ impl Document {
             }
         }
     }
+    pub(super) fn file_type(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<velk_plugin_contracts::file_types::FileType> {
+        velk_plugin_contracts::file_types::resolve(
+            path,
+            self.plugins
+                .iter()
+                .flat_map(|s| &s.loaded)
+                .flat_map(|p| &p.metadata.file_types),
+            &self.shell.store.preferences.file_associations,
+        )
+    }
+    pub(super) fn language_for_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<velk_syntax::Language> {
+        self.file_type(path)
+            .map(|t| velk_syntax::Language::new(t.id))
+    }
     pub(super) fn refresh_syntax(&mut self, cx: &mut Context<'_, Self>) {
         let provider = self
             .plugins
@@ -143,6 +163,7 @@ impl Document {
             })
             .cloned();
         for buffer in self.buffer.iter().chain(self.inactive.values()) {
+            buffer.refresh_view_languages(self.language_for_path(&buffer.path), cx);
             for view in &buffer.views {
                 view.editor.update(cx, |editor, _| {
                     if let Err(error) = editor.set_syntax_provider(provider.clone()) {
@@ -159,6 +180,13 @@ impl Document {
     ) -> String {
         crate::undo::configure(&self.shell.store.preferences, Some(report.undo));
         let state = self.plugins.as_mut().expect("plugin state");
+        let language_types = |plugins: &[velk_plugin_host::PluginInfo]| {
+            plugins
+                .iter()
+                .flat_map(|p| p.metadata.file_types.clone())
+                .collect::<Vec<_>>()
+        };
+        let languages_changed = language_types(&state.loaded) != language_types(&report.plugins);
         let status = {
             for event in &report.events {
                 if let Event::Rejected { id, message } = event {
@@ -219,6 +247,9 @@ impl Document {
         };
         self.refresh_editing(cx);
         self.refresh_syntax(cx);
+        if languages_changed {
+            self.start_all_semantics(cx);
+        }
         status
     }
     pub(super) fn markup_renderer(&self) -> std::sync::Arc<dyn velk_markup::Renderer> {
@@ -265,6 +296,11 @@ impl Document {
         let receiver = state
             .client
             .set_settings(self.shell.store.preferences.plugins.clone())
+            .and_then(|_| {
+                state
+                    .client
+                    .set_interface_bindings(self.shell.store.preferences.interface_bindings.clone())
+            })
             .and_then(|_| match &operation {
                 Operation::Load => state.client.load_except(disabled),
                 Operation::LoadSelected(ids, states) => {
@@ -384,6 +420,88 @@ mod tests {
     use crate::document::ClosePlugins;
     use rxui::{KeyEvent, Runtime, Ui};
 
+    #[test]
+    #[allow(unsafe_code)]
+    fn file_type_declarations_and_overrides_refresh_existing_views_and_retire_on_unload() {
+        use velk_plugin_contracts::file_types::FileType;
+        let directory = tempfile::tempdir().unwrap();
+        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let mut harness = super::super::tests::Harness::new();
+        let path = harness.write_file("source.custom", "text");
+        let report = |plugins: Vec<velk_plugin_host::PluginInfo>| velk_plugin_host::Report {
+            loaded: plugins.len(),
+            plugins,
+            events: vec![],
+            available: vec![],
+            inventory: vec![],
+            editing: Default::default(),
+            syntax: Default::default(),
+            undo: Default::default(),
+            snippets: Default::default(),
+            matching: Default::default(),
+            completion_frontends: Default::default(),
+        };
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |this, cx| {
+                let (file, editor) = crate::file::FileState::open(&path).unwrap();
+                this.add_buffer(file, editor, path.clone(), cx);
+                let mut state = State::new(host.client(), String::new());
+                state.loaded.push(velk_plugin_host::PluginInfo {
+                    id: "test.language".into(),
+                    version: "1".into(),
+                    generation: 1,
+                    loaded_path: Default::default(),
+                    description: String::new(),
+                    metadata: velk_plugin_host::PluginMetadata {
+                        name: "Language".into(),
+                        file_types: vec![
+                            FileType {
+                                id: "custom".into(),
+                                name: "Custom".into(),
+                                extensions: vec!["custom".into()],
+                                filenames: vec![],
+                            },
+                            FileType {
+                                id: "other".into(),
+                                name: "Other".into(),
+                                extensions: vec![],
+                                filenames: vec![],
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    settings_values: Default::default(),
+                    settings_error: None,
+                    resident_code: false,
+                    hooks: vec![],
+                    dependencies: vec![],
+                });
+                let declarations = std::mem::take(&mut state.loaded);
+                this.plugins = Some(state);
+                assert!(this.buffer.semantic.is_none());
+                this.apply_plugin_report(report(declarations), cx);
+                assert!(this.buffer.semantic.is_some());
+                assert_eq!(
+                    this.buffer.editor.read(cx).language().unwrap().as_str(),
+                    "custom"
+                );
+                assert_eq!(this.command_context(cx).language.as_deref(), Some("custom"));
+                this.shell
+                    .store
+                    .preferences
+                    .file_associations
+                    .insert("*.custom".into(), "other".into());
+                this.refresh_syntax(cx);
+                assert_eq!(
+                    this.buffer.editor.read(cx).language().unwrap().as_str(),
+                    "other"
+                );
+                this.apply_plugin_report(report(vec![]), cx);
+                assert!(this.buffer.editor.read(cx).language().is_none());
+                assert!(this.buffer.semantic.is_none());
+            })
+        });
+    }
     #[test]
     #[allow(unsafe_code)]
     fn editing_providers_refresh_initial_and_inactive_buffers_after_loading() {

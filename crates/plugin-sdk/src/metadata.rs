@@ -2,6 +2,7 @@ use crate::{Capability, PluginMetadata};
 
 pub(crate) fn of<P: crate::Plugin>() -> PluginMetadata {
     PluginMetadata {
+        file_types: P::file_types(),
         commands: P::commands(),
         contributions: P::contributions(),
         name: P::NAME.into(),

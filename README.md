@@ -203,6 +203,12 @@ Plugin-declared settings appear in the existing Settings page, with validation,
 defaults, and Reset controls. Changes apply after an explicit plugin restart.
 See [plugin settings](docs/plugin-settings.md) for the bundled options and SDK.
 
+Plugins > Interfaces groups provider choices, including backend bindings for File
+Tree, Quick Open, and workspace search. File identities and associations can also
+be declared by plugins; the bundled Rust language plugin is independent of syntax
+and LSP implementations. See [interfaces and file types](docs/plugin-interfaces.md)
+and [native/Wasm transport direction](docs/plugin-transports.md).
+
 Start with the [plugin API guide](docs/plugin-api.md) and
 [plugin pack guide](docs/plugin-packs.md). The host currently supports shared
 text, tree, and grid panel models. A general interactive widget API is future

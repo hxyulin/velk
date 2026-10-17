@@ -380,7 +380,10 @@ impl Document {
                                 if let Some(state) = this.buffer.semantic.take() {
                                     state.service.shutdown();
                                 }
-                                this.buffer.refresh_view_languages(cx);
+                                this.buffer.refresh_view_languages(
+                                    this.language_for_path(&this.buffer.path),
+                                    cx,
+                                );
                                 this.start_buffer_semantics(cx);
                             }
                             if let (Some(state), Some(snapshot)) = (

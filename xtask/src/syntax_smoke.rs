@@ -25,8 +25,9 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
         manager.load()?;
     }
     let provider = manager.syntax_provider("velk.tree-sitter")?;
-    let mut first = provider.open(Language::Rust)?;
-    let mut second = provider.open(Language::Rust)?;
+    assert!(provider.open(Language::new("custom-language")).is_err());
+    let mut first = provider.open(Language::new("rust"))?;
+    let mut second = provider.open(Language::new("rust"))?;
     let before = ropey::Rope::from_str("fn café() { let value = \"世界\"; }\n");
     assert!(first.update(0, before.clone(), &[], &|| false)?);
     let highlights = first.highlights(0..before.len_chars(), &|| false)?.unwrap();
@@ -49,7 +50,7 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     );
     assert!(!first.update(2, before.clone(), &[], &|| true)?);
     manager.unload("velk.tree-sitter");
-    assert!(provider.open(Language::Rust).is_err());
+    assert!(provider.open(Language::new("rust")).is_err());
     assert!(first.highlights(0..after.len_chars(), &|| false).is_err());
     // Sessions remain destructible after logical retirement and pin their code.
     drop(first);
@@ -59,7 +60,7 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     }
     let replacement = manager.syntax_provider("velk.tree-sitter")?;
     assert!(!Arc::ptr_eq(&provider, &replacement));
-    let mut session = replacement.open(Language::Rust)?;
+    let mut session = replacement.open(Language::new("rust"))?;
     assert!(session.update(0, before.clone(), &[], &|| false)?);
     assert_eq!(
         session

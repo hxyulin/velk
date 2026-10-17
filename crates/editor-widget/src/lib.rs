@@ -284,7 +284,7 @@ impl Editor {
         view.annotations = self.annotations.clone();
         view.hover.enabled = self.hover.enabled;
         view.geometry.borrow_mut().offset = self.scroll_offset();
-        view.set_language(self.language)?;
+        view.set_language(self.language.clone())?;
         view.set_syntax_provider(self.syntax_provider.clone())?;
         Ok(view)
     }
@@ -373,7 +373,7 @@ impl Editor {
         self.geometry.borrow().offset
     }
     pub fn language(&self) -> Option<Language> {
-        self.language
+        self.language.clone()
     }
     /// Set the document language. A selected syntax service parses off the UI thread.
     pub fn set_language(
@@ -408,6 +408,7 @@ impl Editor {
         self.epoch += 1;
         self.syntax_worker = self
             .language
+            .clone()
             .zip(self.syntax_provider.clone())
             .map(|(language, provider)| velk_syntax::Worker::new(provider, language))
             .transpose()?
@@ -1628,7 +1629,7 @@ mod syntax_service_tests {
     #[test]
     fn language_without_a_provider_stays_plain_and_provider_replacement_clears_cached_results() {
         let mut editor = Editor::new("fn main() {}");
-        editor.set_language(Some(Language::Rust)).unwrap();
+        editor.set_language(Some(Language::new("rust"))).unwrap();
         assert!(editor.syntax_worker.is_none());
         let provider = Arc::new(SyntaxProvider) as Arc<dyn Provider>;
         editor.set_syntax_provider(Some(provider.clone())).unwrap();

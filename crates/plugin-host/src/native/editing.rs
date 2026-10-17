@@ -18,6 +18,7 @@ impl std::fmt::Debug for Lease {
 }
 impl Provider for Lease {
     fn evaluate(&self, request: &Request) -> Result<Decision, String> {
+        let _scope = velk_diagnostics::Scope::new("plugin.editing", "velk_plugin_host", false);
         let active = self.active.read().map_err(|_| "editing lease poisoned")?;
         if !*active {
             return Ok(Decision::Decline);

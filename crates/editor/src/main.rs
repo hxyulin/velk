@@ -17,7 +17,7 @@ use std::{
     process::ExitCode,
     rc::Rc,
 };
-use velk_editor_widget::{Editor, Language};
+use velk_editor_widget::Editor;
 
 #[derive(Debug)]
 enum Error {
@@ -47,9 +47,7 @@ fn file_argument(mut arguments: impl Iterator<Item = OsString>) -> Result<Option
 fn open(path: &Path) -> Result<(file::FileState, Editor), Error> {
     (|| {
         let (file, mut editor) = file::FileState::open(path)?;
-        editor
-            .set_language(Language::for_path(path))
-            .map_err(io::Error::other)?;
+        editor.set_language(None).map_err(io::Error::other)?;
         Ok((file, editor))
     })()
     .map_err(|source| Error::Open {
@@ -65,7 +63,11 @@ fn run() -> Result<(), Error> {
     let plugins = plugins::start();
     let plugin_client = plugins.as_ref().map(velk_plugin_host::Runtime::client);
     if let Some(client) = &plugin_client
-        && let Err(error) = client.set_settings(settings.preferences.plugins.clone())
+        && let Err(error) = client
+            .set_settings(settings.preferences.plugins.clone())
+            .and_then(|_| {
+                client.set_interface_bindings(settings.preferences.interface_bindings.clone())
+            })
     {
         tracing::warn!(%error, "cannot configure plugin bootstrap");
     }
@@ -101,12 +103,10 @@ fn run() -> Result<(), Error> {
         }
     };
     if restored.is_some() {
-        editor
-            .set_language(Language::for_path(&path))
-            .map_err(|error| Error::Open {
-                path: path.clone(),
-                source: io::Error::other(error.to_string()),
-            })?;
+        editor.set_language(None).map_err(|error| Error::Open {
+            path: path.clone(),
+            source: io::Error::other(error.to_string()),
+        })?;
     }
     let (recovery_store, recovered, mut recovery_error) =
         match recovery::Store::open(restored.is_none()) {
@@ -474,16 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_extension_enables_in_process_parser_and_other_files_stay_plain() {
-        assert_eq!(
-            Language::for_path(Path::new("main.rs")),
-            Some(Language::Rust)
-        );
-        assert_eq!(
-            Language::for_path(Path::new("MAIN.RS")),
-            Some(Language::Rust)
-        );
-        assert_eq!(Language::for_path(Path::new("notes.txt")), None);
+    fn opening_text_does_not_require_a_language_provider() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("real.rs");
         std::fs::write(&path, include_str!("main.rs")).unwrap();

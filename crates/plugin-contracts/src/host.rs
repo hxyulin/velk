@@ -90,6 +90,10 @@ pub enum Request {
         hook: String,
         input: Vec<u8>,
     },
+    CallInterface {
+        interface: String,
+        input: Vec<u8>,
+    },
     Workspace,
     /// Relative paths resolve against the selected project root; no implicit cwd fallback.
     ReadFile {
@@ -157,7 +161,7 @@ pub enum Request {
 impl Request {
     pub fn capability(&self) -> &'static str {
         match self {
-            Self::CallPlugin { .. } => PLUGIN_CALL,
+            Self::CallPlugin { .. } | Self::CallInterface { .. } => PLUGIN_CALL,
             Self::Workspace => WORKSPACE_READ,
             Self::FileOperation { .. } => PROJECT_WRITE,
             Self::Diagnostics => DIAGNOSTICS_READ,
@@ -182,6 +186,11 @@ impl Request {
                         "file operation paths must be nonempty and cannot contain parent traversal"
                             .into(),
                     );
+                }
+            }
+            Self::CallInterface { interface, input } => {
+                if crate::parse_plugin_id(interface).is_none() || input.len() > 256 * 1024 {
+                    return Err("invalid or oversized interface call".into());
                 }
             }
             Self::CallPlugin {

@@ -15,6 +15,7 @@ impl Command for FocusFilter {}
 pub(super) struct Page {
     query: String,
     tree: bool,
+    interfaces: bool,
     selected: Option<String>,
     filter: FocusHandle,
 }
@@ -40,6 +41,17 @@ fn display_name(id: &str) -> String {
 fn contributions(info: &PluginInfo) -> Vec<(&'static str, String)> {
     let mut rows = Vec::new();
     let mut other = Vec::new();
+    if !info.metadata.file_types.is_empty() {
+        rows.push((
+            "File types",
+            info.metadata
+                .file_types
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
     for hook in &info.hooks {
         let row = match hook.as_str() {
             velk_panels::HOOK => ("Panels", "Window panels (sidebar or bottom drawer)".into()),
@@ -139,11 +151,19 @@ impl Document {
             disabled.push(id.clone());
         }
         let selected = enabled.then(|| {
+            let manifest = velk_plugin_host::Manifest {
+                plugins: self
+                    .plugins
+                    .as_ref()
+                    .map(|s| s.inventory.clone())
+                    .unwrap_or_default(),
+            };
+            let effective = manifest
+                .resolve_interfaces(&self.shell.store.preferences.interface_bindings)
+                .unwrap_or(manifest);
             enabled_dependents(
                 id.clone(),
-                self.plugins
-                    .as_ref()
-                    .map_or(&[], |state| state.inventory.as_slice()),
+                &effective.plugins,
                 &self.shell.store.preferences.disabled_plugins,
             )
         });
@@ -534,6 +554,9 @@ impl Document {
         cx: &mut ViewContext<'_, Self>,
         close: Option<rxui::CommandAction<ClosePlugins>>,
     ) -> Element {
+        if self.plugin_page.interfaces {
+            return self.plugin_interfaces_page(cx, close);
+        }
         let page = &self.plugin_page;
         let focus_filter = cx
             .command(FocusFilter, |this, _, cx| {
@@ -579,6 +602,9 @@ impl Document {
                     .map(|s| s.inventory.clone())
                     .unwrap_or_default(),
             };
+            let manifest = manifest
+                .resolve_interfaces(&self.shell.store.preferences.interface_bindings)
+                .unwrap_or(manifest);
             for (index, node) in manifest.dependency_tree().into_iter().enumerate() {
                 let reference = node.reference;
                 rows = rows.child(
@@ -681,6 +707,12 @@ impl Document {
                     this.plugin_page.tree = !this.plugin_page.tree;
                 })),
             )
+            .child(
+                button("Interfaces")
+                    .key("plugin-interfaces-tab")
+                    .variant(ButtonVariant::Quiet)
+                    .on_click(cx.listener(|this, _, _| this.plugin_page.interfaces = true)),
+            )
             .child(rows)
             .children(self.plugins.as_ref().map(|state| {
                 label(state.status.clone())
@@ -742,6 +774,137 @@ impl Document {
             .child(list)
             .child(detail)
     }
+    fn select_interface(&mut self, interface: &str, provider: &str, cx: &mut Context<'_, Self>) {
+        if self.plugins.as_ref().is_none_or(|s| s.task.is_some()) {
+            return;
+        }
+        let mut bindings = self.shell.store.preferences.interface_bindings.clone();
+        bindings.insert(interface.into(), provider.into());
+        let manifest = velk_plugin_host::Manifest {
+            plugins: self.plugins.as_ref().unwrap().inventory.clone(),
+        };
+        if let Err(error) = manifest.resolve_interfaces(&bindings) {
+            self.shell.store.error = Some(error);
+            return;
+        }
+        self.shell.store.preferences.interface_bindings = bindings;
+        self.persist_shell(cx);
+        self.plugin_operation(Operation::Restart(None), cx);
+    }
+    fn plugin_interfaces_page(
+        &self,
+        cx: &mut ViewContext<'_, Self>,
+        close: Option<rxui::CommandAction<ClosePlugins>>,
+    ) -> Element {
+        let mut body = column().key("plugin-interface-list").fill_width().gap(14.);
+        body = body.child(label("Choose implementations for shared plugin interfaces. Backend changes restart running plugins; disabled providers stay disabled.").color(ThemeColor::TextMuted));
+        if let Some(state) = &self.plugins {
+            let mut interfaces = std::collections::BTreeMap::new();
+            for spec in &state.inventory {
+                for implementation in &spec.interfaces.implements {
+                    interfaces
+                        .entry(implementation.interface.clone())
+                        .or_insert_with(|| implementation.title.clone());
+                }
+            }
+            for (interface, title) in interfaces {
+                let default = state
+                    .inventory
+                    .iter()
+                    .flat_map(|s| &s.interfaces.requires)
+                    .find(|r| r.interface == interface)
+                    .map(|r| r.default_provider.as_str());
+                let selected = self
+                    .shell
+                    .store
+                    .preferences
+                    .interface_bindings
+                    .get(&interface)
+                    .map(String::as_str)
+                    .or(default);
+                let mut choices = column()
+                    .key(format!("interface-{interface}"))
+                    .gap(6.)
+                    .child(label(title).font_weight(FontWeight::SEMIBOLD))
+                    .child(
+                        label(interface.clone())
+                            .font_size(12.)
+                            .color(ThemeColor::TextMuted),
+                    );
+                for spec in state.inventory.iter().filter(|s| {
+                    s.interfaces
+                        .implements
+                        .iter()
+                        .any(|i| i.interface == interface)
+                }) {
+                    let id = spec.id.clone();
+                    let target = interface.clone();
+                    let active = state.loaded.iter().any(|p| p.id == id);
+                    choices = choices.child(
+                        button(format!(
+                            "{}{}",
+                            self.plugin_name(&id),
+                            if selected == Some(id.as_str()) {
+                                " (selected)"
+                            } else {
+                                ""
+                            }
+                        ))
+                        .key(format!("interface-{interface}-{id}"))
+                        .variant(ButtonVariant::Quiet)
+                        .disabled(!active || state.task.is_some())
+                        .accessibility_selected(selected == Some(id.as_str()))
+                        .on_click(
+                            cx.listener(move |this, _, cx| this.select_interface(&target, &id, cx)),
+                        ),
+                    );
+                }
+                if selected.is_some_and(|id| !state.loaded.iter().any(|p| p.id == id)) {
+                    choices = choices.child(label("Selected provider unavailable. Enable it in Installed to use this interface.").color(error_color()));
+                }
+                body = body.child(choices);
+            }
+        }
+        for setting in crate::settings::REGISTRY.iter().filter(|s| {
+            s.key.ends_with("_provider")
+                || s.key == "completion_frontend"
+                || s.key == "search_backend"
+        }) {
+            body = body.child(
+                column()
+                    .gap(4.)
+                    .child(label(setting.title.clone()).font_weight(FontWeight::SEMIBOLD))
+                    .child(
+                        label(setting.description.clone())
+                            .font_size(12.)
+                            .color(ThemeColor::TextMuted),
+                    )
+                    .child(self.setting_control(setting, cx)),
+            );
+        }
+        column()
+            .key("plugin-interfaces-page")
+            .fill_width()
+            .fill_height()
+            .padding(20.)
+            .gap(16.)
+            .child(
+                row()
+                    .gap(12.)
+                    .child(
+                        button("Installed")
+                            .key("plugin-installed-tab")
+                            .variant(ButtonVariant::Quiet)
+                            .on_click(
+                                cx.listener(|this, _, _| this.plugin_page.interfaces = false),
+                            ),
+                    )
+                    .child(label("Interfaces").font_size(18.))
+                    .children(close.map(|action| action.label("Close").button())),
+            )
+            .child(body.flex_grow(1.).min_height(0.).scroll_y())
+            .into_element()
+    }
     pub(super) fn plugins_modal(
         &self,
         cx: &mut ViewContext<'_, Self>,
@@ -780,6 +943,7 @@ mod tests {
     #[test]
     fn reenabling_backend_restores_enabled_frontends_but_preserves_disabled_ones() {
         let spec = |id: &str, dependencies: &[&str]| velk_plugin_host::PluginSpec {
+            interfaces: Default::default(),
             id: id.into(),
             library: "test.so".into(),
             digest: "a".repeat(64),
@@ -867,6 +1031,20 @@ mod tests {
                 "{key}"
             );
         }
+        runtime.update(|cx| document.update(cx, |this, _| this.plugin_page.interfaces = true));
+        ui.prepare(&mut runtime, [1000., 700.], &mut Measure)
+            .unwrap();
+        for key in [
+            "plugin-interfaces-page",
+            "plugin-interface-list",
+            "setting-snippet_provider",
+        ] {
+            assert!(
+                ui.elements().any(|e| e.key == Some(&rxui::Key::from(key))),
+                "{key}"
+            );
+        }
+        runtime.update(|cx| document.update(cx, |this, _| this.plugin_page.interfaces = false));
         runtime.update(|cx| {
             document.update(cx, |this, cx| {
                 this.set_plugin_enabled("velk.terminal".into(), true, cx);

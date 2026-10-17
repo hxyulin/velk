@@ -7,13 +7,14 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Language {
-    Rust,
-}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Language(String);
 impl Language {
-    pub fn for_path(path: &std::path::Path) -> Option<Self> {
-        (path.extension()?.eq_ignore_ascii_case("rs")).then_some(Self::Rust)
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 

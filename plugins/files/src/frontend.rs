@@ -10,8 +10,7 @@ pub struct Files {
 }
 fn call(host: &Host, request: &core::Request) -> Result<core::Reply, String> {
     let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    serde_json::from_slice(&host.call_plugin(core::PROVIDER, core::HOOK, bytes)?)
-        .map_err(|e| e.to_string())
+    serde_json::from_slice(&host.call_interface(core::INTERFACE, bytes)?).map_err(|e| e.to_string())
 }
 pub(super) fn snapshot(tree: core::Tree) -> Snapshot {
     let mut rows: Vec<_> = tree

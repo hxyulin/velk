@@ -17,6 +17,8 @@ pub struct Preferences {
     pub status_bar: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_bar: Option<bool>,
+    pub file_associations: BTreeMap<String, String>,
+    pub interface_bindings: velk_plugin_contracts::interfaces::Bindings,
     pub search_backend: String,
     pub markdown_provider: String,
     pub syntax_provider: String,
@@ -42,6 +44,8 @@ impl Default for Preferences {
             layouts: BTreeMap::new(),
             status_bar: None,
             activity_bar: None,
+            file_associations: Default::default(),
+            interface_bindings: Default::default(),
             search_backend: velk_search::DEFAULT_BACKEND.into(),
             markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
             syntax_provider: velk_syntax::DEFAULT_PROVIDER.into(),

@@ -11,7 +11,7 @@ fn stats(mut samples: Vec<f64>) -> (f64, f64) {
     )
 }
 fn run(name: &str, source: &str) {
-    let mut engine = Engine::new(Language::Rust).unwrap();
+    let mut engine = Engine::new(Language::new("rust")).unwrap();
     let mut text = Rope::from_str(source);
     let start = Instant::now();
     engine.update(0, text.clone(), &[], || false).unwrap();

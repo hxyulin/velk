@@ -137,7 +137,7 @@ fn main() {
                             )))
                             .unwrap();
                         editor
-                            .set_language(Some(velk_editor_widget::Language::Rust))
+                            .set_language(Some(velk_editor_widget::Language::new("rust")))
                             .unwrap()
                     })
                 });

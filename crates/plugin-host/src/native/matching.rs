@@ -12,6 +12,7 @@ impl std::fmt::Debug for Lease {
 }
 impl Policy for Lease {
     fn scores(&self, query: &str, candidates: &[&str]) -> Result<Vec<Option<Score>>, String> {
+        let _scope = velk_diagnostics::Scope::new("plugin.matching", "velk_plugin_host", false);
         let active = self.active.read().map_err(|_| "matching lease poisoned")?;
         if !*active {
             return Err("matching provider retired".into());

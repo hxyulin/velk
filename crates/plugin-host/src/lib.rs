@@ -39,6 +39,8 @@ pub struct Manifest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginSpec {
+    #[serde(default)]
+    pub interfaces: velk_plugin_contracts::interfaces::Interfaces,
     pub id: String,
     /// Relative path inside the plugin directory, normally content-addressed.
     pub library: PathBuf,
@@ -60,6 +62,7 @@ impl Manifest {
         let mut ids = std::collections::HashSet::new();
         let mut libraries = std::collections::HashMap::new();
         for p in &self.plugins {
+            p.interfaces.validate()?;
             if let Some(previous) = libraries.insert(&p.library, (&p.digest, p.pack))
                 && previous != (&p.digest, p.pack)
             {
@@ -156,11 +159,13 @@ enum Request {
         reply: async_channel::Sender<Result<PluginStates, String>>,
     },
     Settings(settings::PluginValues),
+    Interfaces(velk_plugin_contracts::interfaces::Bindings),
     DependencyCall {
         caller: String,
         generation: u64,
         provider: String,
         hook: String,
+        interface: bool,
         input: Vec<u8>,
         reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
@@ -191,6 +196,7 @@ impl Sender {
             Request::Emit { .. } => "hook.emit",
             Request::Snapshot { .. } => "snapshot",
             Request::Settings(_) => "settings",
+            Request::Interfaces(_) => "interfaces",
             Request::DependencyCall { .. } => "dependency_call",
             Request::Stop => "stop",
         };
@@ -256,6 +262,21 @@ impl Client {
         })?;
         receive.recv_blocking().map_err(|e| e.to_string())??;
         Ok(())
+    }
+    /// Interface changes take effect at the next coordinated load/restart.
+    pub fn set_interface_bindings(
+        &self,
+        bindings: velk_plugin_contracts::interfaces::Bindings,
+    ) -> Result<(), String> {
+        if bindings.len() > 128
+            || bindings.iter().any(|(i, p)| {
+                velk_plugin_api::parse_plugin_id(i).is_none()
+                    || velk_plugin_api::parse_plugin_id(p).is_none()
+            })
+        {
+            return Err("invalid interface bindings".into());
+        }
+        self.sender.try_send(Request::Interfaces(bindings))
     }
     /// Store overrides for the next load/restart; running instances are unchanged.
     pub fn set_settings(&self, settings: settings::PluginValues) -> Result<(), String> {
@@ -477,9 +498,13 @@ impl Runtime {
                     let request = queued.request;
                     let (operation, reply) = match request {
                         Request::Stop => break,
-                        Request::DependencyCall { caller, generation, provider, hook, input, reply } => {
-                            let result = manager.call_dependency(&caller, generation, &provider, &hook, &input);
+                        Request::DependencyCall { caller, generation, provider, hook, interface, input, reply } => {
+                            let result = if interface { manager.call_interface(&caller, generation, &hook, &input) } else { manager.call_dependency(&caller, generation, &provider, &hook, &input) };
                             let _ = reply.try_send(result);
+                            continue;
+                        }
+                        Request::Interfaces(bindings) => {
+                            manager.set_interface_bindings(bindings);
                             continue;
                         }
                         Request::Settings(settings) => {
@@ -668,6 +693,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_ids_and_nonlocal_paths_before_loading() {
         let spec = PluginSpec {
+            interfaces: Default::default(),
             id: "velk.test".into(),
             dependencies: Vec::new(),
             install_reason: Default::default(),
@@ -683,6 +709,7 @@ mod tests {
             .is_err()
         );
         let spec = PluginSpec {
+            interfaces: Default::default(),
             library: "test/library.dylib".into(),
             ..spec
         };

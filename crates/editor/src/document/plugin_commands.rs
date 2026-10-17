@@ -84,11 +84,9 @@ impl Document {
         CommandContext {
             input: None,
             path: active.and_then(|b| b.file.as_ref().map(|f| f.path().to_path_buf())),
-            language: active.and_then(|b| b.file.as_ref()).and_then(|f| {
-                velk_editor_widget::Language::for_path(f.path()).map(|language| match language {
-                    velk_editor_widget::Language::Rust => "rust".into(),
-                })
-            }),
+            language: active
+                .and_then(|b| b.file.as_ref())
+                .and_then(|f| self.file_type(f.path()).map(|file_type| file_type.id)),
             revision: active.map(|b| b.editor.read(cx).buffer().revision()),
             position: active.map(|b| b.editor.read(cx).caret_position()),
         }
@@ -728,6 +726,12 @@ mod tests {
                     loaded_path: dir.path().into(),
                     description: String::new(),
                     metadata: velk_plugin_host::PluginMetadata {
+                        file_types: vec![velk_plugin_contracts::file_types::FileType {
+                            id: "rust".into(),
+                            name: "Rust".into(),
+                            extensions: vec!["rs".into()],
+                            filenames: vec![],
+                        }],
                         name: "Commands".into(),
                         commands: vec![command()],
                         ..Default::default()
@@ -971,7 +975,15 @@ mod tests {
                     loaded_path: directory.path().into(),
                     description: String::new(),
                     dependencies: Vec::new(),
-                    metadata: Default::default(),
+                    metadata: velk_plugin_host::PluginMetadata {
+                        file_types: vec![velk_plugin_contracts::file_types::FileType {
+                            id: "rust".into(),
+                            name: "Rust".into(),
+                            extensions: vec!["rs".into()],
+                            filenames: vec![],
+                        }],
+                        ..Default::default()
+                    },
                     settings_values: Default::default(),
                     settings_error: None,
                     resident_code: false,
@@ -1303,6 +1315,12 @@ mod edit_interaction_tests {
                     loaded_path: dir.path().into(),
                     description: String::new(),
                     metadata: velk_plugin_host::PluginMetadata {
+                        file_types: vec![velk_plugin_contracts::file_types::FileType {
+                            id: "rust".into(),
+                            name: "Rust".into(),
+                            extensions: vec!["rs".into()],
+                            filenames: vec![],
+                        }],
                         name: "Commands".into(),
                         commands: vec![
                             declaration,

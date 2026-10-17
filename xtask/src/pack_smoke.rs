@@ -15,6 +15,12 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .all(|e| matches!(e, Event::Loaded(_)))
         );
         assert_eq!(manager.plugins().count(), specs.len());
+        let rust = manager
+            .plugins()
+            .find(|p| p.id == "velk.language.rust")
+            .unwrap();
+        assert_eq!(rust.metadata.file_types[0].id, "rust");
+        assert_eq!(rust.metadata.file_types[0].extensions, ["rs"]);
         let image = manager.plugins().next().unwrap().loaded_path.clone();
         assert!(
             manager
@@ -195,6 +201,7 @@ fn probe(root: &Path, output: &Path, release: bool) -> Result<(), String> {
         build.arg("--release");
     }
     checked(&mut build)?;
+    interfaces(output)?;
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let artifact = stage_plugin(
         &output.join("examples"),
@@ -210,6 +217,7 @@ fn probe(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     ]
     .into_iter()
     .map(|id| PluginSpec {
+        interfaces: Default::default(),
         id: id.into(),
         pack: true,
         ..artifact.clone()
@@ -302,6 +310,7 @@ fn probe(root: &Path, output: &Path, release: bool) -> Result<(), String> {
         assert_ne!(image, fresh);
         manager.unload_all();
         let wrong = PluginSpec {
+            interfaces: Default::default(),
             pack: false,
             ..specs[0].clone()
         };
@@ -469,5 +478,111 @@ fn file_backend_smoke(manager: &mut velk_plugin_host::Manager) -> Result<(), Str
             _ => panic!("unexpected file backend reply"),
         }
     }
+    Ok(())
+}
+
+#[allow(unsafe_code)]
+fn interfaces(output: &Path) -> Result<(), String> {
+    use velk_plugin_contracts::interfaces::{Implementation, Requirement};
+    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let artifact = stage_plugin(
+        &output.join("examples"),
+        temp.path(),
+        "test.pack.first",
+        "pack_probe",
+    )?;
+    let mut specs: Vec<_> = ["test.pack.first", "test.pack.second", "test.pack.third"]
+        .into_iter()
+        .map(|id| PluginSpec {
+            id: id.into(),
+            pack: true,
+            ..artifact.clone()
+        })
+        .collect();
+    specs[0].interfaces.requires.push(Requirement {
+        interface: "test.files".into(),
+        version: 1,
+        default_provider: "test.pack.second".into(),
+    });
+    for spec in &mut specs[1..] {
+        spec.interfaces.implements.push(Implementation {
+            interface: "test.files".into(),
+            title: "Files".into(),
+            hook: "test.pack.interface".into(),
+            version: 1,
+        });
+    }
+    publish(temp.path(), specs)?;
+    let mut manager = Manager::new(temp.path().into());
+    unsafe {
+        manager.load_selected(&["test.pack.first".into()])?;
+    }
+    let generation = manager
+        .plugins()
+        .find(|p| p.id == "test.pack.first")
+        .unwrap()
+        .generation;
+    assert_eq!(manager.plugins().count(), 2);
+    let manifest_path = temp.path().join(velk_plugin_host::MANIFEST);
+    let manifest_bytes = std::fs::read(&manifest_path).map_err(|e| e.to_string())?;
+    std::fs::remove_file(&manifest_path).map_err(|e| e.to_string())?;
+    // Active calls use the generation's routes, without reading the manifest.
+    assert!(
+        manager
+            .call_interface("test.pack.first", generation, "test.files", b"query")
+            .is_ok()
+    );
+    std::fs::write(&manifest_path, manifest_bytes).map_err(|e| e.to_string())?;
+    assert_eq!(
+        String::from_utf8(manager.call_interface(
+            "test.pack.first",
+            generation,
+            "test.files",
+            b"query"
+        )?)
+        .unwrap(),
+        format!("test.pack.second:test.pack.first:{generation}")
+    );
+    assert!(
+        manager
+            .call_interface("test.pack.first", generation + 100, "test.files", b"")
+            .is_err()
+    );
+    assert!(
+        manager
+            .call_interface("test.pack.first", generation, "test.undeclared", b"")
+            .is_err()
+    );
+    manager.unload_all();
+    manager.set_interface_bindings(std::collections::BTreeMap::from([(
+        "test.files".into(),
+        "test.pack.third".into(),
+    )]));
+    unsafe {
+        manager.load_selected(&["test.pack.first".into()])?;
+    }
+    assert!(!manager.plugins().any(|p| p.id == "test.pack.second"));
+    let generation = manager
+        .plugins()
+        .find(|p| p.id == "test.pack.first")
+        .unwrap()
+        .generation;
+    assert_eq!(
+        String::from_utf8(manager.call_interface(
+            "test.pack.first",
+            generation,
+            "test.files",
+            b"query"
+        )?)
+        .unwrap(),
+        format!("test.pack.third:test.pack.first:{generation}")
+    );
+    let handle = manager.bind_hook("test.pack.first", "test.pack.increment")?;
+    unsafe {
+        manager.restart(Some("test.pack.third"))?;
+    }
+    assert!(manager.call_hook(&handle, b"").is_err());
+    manager.unload_with_dependents("test.pack.third");
+    assert_eq!(manager.plugins().count(), 0);
     Ok(())
 }

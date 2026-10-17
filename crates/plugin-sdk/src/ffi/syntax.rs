@@ -33,15 +33,22 @@ unsafe extern "C" fn create<S: Provider + Default>(
     output: *mut *mut c_void,
 ) -> i32 {
     guard(|| {
-        if output.is_null() || language.data.is_null() || language.length != 4 {
+        if output.is_null() || language.data.is_null() || language.length > 64 {
             return INVALID;
         }
         // SAFETY: the caller lends initialized language bytes and writable output.
         let language = unsafe { std::slice::from_raw_parts(language.data, language.length) };
-        if language != b"rust" {
-            return NOT_FOUND;
+        let Ok(language) = std::str::from_utf8(language) else {
+            return INVALID;
+        };
+        if language.is_empty()
+            || !language
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b))
+        {
+            return INVALID;
         }
-        let Ok(session) = S::default().open(velk_syntax::Language::Rust) else {
+        let Ok(session) = S::default().open(velk_syntax::Language::new(language)) else {
             return INVALID;
         };
         unsafe {

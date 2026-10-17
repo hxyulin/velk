@@ -42,6 +42,16 @@ impl Host {
             _ => Err("invalid plugin call reply".into()),
         }
     }
+    /// Call the selected implementation of a declared interface from a background worker.
+    pub fn call_interface(&self, interface: &str, input: Vec<u8>) -> Result<Vec<u8>, String> {
+        match self.request(Request::CallInterface {
+            interface: interface.into(),
+            input,
+        })? {
+            Response::Plugin { output } => Ok(output),
+            _ => Err("invalid interface call reply".into()),
+        }
+    }
     pub fn request(&self, request: Request) -> Result<Response, String> {
         request.validate()?;
         let input = serde_json::to_vec(&request).map_err(|e| e.to_string())?;

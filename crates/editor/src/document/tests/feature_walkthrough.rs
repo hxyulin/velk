@@ -142,8 +142,15 @@ fn render_feature_walkthrough() {
     let output = root.join("target/feature-demo/captures");
     std::fs::create_dir_all(&output).unwrap();
     // SAFETY: these are the locally built bundled plugins.
-    let plugins =
-        unsafe { velk_plugin_host::Runtime::start(root.join("target/release/plugins")) }.unwrap();
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let plugins = unsafe {
+        velk_plugin_host::Runtime::start(root.join("target").join(profile).join("plugins"))
+    }
+    .unwrap();
     let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
     let mut capture = TestUi::new(&graphics, [1280, 800], Document::empty(1)).unwrap();
     capture.painter_mut().fonts_mut().load_system_fonts();
@@ -168,12 +175,14 @@ fn render_feature_walkthrough() {
                 doc.workspace.set_root(project.clone());
                 let (file, mut editor) = crate::file::FileState::open(&path).unwrap();
                 editor
-                    .set_language(Some(velk_editor_widget::Language::Rust))
+                    .set_language(Some(velk_editor_widget::Language::new("rust")))
                     .unwrap();
                 doc.add_buffer(file, editor, path.clone(), cx);
                 doc.enable_selected_plugins(
                     plugins.client(),
                     Some(vec![
+                        "velk.language.rust".into(),
+                        "velk.snippets".into(),
                         "velk.markdown".into(),
                         "velk.tree-sitter".into(),
                         "velk.lsp".into(),
@@ -620,6 +629,7 @@ fn render_feature_walkthrough() {
                 Some(vec![
                     "velk.completion".into(),
                     "velk.completion.words".into(),
+                    "velk.snippets".into(),
                 ]),
                 vec![],
                 cx,
@@ -629,7 +639,7 @@ fn render_feature_walkthrough() {
     wait(&mut capture, "completion without LSP loaded", |doc, _| {
         doc.plugins
             .as_ref()
-            .is_some_and(|p| p.task.is_none() && p.loaded.len() == 2)
+            .is_some_and(|p| p.task.is_none() && p.loaded.len() == 3)
     });
     capture.runtime().update(|cx| {
         entity.update(cx, |doc, cx| {

@@ -113,9 +113,10 @@ pub struct Engine {
 impl Engine {
     pub fn new(language: Language) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let _trace = velk_plugin_sdk::diagnostics::scope!("syntax.initialize");
-        let language = match language {
-            Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-        };
+        if language.as_str() != "rust" {
+            return Err("unsupported syntax language".into());
+        }
+        let language = tree_sitter_rust::LANGUAGE.into();
         let mut parser = Parser::new();
         parser.set_language(&language)?;
         Ok(Self {
@@ -257,7 +258,7 @@ impl velk_syntax::Session for Engine {
 mod tests {
     use super::*;
     fn fresh(text: &Rope) -> Vec<Highlight> {
-        Engine::new(Language::Rust)
+        Engine::new(Language::new("rust"))
             .unwrap()
             .update(0, text.clone(), &[], || false)
             .unwrap()
@@ -266,7 +267,7 @@ mod tests {
     #[test]
     fn rust_captures_real_source_and_clips_windows() {
         let text = Rope::from_str(include_str!("../../../crates/editor/src/main.rs"));
-        let mut engine = Engine::new(Language::Rust).unwrap();
+        let mut engine = Engine::new(Language::new("rust")).unwrap();
         let snapshot = engine.update(0, text.clone(), &[], || false).unwrap();
         let highlights = snapshot.highlights(0..text.len_chars());
         for kind in ["keyword", "function", "type", "string"] {
@@ -287,7 +288,7 @@ mod tests {
     #[test]
     fn per_line_queries_match_full_document_captures() {
         let text = Rope::from_str(include_str!("../../../crates/editor/src/main.rs"));
-        let snapshot = Engine::new(Language::Rust)
+        let snapshot = Engine::new(Language::new("rust"))
             .unwrap()
             .update(0, text.clone(), &[], || false)
             .unwrap();
@@ -316,7 +317,7 @@ mod tests {
 
     #[test]
     fn incremental_unicode_multiline_edits_and_inverse_match_full_parse() {
-        let mut engine = Engine::new(Language::Rust).unwrap();
+        let mut engine = Engine::new(Language::new("rust")).unwrap();
         let mut text = Rope::from_str("fn café() {\n    let name = \"世界👩‍💻\";\n}\n");
         engine.update(0, text.clone(), &[], || false).unwrap();
         let mut revision = 0;
@@ -348,7 +349,7 @@ mod tests {
     }
     #[test]
     fn lost_edit_chain_falls_back_and_text_predicates_refresh() {
-        let mut engine = Engine::new(Language::Rust).unwrap();
+        let mut engine = Engine::new(Language::new("rust")).unwrap();
         let text = Rope::from_str("fn main() { let name = value; }");
         engine.update(0, text, &[], || false).unwrap();
         let text = Rope::from_str("fn main() { let name = Some; }");
@@ -358,7 +359,7 @@ mod tests {
     }
     #[test]
     fn same_shape_identifier_edit_rechecks_text_predicates() {
-        let mut engine = Engine::new(Language::Rust).unwrap();
+        let mut engine = Engine::new(Language::new("rust")).unwrap();
         let before = Rope::from_str("fn main() { Some; }");
         let first = engine.update(0, before.clone(), &[], || false).unwrap();
         let mut after = before.clone();
@@ -394,7 +395,7 @@ mod tests {
     }
     #[test]
     fn scrolling_requests_new_captures_without_a_document_edit() {
-        let worker = Worker::new(Arc::new(TreeSitter), Language::Rust).unwrap();
+        let worker = Worker::new(Arc::new(TreeSitter), Language::new("rust")).unwrap();
         let text = Rope::from_str("fn first() {}\nfn second() {}\n");
         worker.request(0, text.clone(), vec![]);
         worker.request_viewport(0, std::iter::once(0..13).collect::<Vec<_>>());
@@ -418,7 +419,7 @@ mod tests {
         let text = Rope::from_str(
             "#[derive(Debug)]\nfn café() { let s = \"hello\\n世界\"; } // comment\n",
         );
-        let snapshot = Engine::new(Language::Rust)
+        let snapshot = Engine::new(Language::new("rust"))
             .unwrap()
             .update(0, text.clone(), &[], || false)
             .unwrap();
@@ -457,7 +458,7 @@ mod tests {
     }
     #[test]
     fn viewport_requests_coalesce_and_do_not_cancel_initial_parsing() {
-        let worker = Worker::new(Arc::new(TreeSitter), Language::Rust).unwrap();
+        let worker = Worker::new(Arc::new(TreeSitter), Language::new("rust")).unwrap();
         let text = Rope::from_str(&"fn sample() { let value = Some(42); }\n".repeat(10_000));
         worker.request(0, text.clone(), vec![]);
         for start in 0..1000 {
@@ -468,7 +469,7 @@ mod tests {
             final_snapshot.coverage,
             std::iter::once(999..1099).collect::<Vec<_>>()
         );
-        let expected = Engine::new(Language::Rust)
+        let expected = Engine::new(Language::new("rust"))
             .unwrap()
             .update(0, text, &[], || false)
             .unwrap();
@@ -480,7 +481,7 @@ mod tests {
 
     #[test]
     fn worker_coalesces_to_final_revision() {
-        let worker = Worker::new(Arc::new(TreeSitter), Language::Rust).unwrap();
+        let worker = Worker::new(Arc::new(TreeSitter), Language::new("rust")).unwrap();
         for revision in 0..100 {
             worker.request(
                 revision,

@@ -29,9 +29,7 @@ impl Provider for Lease {
         if !*active {
             return Err("syntax provider retired".into());
         }
-        let language = match language {
-            Language::Rust => "rust",
-        };
+        let language = language.as_str();
         let mut pointer = std::ptr::null_mut();
         // SAFETY: code is pinned; create is reentrant and owns its returned session.
         let status = unsafe {

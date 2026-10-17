@@ -5,6 +5,7 @@ mod completion_frontend;
 mod editing;
 mod hooks;
 mod matching;
+mod output;
 mod snippets;
 mod syntax;
 mod undo;
@@ -120,6 +121,19 @@ impl Generation {
         };
         loaded.discover_hooks()?;
         loaded.info.hooks = loaded.hooks.iter().map(|h| h.info.name.clone()).collect();
+        for implementation in &spec.interfaces.implements {
+            if !loaded.hooks.iter().any(|h| {
+                h.info.name == implementation.hook
+                    && h.info.contract == BYTES_CONTRACT
+                    && h.info.version == implementation.version
+                    && h.info.kind == REQUEST
+            }) {
+                return Err(format!(
+                    "interface {} has no compatible request hook",
+                    implementation.interface
+                ));
+            }
+        }
         loaded.info.description = loaded.describe()?;
         loaded.info.metadata =
             loaded
@@ -364,6 +378,8 @@ pub struct Manager {
     resident_code: BTreeMap<(String, bool), Arc<Code>>,
     images: BTreeMap<(String, bool), Weak<Code>>,
     settings: velk_plugin_contracts::settings::PluginValues,
+    interface_bindings: velk_plugin_contracts::interfaces::Bindings,
+    interface_routes: BTreeMap<String, BTreeMap<String, (String, String)>>,
 }
 impl Manager {
     pub fn new(directory: PathBuf) -> Self {
@@ -379,7 +395,18 @@ impl Manager {
             resident_code: BTreeMap::new(),
             images: BTreeMap::new(),
             settings: Default::default(),
+            interface_bindings: Default::default(),
+            interface_routes: Default::default(),
         }
+    }
+    fn manifest(&self) -> Result<crate::Manifest, String> {
+        read_manifest(&self.directory)?.resolve_interfaces(&self.interface_bindings)
+    }
+    pub fn set_interface_bindings(
+        &mut self,
+        bindings: velk_plugin_contracts::interfaces::Bindings,
+    ) {
+        self.interface_bindings = bindings;
     }
     pub fn set_settings(&mut self, settings: velk_plugin_contracts::settings::PluginValues) {
         self.settings = settings;
@@ -389,6 +416,27 @@ impl Manager {
             .values()
             .filter(|p| !p.destroyed)
             .map(|p| &p.info)
+    }
+    /// Route a host-authenticated consumer generation through its declared interface.
+    pub fn call_interface(
+        &mut self,
+        caller: &str,
+        generation: u64,
+        interface: &str,
+        input: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let consumer = self
+            .plugins
+            .get(caller)
+            .filter(|p| p.info.generation == generation && !p.destroyed)
+            .ok_or("calling plugin retired")?;
+        let (provider, hook) = self
+            .interface_routes
+            .get(&consumer.info.id)
+            .and_then(|routes| routes.get(interface))
+            .cloned()
+            .ok_or("plugin did not declare this interface requirement")?;
+        self.call_dependency(caller, generation, &provider, &hook, input)
     }
     pub(crate) fn call_dependency(
         &mut self,
@@ -465,7 +513,7 @@ impl Manager {
             return Ok(vec![]);
         }
         self.excluded = excluded.iter().cloned().collect();
-        let manifest = read_manifest(&self.directory)?;
+        let manifest = self.manifest()?;
         let roots = manifest
             .plugins
             .iter()
@@ -492,7 +540,7 @@ impl Manager {
         if !self.directory.join(crate::MANIFEST).exists() {
             return vec![];
         }
-        read_manifest(&self.directory)
+        self.manifest()
             .map(|m| m.plugins.into_iter().map(|p| p.id).collect())
             .unwrap_or_default()
     }
@@ -502,7 +550,7 @@ impl Manager {
         if ids.is_empty() {
             return Ok(vec![]);
         }
-        let manifest = read_manifest(&self.directory)?;
+        let manifest = self.manifest()?;
         let mut events: Vec<_> = ids
             .iter()
             .filter(|id| !manifest.plugins.iter().any(|p| &p.id == *id))
@@ -527,10 +575,8 @@ impl Manager {
         let mut events = Vec::new();
         let mut verified = BTreeMap::new();
         // Excluded or failed dependencies stay absent; consumers are rejected.
-        let order = crate::Manifest {
-            plugins: self.inventory(),
-        }
-        .dependency_order()?;
+        let manifest = self.manifest()?;
+        let order = manifest.dependency_order()?;
         let mut specs = specs;
         specs.sort_by_key(|spec| order.iter().position(|id| id == &spec.id));
         for spec in specs {
@@ -597,6 +643,33 @@ impl Manager {
             self.images.retain(|_, image| image.strong_count() != 0);
             match candidate {
                 Ok(candidate) => {
+                    let routes = spec
+                        .interfaces
+                        .requires
+                        .iter()
+                        .map(|requirement| {
+                            let provider = self
+                                .interface_bindings
+                                .get(&requirement.interface)
+                                .unwrap_or(&requirement.default_provider);
+                            let implementation = manifest
+                                .plugins
+                                .iter()
+                                .find(|p| &p.id == provider)
+                                .and_then(|p| {
+                                    p.interfaces
+                                        .implements
+                                        .iter()
+                                        .find(|i| i.interface == requirement.interface)
+                                })
+                                .expect("validated interface provider");
+                            (
+                                requirement.interface.clone(),
+                                (provider.clone(), implementation.hook.clone()),
+                            )
+                        })
+                        .collect();
+                    self.interface_routes.insert(id.clone(), routes);
                     events.push(Event::Loaded(Box::new(candidate.info.clone())));
                     self.plugins.insert(id, candidate);
                 }
@@ -636,7 +709,7 @@ impl Manager {
                 break;
             }
         }
-        let manifest = read_manifest(&self.directory)?;
+        let manifest = self.manifest()?;
         let specs: Vec<_> = manifest
             .plugins
             .into_iter()
@@ -723,11 +796,15 @@ impl Manager {
                 plugin.deactivate();
             }
         }
-        let mut order = crate::Manifest {
-            plugins: self.inventory(),
+        let mut inventory = self.inventory();
+        for spec in &mut inventory {
+            if let Some(plugin) = self.plugins.get(&spec.id) {
+                spec.dependencies = plugin.info.dependencies.clone();
+            }
         }
-        .dependency_order()
-        .unwrap_or_default();
+        let mut order = crate::Manifest { plugins: inventory }
+            .dependency_order()
+            .unwrap_or_default();
         for id in ids {
             if !order.contains(id) {
                 order.push(id.clone());
@@ -770,6 +847,7 @@ impl Manager {
         }
         let sessions_retired = self.retire_semantics(id);
         let mut plugin = self.plugins.remove(id)?;
+        self.interface_routes.remove(id);
         if sessions_retired && plugin.retire() {
             Some(Event::Removed(id.to_owned()))
         } else {
@@ -855,6 +933,7 @@ mod tests {
         assert!(manager.unload("test.failed").is_none());
         let manifest = crate::Manifest {
             plugins: vec![PluginSpec {
+                interfaces: Default::default(),
                 dependencies: Vec::new(),
                 install_reason: Default::default(),
                 id: "test.failed".into(),
@@ -881,6 +960,7 @@ mod tests {
         let mut manager = Manager::new(directory.path().into());
         assert!(manager.available().is_empty());
         let spec = |id: &str| PluginSpec {
+            interfaces: Default::default(),
             dependencies: Vec::new(),
             install_reason: Default::default(),
             id: id.into(),

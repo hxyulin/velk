@@ -151,7 +151,11 @@ impl Document {
             Err(error) => self.shell.store.error = Some(format!("Cannot open settings: {error}")),
         }
     }
-    fn setting_control(&self, setting: &Setting, cx: &mut ViewContext<'_, Self>) -> Element {
+    pub(super) fn setting_control(
+        &self,
+        setting: &Setting,
+        cx: &mut ViewContext<'_, Self>,
+    ) -> Element {
         let key = setting.key.clone();
         let value = self
             .shell

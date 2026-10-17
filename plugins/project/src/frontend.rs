@@ -16,8 +16,7 @@ fn query(
     request: &project::Request,
 ) -> Result<project::Reply, String> {
     let input = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    serde_json::from_slice(&host.call_plugin(provider, project::HOOK, input)?)
-        .map_err(|e| e.to_string())
+    serde_json::from_slice(&host.call_interface(provider, input)?).map_err(|e| e.to_string())
 }
 fn run(
     host: &Host,
@@ -153,7 +152,7 @@ frontend!(
     QuickOpen,
     "velk.quick-open",
     "Quick Open",
-    project::FILES_PROVIDER,
+    project::FILES_INTERFACE,
     "velk.quick-open.query",
     "p",
     false,
@@ -163,7 +162,7 @@ frontend!(
     WorkspaceFind,
     "velk.workspace-find",
     "Find in Workspace",
-    project::SEARCH_PROVIDER,
+    project::SEARCH_INTERFACE,
     "velk.workspace-find.query",
     "f",
     true,

@@ -75,7 +75,7 @@ unloads LSP and checks automatic document-word completion after real keyboard
 input, acceptance, and undo in an untitled buffer.
 
 ```sh
-cargo xtask build --release
+cargo xtask plugins
 cargo xtask test-headless render_feature_walkthrough -- --ignored --nocapture
 python3 tools/rgba_to_png.py target/feature-demo/captures --width 1280 --height 800
 ```

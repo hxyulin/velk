@@ -1284,7 +1284,9 @@ mod tests {
                 editor
                     .set_syntax_provider(Some(Arc::new(velk_plugin_tree_sitter::TreeSitter)))
                     .unwrap();
-                editor.set_language(Some(crate::Language::Rust)).unwrap()
+                editor
+                    .set_language(Some(crate::Language::new("rust")))
+                    .unwrap()
             })
         });
         ui.render().unwrap();
@@ -1339,7 +1341,7 @@ mod tests {
             "use std::sync::Arc;\nstruct Document { value: usize }\nfn main() {\n    let document = Arc::new(Document { value: 42 });\n    println!(\"{}\", document.value);\n}\n",
             std::sync::Arc::new(velk_undo_tree::Tree),
         );
-        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
+        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::new("rust"))
             .unwrap()
             .update(0, buffer.text(), &[], || false)
             .unwrap();
@@ -1389,7 +1391,7 @@ mod tests {
         let text = format!("fn main() {{ {} }}", "let value = 42; ".repeat(10_000));
         let buffer =
             velk_core::Buffer::with_history(&text, std::sync::Arc::new(velk_undo_tree::Tree));
-        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
+        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::new("rust"))
             .unwrap()
             .update(0, buffer.text(), &[], || false)
             .unwrap();
@@ -1430,7 +1432,7 @@ mod tests {
             std::sync::Arc::new(velk_undo_tree::Tree),
         );
         let mut full = surface(&buffer.text().to_string());
-        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
+        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::new("rust"))
             .unwrap()
             .update(0, buffer.text(), &[], || false)
             .unwrap();

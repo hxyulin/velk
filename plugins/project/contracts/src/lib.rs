@@ -26,3 +26,6 @@ pub enum Reply {
     Cancelled,
     Ready { matches: Vec<Match>, notice: String },
 }
+
+pub const FILES_INTERFACE: &str = "velk.project.files";
+pub const SEARCH_INTERFACE: &str = "velk.project.search";
