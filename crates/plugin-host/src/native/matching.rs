@@ -53,6 +53,9 @@ impl Policy for Lease {
 }
 impl Manager {
     pub fn matching_provider(&self, id: &str) -> Result<Arc<dyn Policy>, String> {
+        if let Some(plugin) = self.wasm_plugins.get(id) {
+            return Ok(plugin.matching.clone());
+        }
         let generation = self
             .plugins
             .get(id)
@@ -68,12 +71,11 @@ impl Manager {
         }))
     }
     pub(crate) fn matching_providers(&self) -> matching::Policies {
-        self.plugins
-            .keys()
-            .filter_map(|id| {
-                self.matching_provider(id)
+        self.plugins()
+            .filter_map(|plugin| {
+                self.matching_provider(&plugin.id)
                     .ok()
-                    .map(|provider| (id.clone(), provider))
+                    .map(|provider| (plugin.id.clone(), provider))
             })
             .collect()
     }

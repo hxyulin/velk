@@ -2,3 +2,4 @@
 channel = "1.99.0"
 components = ["rustfmt", "clippy", "rust-analyzer", "rust-src"]
 profile = "minimal"
+targets = ["wasm32-unknown-unknown"]

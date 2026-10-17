@@ -192,6 +192,7 @@ mod tests {
     use super::*;
     fn spec(id: &str, dependencies: &[&str], install_reason: InstallReason) -> PluginSpec {
         PluginSpec {
+            runtime: Default::default(),
             interfaces: Default::default(),
             id: id.into(),
             library: "test.so".into(),

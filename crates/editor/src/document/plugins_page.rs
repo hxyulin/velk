@@ -943,6 +943,7 @@ mod tests {
     #[test]
     fn reenabling_backend_restores_enabled_frontends_but_preserves_disabled_ones() {
         let spec = |id: &str, dependencies: &[&str]| velk_plugin_host::PluginSpec {
+            runtime: Default::default(),
             interfaces: Default::default(),
             id: id.into(),
             library: "test.so".into(),

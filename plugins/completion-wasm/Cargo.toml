@@ -1,0 +1,15 @@
+[package]
+name = "velk-plugin-completion-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[lib]
+crate-type = ["cdylib", "rlib"]
+[dependencies]
+velk-completion-matching.workspace = true
+velk-plugin-wasm-api.workspace = true
+[lints.rust]
+unsafe_code = "deny"
+[lints.clippy]
+all = "warn"

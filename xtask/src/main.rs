@@ -15,6 +15,7 @@ mod syntax_smoke;
 mod terminal_tools;
 mod trace_summary;
 mod undo_smoke;
+mod wasm_smoke;
 const PLUGIN: &str = "velk-plugin-markdown";
 const ID: &str = "velk.markdown";
 fn main() -> ExitCode {
@@ -115,6 +116,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
     ]
     .into_iter()
     .map(|id| PluginSpec {
+        runtime: Default::default(),
         interfaces: bundled_interfaces(id),
         id: id.into(),
         pack: true,
@@ -237,6 +239,7 @@ fn stage_plugin(
         temporary.persist(&target).map_err(|e| e.to_string())?;
     }
     Ok(PluginSpec {
+        runtime: Default::default(),
         interfaces: Default::default(),
         dependencies: Vec::new(),
         install_reason: Default::default(),
@@ -244,6 +247,53 @@ fn stage_plugin(
         library: relative,
         digest,
         pack: false,
+    })
+}
+fn build_wasm(root: &Path) -> Result<(), String> {
+    checked(cargo().current_dir(root).args([
+        "build",
+        "--locked",
+        "--release",
+        "--target",
+        "wasm32-unknown-unknown",
+        "-p",
+        "velk-plugin-completion-wasm",
+    ]))
+}
+fn stage_wasm(output: &Path, directory: &Path) -> Result<PluginSpec, String> {
+    let source = output
+        .parent()
+        .unwrap()
+        .join("wasm32-unknown-unknown/release/velk_plugin_completion_wasm.wasm");
+    let bytes = std::fs::read(source).map_err(|e| e.to_string())?;
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    let library = PathBuf::from("artifacts")
+        .join(&digest)
+        .join("matching.wasm");
+    let target = directory.join(&library);
+    std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+    if !target.exists() {
+        let temporary =
+            tempfile::NamedTempFile::new_in(target.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(temporary.path(), bytes).map_err(|e| e.to_string())?;
+        temporary.persist(&target).map_err(|e| e.to_string())?;
+    }
+    Ok(PluginSpec {
+        runtime: velk_plugin_host::PluginRuntime::WasmMatching {
+            metadata: velk_plugin_contracts::PluginMetadata {
+                name: "Wasm completion matching".into(),
+                readme: include_str!("../../plugins/completion-wasm/README.md").into(),
+                ..Default::default()
+            },
+            version: env!("CARGO_PKG_VERSION").into(),
+        },
+        interfaces: Default::default(),
+        id: "velk.completion.wasm".into(),
+        library,
+        digest,
+        pack: false,
+        dependencies: vec![],
+        install_reason: velk_plugin_host::InstallReason::Bundled,
     })
 }
 fn publish(directory: &Path, plugins: Vec<PluginSpec>) -> Result<(), String> {
@@ -274,6 +324,18 @@ fn run() -> Result<(), String> {
     let release = args.first().is_some_and(|s| s == "--release");
     if release {
         args.remove(0);
+    }
+    let wasm = args.first().is_some_and(|s| s == "--wasm");
+    if wasm {
+        args.remove(0);
+    }
+    if wasm
+        && !matches!(
+            action.as_str(),
+            "build" | "plugins" | "run" | "test-plugins"
+        )
+    {
+        return Err("--wasm is supported by build, plugins, run, and test-plugins".into());
     }
     if args.first().is_some_and(|s| s == "--") {
         args.remove(0);
@@ -346,7 +408,7 @@ fn run() -> Result<(), String> {
     }
     if action == "help" {
         println!(
-            "cargo xtask setup-terminal\ncargo xtask test\ncargo xtask test-headless [filter]\ncargo xtask build [--release]\ncargo xtask plugins [--release]\ncargo xtask run [--release] -- [file]\ncargo xtask test-plugins [--release]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
+            "cargo xtask setup-terminal\ncargo xtask test\ncargo xtask test-headless [filter]\ncargo xtask build [--release]\ncargo xtask plugins [--release] [--wasm]\ncargo xtask run [--release] [--wasm] -- [file]\ncargo xtask test-plugins [--release] [--wasm]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
         );
         return Ok(());
     }
@@ -366,11 +428,20 @@ fn run() -> Result<(), String> {
         return checked(cargo().current_dir(&root).args(["test", "--workspace"]));
     }
     if action == "test-plugins" {
+        if wasm {
+            build_wasm(&root)?;
+            wasm_smoke::run(&output)?;
+        }
         return smoke(&root, &output, release);
     }
     build(&root, release, action != "plugins")?;
     let directory = output.join("plugins");
-    publish(&directory, stage_builtins(&output, &directory)?)?;
+    let mut plugins = stage_builtins(&output, &directory)?;
+    if wasm {
+        build_wasm(&root)?;
+        plugins.push(stage_wasm(&output, &directory)?);
+    }
+    publish(&directory, plugins)?;
     println!("Built plugins: {}", directory.display());
     if action == "run" {
         checked(
@@ -413,6 +484,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     // Restage the real Markdown plugin at another immutable path. Loading
     // must leave the active generation alone until explicitly unloaded.
     let second = PluginSpec {
+        runtime: Default::default(),
         interfaces: Default::default(),
         library: PathBuf::from("restaged").join(library_name("velk_plugin_markdown")),
         ..first.clone()
@@ -449,11 +521,13 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     manager.unload_all();
     for bad in [
         PluginSpec {
+            runtime: Default::default(),
             interfaces: Default::default(),
             library: "missing-library".into(),
             ..second.clone()
         },
         PluginSpec {
+            runtime: Default::default(),
             interfaces: Default::default(),
             digest: "0".repeat(64),
             ..second.clone()
@@ -471,6 +545,7 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     publish(
         directory,
         vec![PluginSpec {
+            runtime: Default::default(),
             interfaces: Default::default(),
             dependencies: Vec::new(),
             install_reason: Default::default(),

@@ -217,6 +217,7 @@ fn probe(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     ]
     .into_iter()
     .map(|id| PluginSpec {
+        runtime: Default::default(),
         interfaces: Default::default(),
         id: id.into(),
         pack: true,
@@ -310,6 +311,7 @@ fn probe(root: &Path, output: &Path, release: bool) -> Result<(), String> {
         assert_ne!(image, fresh);
         manager.unload_all();
         let wrong = PluginSpec {
+            runtime: Default::default(),
             interfaces: Default::default(),
             pack: false,
             ..specs[0].clone()

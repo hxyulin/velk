@@ -11,6 +11,7 @@ mod disk_diagnostics;
 mod graph;
 mod native;
 mod services;
+mod wasm;
 pub use graph::{DependencyRow, InstallReason};
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
 pub use services::HostRequest;
@@ -40,6 +41,8 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct PluginSpec {
     #[serde(default)]
+    pub runtime: PluginRuntime,
+    #[serde(default)]
     pub interfaces: velk_plugin_contracts::interfaces::Interfaces,
     pub id: String,
     /// Relative path inside the plugin directory, normally content-addressed.
@@ -54,6 +57,17 @@ pub struct PluginSpec {
     #[serde(default)]
     pub install_reason: InstallReason,
 }
+/// Artifact transport; Wasm currently supports only the pure matching service.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PluginRuntime {
+    #[default]
+    Native,
+    WasmMatching {
+        metadata: PluginMetadata,
+        version: String,
+    },
+}
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
         if self.plugins.len() > 256 {
@@ -63,8 +77,28 @@ impl Manifest {
         let mut libraries = std::collections::HashMap::new();
         for p in &self.plugins {
             p.interfaces.validate()?;
-            if let Some(previous) = libraries.insert(&p.library, (&p.digest, p.pack))
-                && previous != (&p.digest, p.pack)
+            if let PluginRuntime::WasmMatching { metadata, version } = &p.runtime {
+                metadata.validate()?;
+                if p.pack
+                    || version.is_empty()
+                    || version.len() > 32
+                    || version.chars().any(char::is_control)
+                    || !metadata.commands.is_empty()
+                    || !metadata.contributions.is_empty()
+                    || !metadata.file_types.is_empty()
+                    || !metadata.capabilities.is_empty()
+                    || !metadata.settings.is_empty()
+                    || !p.interfaces.implements.is_empty()
+                    || !p.interfaces.requires.is_empty()
+                {
+                    return Err(
+                        "Wasm matching supports only metadata and its typed matching service"
+                            .into(),
+                    );
+                }
+            }
+            if let Some(previous) = libraries.insert(&p.library, (&p.digest, p.pack, &p.runtime))
+                && previous != (&p.digest, p.pack, &p.runtime)
             {
                 return Err("one library path has conflicting digests or formats".into());
             }
@@ -693,6 +727,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_ids_and_nonlocal_paths_before_loading() {
         let spec = PluginSpec {
+            runtime: Default::default(),
             interfaces: Default::default(),
             id: "velk.test".into(),
             dependencies: Vec::new(),

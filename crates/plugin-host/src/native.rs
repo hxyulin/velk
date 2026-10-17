@@ -366,11 +366,17 @@ fn metadata(bytes: &[u8]) -> Result<String, String> {
 /// Serial, worker-owned lifecycle manager. It exposes no raw function pointers or
 /// plugin-owned values. Session producers are joined before instance destruction.
 static NEXT_MANAGER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+struct WasmGeneration {
+    info: PluginInfo,
+    matching: Arc<crate::wasm::Matching>,
+}
 pub struct Manager {
     pub(crate) host: Option<Arc<crate::services::Bridge>>,
     owner: u64,
     directory: PathBuf,
     plugins: BTreeMap<String, Generation>,
+    wasm_plugins: BTreeMap<String, WasmGeneration>,
+    wasm_engine: Option<wasmtime::Engine>,
     next_generation: u64,
     blocked: BTreeSet<String>,
     excluded: BTreeSet<String>,
@@ -388,6 +394,8 @@ impl Manager {
             owner: NEXT_MANAGER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             directory,
             plugins: BTreeMap::new(),
+            wasm_plugins: BTreeMap::new(),
+            wasm_engine: None,
             next_generation: 1,
             blocked: BTreeSet::new(),
             excluded: BTreeSet::new(),
@@ -416,6 +424,7 @@ impl Manager {
             .values()
             .filter(|p| !p.destroyed)
             .map(|p| &p.info)
+            .chain(self.wasm_plugins.values().map(|p| &p.info))
     }
     /// Route a host-authenticated consumer generation through its declared interface.
     pub fn call_interface(
@@ -467,6 +476,9 @@ impl Manager {
         self.call_hook(&handle, &input)
     }
     pub fn describe(&mut self, id: &str) -> Result<String, String> {
+        if let Some(plugin) = self.wasm_plugins.get(id) {
+            return Ok(plugin.info.description.clone());
+        }
         self.plugins
             .get_mut(id)
             .ok_or_else(|| format!("plugin {id} is not loaded"))?
@@ -588,13 +600,13 @@ impl Manager {
                 });
                 continue;
             }
-            if self.plugins.contains_key(&id) {
+            if self.plugins().any(|plugin| plugin.id == id) {
                 continue;
             }
             if let Some(dependency) = spec
                 .dependencies
                 .iter()
-                .find(|id| !self.plugins.contains_key(*id))
+                .find(|id| !self.plugins().any(|plugin| &plugin.id == *id))
             {
                 events.push(Event::Rejected {
                     id,
@@ -604,6 +616,18 @@ impl Manager {
             }
             let generation = self.next_generation;
             self.next_generation += 1;
+            if let crate::PluginRuntime::WasmMatching { metadata, version } = &spec.runtime {
+                let candidate =
+                    self.load_wasm(&spec, generation, metadata.clone(), version.clone());
+                match candidate {
+                    Ok(plugin) => {
+                        events.push(Event::Loaded(Box::new(plugin.info.clone())));
+                        self.wasm_plugins.insert(id, plugin);
+                    }
+                    Err(message) => events.push(Event::Rejected { id, message }),
+                }
+                continue;
+            }
             // SAFETY: inherited from load's caller.
             let key = (spec.digest.clone(), spec.pack);
             let cached = self
@@ -678,6 +702,50 @@ impl Manager {
         }
         Ok(events)
     }
+    fn load_wasm(
+        &mut self,
+        spec: &PluginSpec,
+        generation: u64,
+        metadata: velk_plugin_contracts::PluginMetadata,
+        version: String,
+    ) -> Result<WasmGeneration, String> {
+        use std::io::Read;
+        let path = self.directory.join(&spec.library);
+        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        file.take(crate::wasm::MAX_MODULE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > crate::wasm::MAX_MODULE_BYTES {
+            return Err("Wasm module exceeds 4 MiB".into());
+        }
+        if blake3::hash(&bytes).to_hex().as_str() != spec.digest {
+            return Err("Wasm module digest mismatch".into());
+        }
+        if self.wasm_engine.is_none() {
+            self.wasm_engine = Some(crate::wasm::engine()?);
+        }
+        let matching = Arc::new(crate::wasm::Matching::load(
+            self.wasm_engine.as_ref().unwrap(),
+            &bytes,
+        )?);
+        Ok(WasmGeneration {
+            info: PluginInfo {
+                id: spec.id.clone(),
+                version,
+                generation,
+                loaded_path: path,
+                description: metadata.name.clone(),
+                metadata,
+                settings_values: Default::default(),
+                settings_error: None,
+                resident_code: false,
+                hooks: vec![velk_plugin_contracts::commands::completion::matching::HOOK.into()],
+                dependencies: spec.dependencies.clone(),
+            },
+            matching,
+        })
+    }
     /// Recreate active instances as one worker operation. Inactive plugins stay
     /// inactive. Optional named hooks transfer owned bytes, never native handles.
     /// # Safety
@@ -685,10 +753,9 @@ impl Manager {
     #[tracing::instrument(level = "debug", skip_all, fields(plugin = id))]
     pub unsafe fn restart(&mut self, id: Option<&str>) -> Result<Vec<Event>, String> {
         let mut ids: Vec<_> = self
-            .plugins
-            .keys()
-            .filter(|key| id.is_none_or(|id| id == key.as_str()))
-            .cloned()
+            .plugins()
+            .filter(|plugin| id.is_none_or(|id| id == plugin.id))
+            .map(|plugin| plugin.id.clone())
             .collect();
         if id.is_some() && ids.is_empty() {
             return Err("plugin is not loaded".into());
@@ -698,11 +765,11 @@ impl Manager {
         }
         loop {
             let before = ids.len();
-            for plugin in self.plugins.values() {
-                if !ids.contains(&plugin.info.id)
-                    && plugin.info.dependencies.iter().any(|id| ids.contains(id))
+            for plugin in self.plugins() {
+                if !ids.contains(&plugin.id)
+                    && plugin.dependencies.iter().any(|id| ids.contains(id))
                 {
-                    ids.push(plugin.info.id.clone());
+                    ids.push(plugin.id.clone());
                 }
             }
             if ids.len() == before {
@@ -773,14 +840,9 @@ impl Manager {
         let mut selected = BTreeSet::from([id.to_owned()]);
         loop {
             let before = selected.len();
-            for plugin in self.plugins.values() {
-                if plugin
-                    .info
-                    .dependencies
-                    .iter()
-                    .any(|id| selected.contains(id))
-                {
-                    selected.insert(plugin.info.id.clone());
+            for plugin in self.plugins() {
+                if plugin.dependencies.iter().any(|id| selected.contains(id)) {
+                    selected.insert(plugin.id.clone());
                 }
             }
             if selected.len() == before {
@@ -795,11 +857,14 @@ impl Manager {
             if let Some(plugin) = self.plugins.get(id) {
                 plugin.deactivate();
             }
+            if let Some(plugin) = self.wasm_plugins.get(id) {
+                plugin.matching.retire();
+            }
         }
         let mut inventory = self.inventory();
         for spec in &mut inventory {
-            if let Some(plugin) = self.plugins.get(&spec.id) {
-                spec.dependencies = plugin.info.dependencies.clone();
+            if let Some(plugin) = self.plugins().find(|plugin| plugin.id == spec.id) {
+                spec.dependencies = plugin.dependencies.clone();
             }
         }
         let mut order = crate::Manifest { plugins: inventory }
@@ -818,24 +883,25 @@ impl Manager {
             .collect()
     }
     pub fn unload(&mut self, id: &str) -> Option<Event> {
-        if let Some(consumer) = self.plugins.values().find(|p| {
-            p.info
-                .dependencies
-                .iter()
-                .any(|dependency| dependency == id)
-                && *p.services_active.read().unwrap()
-        }) {
+        if let Some(consumer) = self
+            .plugins()
+            .find(|p| p.dependencies.iter().any(|dependency| dependency == id))
+        {
             return Some(Event::Rejected {
                 id: id.into(),
                 message: format!(
                     "{} still depends on this plugin; unload dependents first",
-                    consumer.info.id
+                    consumer.id
                 ),
             });
         }
         self.unload_one(id)
     }
     fn unload_one(&mut self, id: &str) -> Option<Event> {
+        if let Some(plugin) = self.wasm_plugins.remove(id) {
+            plugin.matching.retire();
+            return Some(Event::Removed(id.into()));
+        }
         let plugin = self.plugins.get(id)?;
         let consumer = velk_plugin_contracts::backend::Consumer {
             plugin: id.into(),
@@ -859,7 +925,7 @@ impl Manager {
         }
     }
     pub fn unload_all(&mut self) -> Vec<Event> {
-        let ids = self.plugins.keys().cloned().collect();
+        let ids = self.plugins().map(|plugin| plugin.id.clone()).collect();
         self.unload_ids(&ids)
     }
 }
@@ -933,6 +999,7 @@ mod tests {
         assert!(manager.unload("test.failed").is_none());
         let manifest = crate::Manifest {
             plugins: vec![PluginSpec {
+                runtime: Default::default(),
                 interfaces: Default::default(),
                 dependencies: Vec::new(),
                 install_reason: Default::default(),
@@ -960,6 +1027,7 @@ mod tests {
         let mut manager = Manager::new(directory.path().into());
         assert!(manager.available().is_empty());
         let spec = |id: &str| PluginSpec {
+            runtime: Default::default(),
             interfaces: Default::default(),
             dependencies: Vec::new(),
             install_reason: Default::default(),
