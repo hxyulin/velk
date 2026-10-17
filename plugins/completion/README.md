@@ -28,3 +28,8 @@ Selected suggestions can show plain-text or Markdown documentation in a bounded,
 scrollable panel. Markdown uses the editor's selected markup provider. LSP fetches
 missing documentation only for the highlighted item, without applying completion
 edits until acceptance.
+
+Matching prioritizes exact text and prefixes, tolerates small typos (including
+adjacent swaps), and supports fuzzy subsequences through Nucleo. Automatic
+selection follows the best match; explicit keyboard navigation stays stable as
+sources finish. The word source applies the same scoring before its result cap.

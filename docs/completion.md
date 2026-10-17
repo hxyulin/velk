@@ -15,7 +15,7 @@ the same topic without copying provider implementations.
 | Contributor plugins | Declare activation support and produce candidates and deferred resolve payloads |
 | Command contracts | Feature-neutral contribution declarations, collection snapshots, and choices |
 | Application adapter | Discover loaded sources, schedule commands, cancel, and validate source/view/revision/generation |
-| Editor widget | Caret popup, local prefix filtering, selection, keyboard input, and accessibility |
+| Editor widget | Caret popup, local similarity ranking, selection, keyboard input, and accessibility |
 | Core | Authoritative text and normal undoable transactions |
 
 The application and platform SDK do not depend on `velk-completion-contracts`.
@@ -78,8 +78,9 @@ The default reducer uses each candidate's `sort_text` for ascending lexical orde
 keeps declaration order for ties, adds source details, and caps the combined list
 at 1,000 items. It wraps candidate actions in `Contributed` so a
 subsequent resolve or edit checks the actual source generation. Results from a
-retired source cannot be accepted. Equal labels remain separate. Selection follows the source generation, command,
-and candidate ID across incremental updates, even when display labels change.
+retired source cannot be accepted. Equal labels remain separate. Explicit selection follows the source generation, command, and candidate ID across
+incremental updates, even when display labels change. Automatic selection follows
+the best similarity score; equal-quality arrivals preserve the current choice.
 
 Typing inside the identifier prefix starts a fresh collection against the new
 revision. Old choices can remain visible while refreshing but cannot be accepted.
@@ -96,7 +97,8 @@ normal `choice` (display title, detail and validated action), plus:
 - `id`: provider-owned identity stable across refreshes; exclude revision-specific
   edits and transient resolve tokens. Distinguish candidates with equal labels.
 - `filter_text`: text matched against the current identifier prefix, independently
-  of the display title. Matching remains case-insensitive prefix matching.
+  of the display title. Matching supports exact text, prefixes, close typos and fuzzy
+  subsequences.
 - `sort_text`: provider ranking key, compared lexically by the default reducer.
 
 The platform's completion item is a presentation contract, separate from generic
@@ -106,6 +108,36 @@ source plugin and generation are retained in the action. LSP preserves server
 `filterText` and `sortText` and derives identity from label, detail, kind and label
 details. Document words use their text as identity. Metadata is bounded and
 validated before presentation.
+
+## Similarity ranking
+
+The popup ranks against `filter_text`, independently of display labels:
+
+1. Exact case-sensitive text, then exact case-insensitive text.
+2. Prefix matches, preferring shorter completions.
+3. Close typo matches, including adjacent swaps, missing or extra characters, and
+   substitutions. Fewer edits win, then shorter length difference.
+4. Fuzzy subsequences scored by Nucleo, the matcher also used by Quick Open.
+
+Provider `sort_text` order breaks equal-quality matches. An empty query keeps
+provider order. Typo tolerance permits one edit from four characters and two from
+eight; shorter queries use exact/prefix/subsequence matching to avoid typo noise.
+Unicode matching is supported. Typo distance compares the query with a candidate
+prefix so an untyped completion suffix is not treated as an error. Fuzzy and typo
+work is bounded to 128 query characters; longer identifiers still support exact
+and prefix matches.
+
+New sessions and typing select the best-ranked candidate. A better late result,
+including an exact match, replaces an automatic selection. Up/Down navigation
+makes selection explicit and preserves that candidate as providers finish, while
+it remains available. Typing recomputes the best match and still requires fresh,
+revision-checked edits before acceptance.
+
+The document-word source uses the same matcher before its 200-item cap, keeping
+the best matches across the buffer rather than the first matching words. It
+excludes the token under the caret, while allowing exact words from other
+occurrences. Matching ranks candidates a provider actually returns; it cannot
+recover candidates filtered out by an external language server.
 
 ## Automatic invocation
 

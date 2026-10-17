@@ -120,3 +120,7 @@ while documentation resolution owns the command slot, literal fallback without a
 executor, metadata format and size limits, and a bounded independent scroll area.
 The LSP fixture returns documentation together with import edits, verifying that
 reading documentation cannot apply those edits.
+
+Completion matching regressions cover late exact-match promotion, explicit
+selection retention, reranking after typing, Unicode, typo edit ranges, and
+keeping the best document words before the source result cap.

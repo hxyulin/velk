@@ -32,6 +32,17 @@ fn render_feature_walkthrough() {
                             editor.buffer().revision(),
                             editor.caret_position(),
                             editor.completion_active(),
+                            editor.completion_choice().map(|item| {
+                                (
+                                    item.title.clone(),
+                                    item.filter_text.clone(),
+                                    item.documentation.is_some(),
+                                    item.documentation_resolve.is_some(),
+                                )
+                            }),
+                            editor
+                                .completion_documentation()
+                                .map(|document| document.text()),
                             buffer.semantic.as_ref().map(|state| {
                                 (
                                     state.status.clone(),
@@ -276,7 +287,7 @@ fn render_feature_walkthrough() {
                 .read(cx)
                 .collection
                 .as_ref()
-                .is_some_and(|s| s.has_results_from("velk.lsp"))
+                .is_some_and(|s| s.has_candidate_from("velk.lsp", "greeting"))
         }) {
             break;
         }
@@ -308,17 +319,18 @@ fn render_feature_walkthrough() {
     wait(&mut capture, "both completion sources merged", |doc, _| {
         doc.collection.as_ref().is_some_and(|state| {
             state.settled()
-                && state.has_results_from("velk.lsp")
+                && state.has_candidate_from("velk.lsp", "greeting")
                 && state.has_results_from("velk.completion.words")
         })
     });
     let lsp_selected = |capture: &mut TestUi<Document>| {
         capture.runtime().update(|cx| {
-        matches!(entity.read(cx).buffer.editor.read(cx).completion_choice().map(|choice| &choice.action),
-            Some(velk_commands::ChoiceAction::Contributed { plugin, .. }) if plugin == "velk.lsp")
-    })
+            entity.read(cx).buffer.editor.read(cx).completion_choice().is_some_and(|item| {
+                item.filter_text == "greeting" && matches!(&item.action, velk_commands::ChoiceAction::Contributed { plugin, .. } if plugin == "velk.lsp")
+            })
+        })
     };
-    for _ in 0..2 {
+    for _ in 0..1000 {
         if lsp_selected(&mut capture) {
             break;
         }
@@ -616,7 +628,46 @@ fn render_feature_walkthrough() {
             );
         })
     });
-    std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; selected-item documentation rendered by Markdown plugin; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout; unload LSP; automatic completion after keyboard typing in untitled buffer; undo completion.\n").unwrap();
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            doc.buffer.editor.update(cx, |editor, _| {
+                editor.set_text("print process\npritn");
+                editor.select_range(19..19);
+            });
+        });
+    });
+    invoke(&mut capture, "velk.completion.complete", None);
+    wait(&mut capture, "typo completion selects print", |doc, cx| {
+        let editor = doc.buffer.editor.read(cx);
+        editor.completion_refresh().is_none()
+            && editor
+                .completion_choice()
+                .is_some_and(|item| item.title == "print")
+    });
+    shot(&mut capture, &output, "completion-typo");
+    capture
+        .key(rxui::KeyEvent {
+            key: rxui::KeyboardKey::Enter,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+    wait(&mut capture, "typo completion accepted", |doc, cx| {
+        doc.buffer.editor.read(cx).buffer().text() == "print process\nprint"
+    });
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            doc.buffer.editor.update(cx, |editor, _| {
+                editor.execute(velk_editor_model::EditCommand::Undo);
+            });
+            assert_eq!(
+                doc.buffer.editor.read(cx).buffer().text().to_string(),
+                "print process\npritn"
+            );
+        })
+    });
+    std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; selected-item documentation rendered by Markdown plugin; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout; unload LSP; automatic completion after keyboard typing in untitled buffer; typo correction from pritn to print; undo completion.\n").unwrap();
     drop(capture);
     drop(plugins);
 }

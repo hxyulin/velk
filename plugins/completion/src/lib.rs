@@ -259,15 +259,34 @@ fn words(context: &Context, buffer: u64, text: &str) -> Result<Outcome, String> 
         column: column + (position - start) as u32,
         ..begin
     };
+    let caret_byte = text
+        .char_indices()
+        .nth(position)
+        .map_or(text.len(), |(offset, _)| offset);
+    let mut matcher = velk_plugin_sdk::commands::completion::matching::Matcher::new(&prefix);
     let mut seen = std::collections::BTreeSet::new();
+    let mut ranked = std::collections::BinaryHeap::new();
+    let mut offset = 0;
+    for part in text.split_inclusive(|c| !is_word(c)) {
+        let word = part.trim_end_matches(|c| !is_word(c));
+        let begin = offset;
+        offset += part.len();
+        if word.is_empty()
+            || word.len() > 1024
+            || (begin <= caret_byte && caret_byte <= begin + word.len())
+            || !seen.insert(word)
+        {
+            continue;
+        }
+        if let Some(score) = matcher.score(word) {
+            ranked.push((score, word));
+            if ranked.len() > 200 {
+                ranked.pop();
+            }
+        }
+    }
     let mut items = Vec::new();
-    for word in text.split(|c| !is_word(c)) {
-        if word.len() > 1024 || word == prefix || !word.starts_with(&prefix) || !seen.insert(word) {
-            continue;
-        }
-        if word.is_empty() {
-            continue;
-        }
+    for (_, word) in ranked.into_sorted_vec() {
         items.push(
             Choice {
                 title: word.into(),
@@ -284,9 +303,6 @@ fn words(context: &Context, buffer: u64, text: &str) -> Result<Outcome, String> 
             }
             .into(),
         );
-        if items.len() == 200 {
-            break;
-        }
     }
     Ok(Outcome::Completions { items })
 }
@@ -541,5 +557,57 @@ mod activation_tests {
         assert_eq!(items[0].id, "test.second:same");
         assert_eq!(items[1].id, "test.first:same");
         assert_eq!(items[0].filter_text, "other");
+    }
+}
+
+#[cfg(test)]
+mod matching_tests {
+    use super::*;
+    fn complete(text: &str) -> Vec<velk_completion_contracts::Item> {
+        let context = Context {
+            input: None,
+            path: None,
+            language: None,
+            revision: Some(1),
+            position: Some(text.chars().count()),
+        };
+        let Outcome::Completions { items } = words(&context, 42, text).unwrap() else {
+            panic!()
+        };
+        items
+    }
+    #[test]
+    fn word_source_keeps_typo_candidates_and_proposes_the_original_prefix_range() {
+        let items = complete("print println unrelated\npritn");
+        assert_eq!(items[0].title, "print");
+        assert!(!items.iter().any(|item| item.title == "unrelated"));
+        let ChoiceAction::BufferEdit {
+            edits, revision: 1, ..
+        } = &items[0].action
+        else {
+            panic!()
+        };
+        assert_eq!(edits[0].start.line, 1);
+        assert_eq!(edits[0].start.column, 0);
+        assert_eq!(edits[0].end.column, 5);
+        assert_eq!(edits[0].text, "print");
+    }
+    #[test]
+    fn exact_words_elsewhere_are_included_but_the_current_token_is_excluded() {
+        assert!(complete("print").is_empty());
+        let items = complete("print println\nprint");
+        assert_eq!(items[0].title, "print");
+        assert_eq!(items.iter().filter(|item| item.title == "print").count(), 1);
+    }
+    #[test]
+    fn result_cap_keeps_the_best_matches_even_when_they_appear_late_in_the_document() {
+        let mut text = (0..250)
+            .map(|index| format!("print_candidate_{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        text.push_str(" print\nprint");
+        let items = complete(&text);
+        assert_eq!(items.len(), 200);
+        assert_eq!(items[0].title, "print");
     }
 }

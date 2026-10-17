@@ -1,4 +1,5 @@
 //! Headless suggestion selection. Edits are usable only against their exact source.
+pub mod matching;
 use crate::Choice;
 use serde::{Deserialize, Serialize};
 
@@ -103,6 +104,7 @@ pub struct Session {
     pub prefix: String,
     pub start: usize,
     pub ready: bool,
+    selection_explicit: bool,
 }
 impl Session {
     pub fn new(target: Target, prefix: String, items: Vec<Item>) -> Self {
@@ -115,6 +117,7 @@ impl Session {
             prefix,
             start,
             ready: true,
+            selection_explicit: false,
         };
         session.filter();
         session
@@ -129,6 +132,7 @@ impl Session {
             self.target = target;
             self.prefix = prefix;
             self.ready = false;
+            self.selection_explicit = false;
             self.filter();
         }
         true
@@ -146,25 +150,39 @@ impl Session {
                 .visible
                 .iter()
                 .position(|i| identity(&self.items[*i]) == selected)
-                .unwrap_or(0);
+                .filter(|index| {
+                    let mut matcher = matching::Matcher::new(&self.prefix);
+                    self.selection_explicit
+                        || matcher.score(&self.items[self.visible[*index]].filter_text)
+                            == matcher.score(&self.items[self.visible[0]].filter_text)
+                })
+                .unwrap_or_else(|| {
+                    self.selection_explicit = false;
+                    0
+                });
         }
         true
     }
     fn filter(&mut self) {
-        let prefix = self.prefix.to_lowercase();
-        self.visible = self
+        let mut matcher = matching::Matcher::new(&self.prefix);
+        let mut ranked: Vec<_> = self
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.filter_text.to_lowercase().starts_with(&prefix))
-            .map(|(index, _)| index)
+            .filter_map(|(index, item)| {
+                matcher.score(&item.filter_text).map(|score| (score, index))
+            })
             .collect();
-        self.selected = self.selected.min(self.visible.len().saturating_sub(1));
+        ranked.sort_by_key(|(score, _)| *score);
+        self.visible = ranked.into_iter().map(|(_, index)| index).collect();
+        self.selected = 0;
     }
+
     pub fn next(&mut self, backwards: bool) {
         if self.visible.is_empty() {
             return;
         }
+        self.selection_explicit = true;
         self.selected = if backwards {
             (self.selected + self.visible.len() - 1) % self.visible.len()
         } else {
@@ -328,7 +346,7 @@ mod metadata_tests {
                 item("one", "Display one", "print"),
             ],
         );
-        assert_eq!(session.selected, 0);
+        assert_eq!(session.selected, 1);
         assert_eq!(session.accept().unwrap().title, "Updated label");
         session.update(
             Target {
@@ -361,5 +379,69 @@ mod metadata_tests {
         candidate.documentation = None;
         candidate.documentation_resolve = Some(serde_json::json!({"data":"x".repeat(16 * 1024)}));
         assert!(candidate.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod ranking_tests {
+    use super::*;
+    fn item(title: &str) -> Item {
+        Choice {
+            title: title.into(),
+            detail: None,
+            action: crate::ChoiceAction::Semantic {
+                payload: Default::default(),
+            },
+        }
+        .into()
+    }
+    #[test]
+    fn exact_matches_beat_provider_order_and_arriving_exact_matches_replace_automatic_selection() {
+        let target = Target {
+            revision: 1,
+            position: 5,
+        };
+        let session = Session::new(target, "print".into(), vec![item("println"), item("print")]);
+        assert_eq!(session.accept().unwrap().title, "print");
+        let mut session = Session::new(target, "print".into(), vec![item("println")]);
+        session.resolve(target, vec![item("println"), item("print")]);
+        assert_eq!(session.accept().unwrap().title, "print");
+    }
+    #[test]
+    fn explicit_navigation_survives_late_better_matches_but_typing_recomputes_the_best_match() {
+        let target = Target {
+            revision: 1,
+            position: 4,
+        };
+        let mut session = Session::new(
+            target,
+            "prin".into(),
+            vec![item("print"), item("printable")],
+        );
+        session.next(false);
+        session.resolve(target, vec![item("prin"), item("print"), item("printable")]);
+        assert_eq!(session.accept().unwrap().title, "printable");
+        let current = Target {
+            revision: 2,
+            position: 5,
+        };
+        session.update(current, "print".into());
+        assert_eq!(session.choice().unwrap().title, "print");
+        assert!(session.accept().is_none());
+        session.resolve(current, vec![item("printable"), item("print")]);
+        assert_eq!(session.accept().unwrap().title, "print");
+    }
+    #[test]
+    fn popup_accepts_subsequences_and_typos_using_filter_text() {
+        let target = Target {
+            revision: 1,
+            position: 5,
+        };
+        let mut candidate = item("A display label");
+        candidate.filter_text = "print".into();
+        let session = Session::new(target, "pritn".into(), vec![candidate]);
+        assert_eq!(session.accept().unwrap().title, "A display label");
+        let session = Session::new(target, "prnt".into(), vec![item("print")]);
+        assert_eq!(session.accept().unwrap().title, "print");
     }
 }

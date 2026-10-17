@@ -22,6 +22,9 @@ impl State {
     pub(super) fn settled(&self) -> bool {
         self.reducer.is_none() && self.results.iter().all(Option::is_some)
     }
+    pub(super) fn has_candidate_from(&self, plugin: &str, filter_text: &str) -> bool {
+        self.results.iter().flatten().any(|result| result.plugin == plugin && matches!(&result.outcome, Ok(Outcome::Completions { items }) if items.iter().any(|item| item.filter_text == filter_text)))
+    }
     pub(super) fn has_results_from(&self, plugin: &str) -> bool {
         self.results.iter().flatten().any(|result| result.plugin == plugin && matches!(&result.outcome, Ok(Outcome::Completions { items }) if !items.is_empty()))
     }
