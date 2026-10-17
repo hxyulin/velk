@@ -588,9 +588,11 @@ impl Editor {
     pub fn start_snippet(
         &mut self,
         stops: Vec<velk_commands::snippet::Tabstop>,
+        provider: Option<std::sync::Arc<dyn velk_commands::snippet::Provider>>,
     ) -> Result<(), String> {
         self.dismiss_completions();
-        self.editing.start_snippet(&mut self.buffer, stops)?;
+        self.editing
+            .start_snippet(&mut self.buffer, stops, provider)?;
         self.edited();
         Ok(())
     }

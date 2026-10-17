@@ -29,6 +29,32 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .iter()
                 .any(|r| r.style.bold)
         );
+        let snippets = manager.snippet_provider("velk.snippets")?;
+        let expansion = snippets.expand(
+            "${1|red,green|} $1 ${1/(.*)/${1:/upcase}/}$0",
+            &Default::default(),
+        )?;
+        assert_eq!(expansion.text, "red red RED");
+        let transform = expansion
+            .stops
+            .iter()
+            .find_map(|stop| stop.transform.as_ref())
+            .unwrap();
+        assert_eq!(snippets.transform(transform, "green")?, "GREEN");
+        assert!(snippets.expand("${1/a/b/x}", &Default::default()).is_err());
+        manager.unload_with_dependents("velk.snippets");
+        assert!(manager.plugins().any(|plugin| plugin.id == "velk.lsp"));
+        assert!(snippets.transform(transform, "green").is_err());
+        assert!(snippets.expand("plain", &Default::default()).is_err());
+        assert_eq!(manager.load()?.len(), 1);
+        assert_eq!(
+            manager
+                .snippet_provider("velk.snippets")?
+                .expand("${1:reloaded}$0", &Default::default())?
+                .text,
+            "reloaded"
+        );
+        drop(snippets);
         let popup = manager.completion_frontend("velk.completion")?;
         let compact = manager.completion_frontend("velk.completion.compact")?;
         let snapshot = velk_plugin_contracts::commands::completion::frontend::Snapshot {

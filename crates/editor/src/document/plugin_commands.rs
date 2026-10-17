@@ -404,7 +404,7 @@ impl Document {
                 }
             }
             Outcome::Edit { edit } => self.apply_workspace_edit(edit, guard, cx),
-            Outcome::Snippet { snippet } => self.apply_workspace_snippet(snippet, guard, cx),
+            Outcome::Snippet { snippet } => self.apply_snippet_template(snippet, guard, cx),
             Outcome::Completions { .. } => {
                 self.notice(Some("Completion results require a semantic session".into()));
             }

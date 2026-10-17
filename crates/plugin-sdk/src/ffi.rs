@@ -378,3 +378,5 @@ mod tests {
 pub mod matching;
 
 pub mod completion_frontend;
+
+pub mod snippets;

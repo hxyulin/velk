@@ -74,6 +74,29 @@ impl Document {
     ) {
         self.apply_workspace_edit_inner(edit, None, guard, cx);
     }
+    pub(super) fn apply_snippet_template(
+        &mut self,
+        template: velk_commands::snippet::Template,
+        guard: Guard,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let provider = self
+            .plugins
+            .as_ref()
+            .and_then(|plugins| {
+                plugins
+                    .snippets
+                    .get(&self.shell.store.preferences.snippet_provider)
+            })
+            .cloned();
+        match provider
+            .ok_or_else(|| "Snippet provider unavailable".to_string())
+            .and_then(|provider| template.expand(provider.as_ref()))
+        {
+            Ok(snippet) => self.apply_workspace_snippet(snippet, guard, cx),
+            Err(error) => self.notice(Some(error)),
+        }
+    }
     pub(super) fn apply_workspace_snippet(
         &mut self,
         snippet: velk_commands::snippet::SnippetEdit,
@@ -93,6 +116,15 @@ impl Document {
         guard: Guard,
         cx: &mut Context<'_, Self>,
     ) {
+        let snippet_provider = self
+            .plugins
+            .as_ref()
+            .and_then(|plugins| {
+                plugins
+                    .snippets
+                    .get(&self.shell.store.preferences.snippet_provider)
+            })
+            .cloned();
         if self.workspace_edit.is_some() || !self.guard_valid(&guard, cx) {
             return;
         }
@@ -139,10 +171,9 @@ impl Document {
                         Err(error) => this.notice(Some(error)),
                         Ok(()) => {
                             if let Some(stops) = stops
-                                && let Err(error) = this
-                                    .buffer
-                                    .editor
-                                    .update(cx, |editor, _| editor.start_snippet(stops))
+                                && let Err(error) = this.buffer.editor.update(cx, |editor, _| {
+                                    editor.start_snippet(stops, snippet_provider)
+                                })
                             {
                                 this.notice(Some(error));
                                 return;
@@ -604,6 +635,127 @@ mod snippet_tests {
         DocumentEdit, Encoding, Position, TextEdit,
         snippet::{SnippetEdit, Tabstop},
     };
+    #[derive(Debug)]
+    struct CustomSnippets;
+    impl velk_commands::snippet::Provider for CustomSnippets {
+        fn expand(
+            &self,
+            source: &str,
+            _: &velk_commands::snippet::Variables,
+        ) -> Result<velk_commands::snippet::Expansion, String> {
+            assert_eq!(source, "custom-template");
+            Ok(velk_commands::snippet::Expansion {
+                text: "custom(value)".into(),
+                stops: vec![
+                    Tabstop {
+                        index: 1,
+                        range: 7..12,
+                        choices: vec![],
+                        transform: None,
+                    },
+                    Tabstop {
+                        index: 0,
+                        range: 13..13,
+                        choices: vec![],
+                        transform: None,
+                    },
+                ],
+            })
+        }
+        fn transform(
+            &self,
+            _: &velk_commands::snippet::Transform,
+            _: &str,
+        ) -> Result<String, String> {
+            Err("unused".into())
+        }
+    }
+    #[test]
+    #[allow(unsafe_code)]
+    fn templates_use_selected_provider_and_missing_provider_never_applies_imports() {
+        let plugins_directory = tempfile::tempdir().unwrap();
+        // SAFETY: this temporary directory contains no native images.
+        let host =
+            unsafe { velk_plugin_host::Runtime::start(plugins_directory.path().into()) }.unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("main.rs");
+        std::fs::write(&path, " ca").unwrap();
+        let mut runtime = rxui::Runtime::new();
+        let executor = std::sync::Arc::new(super::super::tests::QueuedExecutor::default());
+        runtime.configure_tasks(executor.clone(), || {}).unwrap();
+        let document = runtime.update(|cx| {
+            let (file, mut editor) = FileState::open(&path).unwrap();
+            editor.select_range(3..3);
+            let editor = cx.new(|_| editor);
+            cx.new(|cx| Document::new(editor, file, path.clone(), cx))
+        });
+        let position = |column| Position {
+            line: 0,
+            column,
+            encoding: Encoding::Utf32,
+        };
+        let template = velk_commands::snippet::Template {
+            edit: WorkspaceEdit {
+                documents: vec![DocumentEdit {
+                    path: path.clone(),
+                    revision: Some(0),
+                    edits: vec![
+                        TextEdit {
+                            start: position(1),
+                            end: position(3),
+                            text: "custom-template".into(),
+                        },
+                        TextEdit {
+                            start: position(0),
+                            end: position(0),
+                            text: "use dep;\n".into(),
+                        },
+                    ],
+                }],
+            },
+            document: 0,
+            replacement: 0,
+            variables: Default::default(),
+        };
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.apply_snippet_template(template.clone(), this.edit_guard(cx), cx);
+                assert_eq!(
+                    this.buffer.editor.read(cx).buffer().text().to_string(),
+                    " ca"
+                );
+                assert!(
+                    this.buffer
+                        .status
+                        .as_ref()
+                        .unwrap()
+                        .contains("provider unavailable")
+                );
+                let mut plugins =
+                    super::super::plugins::State::new(host.client(), "test.markdown".into());
+                plugins
+                    .snippets
+                    .insert("test.snippets".into(), std::sync::Arc::new(CustomSnippets));
+                this.plugins = Some(plugins);
+                this.shell.store.preferences.snippet_provider = "test.snippets".into();
+                this.apply_snippet_template(template, this.edit_guard(cx), cx);
+            })
+        });
+        executor.complete(&mut runtime);
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.buffer.editor.update(cx, |editor, _| {
+                    assert_eq!(
+                        editor.buffer().text().to_string(),
+                        "use dep;\n custom(value)"
+                    );
+                    assert_eq!(editor.selected_text(), "value");
+                    editor.execute(velk_editor_model::EditCommand::Undo);
+                    assert_eq!(editor.buffer().text().to_string(), " ca");
+                });
+            })
+        });
+    }
     #[test]
     fn completion_import_and_snippet_are_one_guarded_undo_step_with_shifted_tabstops() {
         let directory = tempfile::tempdir().unwrap();

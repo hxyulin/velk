@@ -294,9 +294,8 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 let outcome = result?; outcome.validate()?;
                 let Outcome::Completions { items, .. } = outcome else { panic!() };
                 let ChoiceAction::Snippet { snippet } = &items[0].action else { panic!() };
-                assert!(snippet.edit.documents[0].edits[0].text.ends_with(": red red RED"));
-                assert_eq!(snippet.stops.iter().find(|stop| !stop.choices.is_empty()).unwrap().choices, ["red", "green", "blue"]);
-                assert_eq!(snippet.stops.iter().filter(|stop| stop.transform.is_some()).count(), 1);
+                assert!(snippet.edit.documents[0].edits[0].text.contains("${1|red,green,blue|}"));
+                assert!(snippet.variables.contains_key("TM_FILENAME_BASE"));
                 assert_eq!(client.unload_all()?.recv().await.map_err(|e| e.to_string())??.loaded, 0);
                 assert_reaped(log);
                 return Ok(());

@@ -94,3 +94,7 @@ retain interactive choices, and carry placeholder transforms through native resu
 Selected text is unavailable to semantic position requests and resolves empty;
 clipboard, dates, and workspace variables have no implicit resolver. The supported
 regex syntax and editing behavior are documented in [completion](../../docs/completion.md).
+
+Snippet completions carry raw templates and explicit snapshot variables. The editor
+expands them through its selected snippet provider on acceptance; LSP does not
+depend on the bundled Snippets plugin.

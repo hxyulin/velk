@@ -174,6 +174,7 @@ mod tests {
             syntax: None,
             matching: None,
             completion_frontend: None,
+            snippet_provider: None,
             undo: None,
             language: Some(LanguageApi {
                 context: NonNull::<c_void>::dangling().as_ptr(),

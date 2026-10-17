@@ -1,5 +1,6 @@
 //! Built-ins share one link; each retains its own identity and lifecycle.
 velk_plugin_sdk::export_plugin_pack!(
+    velk_plugin_snippets::Snippets,
     velk_plugin_completion::Completion,
     velk_plugin_completion::frontend::CompactFrontend,
     velk_plugin_completion::Words,

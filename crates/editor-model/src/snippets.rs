@@ -2,13 +2,18 @@
 use velk_commands::snippet::{Tabstop, validate_stops};
 use velk_core::{Affinity, Buffer, Selection};
 pub struct Session {
+    provider: Option<std::sync::Arc<dyn velk_commands::snippet::Provider>>,
     stops: Vec<Tabstop>,
     index: u32,
     revision: u64,
     choices_open: bool,
 }
 impl Session {
-    pub fn new(buffer: &Buffer, stops: Vec<Tabstop>) -> Result<Self, String> {
+    pub fn new(
+        buffer: &Buffer,
+        stops: Vec<Tabstop>,
+        provider: Option<std::sync::Arc<dyn velk_commands::snippet::Provider>>,
+    ) -> Result<Self, String> {
         validate_stops(&stops, buffer.text().len_chars())?;
         let index = stops
             .iter()
@@ -18,6 +23,7 @@ impl Session {
             .unwrap_or(0);
         Ok(Self {
             stops,
+            provider,
             index,
             revision: buffer.revision(),
             choices_open: true,
@@ -154,7 +160,14 @@ impl Session {
         let mut edits = Vec::new();
         for stop in self.stops.iter().filter(|stop| stop.index == self.index) {
             if let Some(transform) = &stop.transform {
-                let text = transform.apply(&value)?;
+                let text = self
+                    .provider
+                    .as_ref()
+                    .ok_or("snippet provider unavailable")?
+                    .transform(transform, &value)?;
+                if text.len() > 64 * 1024 || text.contains('\r') {
+                    return Err("invalid snippet transform output".into());
+                }
                 if buffer.text().slice(stop.range.clone()) != text {
                     edits.push(velk_core::TextEdit {
                         range: stop.range.clone(),
@@ -211,6 +224,7 @@ mod tests {
                     range: 14..14,
                 },
             ],
+            None,
         )
         .unwrap();
         buffer.set_selection_preserving_column(session.selections()[0]);

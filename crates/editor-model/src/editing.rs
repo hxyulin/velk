@@ -17,9 +17,10 @@ impl Session {
         &mut self,
         buffer: &mut Buffer,
         stops: Vec<velk_commands::snippet::Tabstop>,
+        provider: Option<std::sync::Arc<dyn velk_commands::snippet::Provider>>,
     ) -> Result<(), String> {
         self.cancel_snippet();
-        self.snippet = Some(crate::snippets::Session::new(buffer, stops)?);
+        self.snippet = Some(crate::snippets::Session::new(buffer, stops, provider)?);
         self.project_snippet(buffer)
     }
     pub fn cancel_snippet(&mut self) {

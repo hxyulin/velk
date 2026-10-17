@@ -14,6 +14,7 @@ pub(super) struct State {
     markdown_provider: String,
     pub(super) editing: velk_editing::Providers,
     pub(super) completion_frontends: velk_commands::completion::frontend::Providers,
+    pub(super) snippets: velk_commands::snippet::Providers,
     pub(super) matching: velk_commands::completion::matching::Policies,
     syntax: std::collections::BTreeMap<String, std::sync::Arc<dyn velk_syntax::Provider>>,
     pub(super) task: Option<Task>,
@@ -35,6 +36,7 @@ impl State {
             client,
             markdown_provider,
             editing: Default::default(),
+            snippets: Default::default(),
             matching: Default::default(),
             completion_frontends: Default::default(),
             syntax: Default::default(),
@@ -195,6 +197,7 @@ impl Document {
                 &state.loaded,
                 &report.plugins,
             );
+            state.snippets = report.snippets;
             state.matching = report.matching;
             state.completion_frontends = report.completion_frontends;
             state.available = report.available;
@@ -425,6 +428,7 @@ mod tests {
                 assert_eq!(initial.read(cx).input_mode_id(), "insert");
                 this.apply_plugin_report(
                     velk_plugin_host::Report {
+                        snippets: Default::default(),
                         matching: Default::default(),
                         completion_frontends: Default::default(),
                         inventory: Vec::new(),
@@ -447,6 +451,7 @@ mod tests {
                 }
                 this.apply_plugin_report(
                     velk_plugin_host::Report {
+                        snippets: Default::default(),
                         matching: Default::default(),
                         completion_frontends: Default::default(),
                         inventory: Vec::new(),

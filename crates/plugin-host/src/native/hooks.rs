@@ -102,6 +102,12 @@ impl Generation {
                 }};
             }
             match contract.as_str() {
+                velk_plugin_contracts::commands::snippet::CONTRACT
+                    if name == velk_plugin_contracts::commands::snippet::HOOK =>
+                {
+                    self.snippet_provider = Some(typed!(SnippetApi, SERVICE));
+                }
+
                 velk_plugin_contracts::commands::completion::frontend::CONTRACT
                     if name == velk_plugin_contracts::commands::completion::frontend::HOOK =>
                 {

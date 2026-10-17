@@ -758,10 +758,11 @@ fn render_feature_walkthrough() {
     });
     capture.runtime().update(|cx| entity.update(cx, |doc, cx| {
         let variables = velk_commands::snippet::Variables::from([("TM_FILENAME".into(), "snippet-demo.rs".into())]);
-        let snippet = velk_commands::snippet::expand_with_variables("// $TM_FILENAME\nstruct ${1|UserAccount,ProjectConfig,WorkspaceItem|} {\n    name: String,\n}\n\nimpl $1 {\n    const LABEL: &str = \"${1/(.*)/${1:/upcase}/}\";\n}\n$0", &variables).unwrap();
+        let provider = doc.plugins.as_ref().unwrap().snippets.get("velk.snippets").unwrap().clone();
+        let snippet = provider.expand("// $TM_FILENAME\nstruct ${1|UserAccount,ProjectConfig,WorkspaceItem|} {\n    name: String,\n}\n\nimpl $1 {\n    const LABEL: &str = \"${1/(.*)/${1:/upcase}/}\";\n}\n$0", &variables).unwrap();
         doc.buffer.editor.update(cx, |editor, _| {
             editor.set_text(&snippet.text);
-            editor.start_snippet(snippet.stops).unwrap();
+            editor.start_snippet(snippet.stops, Some(provider)).unwrap();
         });
     }));
     shot(&mut capture, &output, "snippet-choices");

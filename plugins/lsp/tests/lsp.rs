@@ -524,8 +524,8 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
                 for item in items {
                     if let ChoiceAction::Snippet { snippet } = &item.action {
                         snippet.validate().unwrap();
-                        assert_eq!(snippet.edit.documents[0].edits[0].text, "call(value)");
-                        assert_eq!(snippet.stops[0].range, 5..10);
+                        assert_eq!(snippet.edit.documents[0].edits[0].text, "call(${1:value})");
+                        assert!(snippet.variables.is_empty());
                         continue;
                     }
                     let ChoiceAction::Semantic { payload } = item.action else {
@@ -1374,26 +1374,11 @@ async fn rich_snippet_completions_keep_variables_choices_and_derived_occurrences
     let ChoiceAction::Snippet { snippet } = &items[0].action else {
         panic!()
     };
-    assert_eq!(
-        snippet.edit.documents[0].edits[0].text,
-        "SomeFile: red red RED"
+    assert!(
+        snippet.edit.documents[0].edits[0]
+            .text
+            .contains("${1|red,green,blue|}")
     );
-    assert_eq!(
-        snippet
-            .stops
-            .iter()
-            .find(|stop| !stop.choices.is_empty())
-            .unwrap()
-            .choices,
-        ["red", "green", "blue"]
-    );
-    assert_eq!(
-        snippet
-            .stops
-            .iter()
-            .filter(|stop| stop.transform.is_some())
-            .count(),
-        1
-    );
+    assert_eq!(snippet.variables["TM_FILENAME_BASE"], "some_file");
     service.shutdown_and_join().unwrap();
 }

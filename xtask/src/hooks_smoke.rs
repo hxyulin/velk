@@ -35,6 +35,21 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     unsafe {
         manager.load()?;
     }
+    let snippets = manager.snippet_provider("test.hooks")?;
+    assert_eq!(
+        snippets.expand("source", &Default::default())?.text,
+        "custom:source"
+    );
+    for source in ["invalid", "panic"] {
+        assert!(snippets.expand(source, &Default::default()).is_err());
+    }
+    let transform = velk_commands::snippet::Transform {
+        pattern: String::new(),
+        format: String::new(),
+        options: String::new(),
+    };
+    assert_eq!(snippets.transform(&transform, "value")?, "custom:value");
+    assert!(snippets.transform(&transform, "invalid").is_err());
     let frontend = manager.completion_frontend("test.hooks")?;
     let mut snapshot = velk_plugin_contracts::commands::completion::frontend::Snapshot {
         candidates: vec![
@@ -162,10 +177,13 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
     drop(editing);
     assert!(copy.exists(), "matching lease also pins native code");
     assert!(matching.scores("ing", &["ring"]).is_err());
+    assert!(snippets.expand("source", &Default::default()).is_err());
     drop(matching);
     assert!(copy.exists(), "frontend lease pins native code");
     assert!(frontend.present(&snapshot).is_err());
     drop(frontend);
+    assert!(copy.exists(), "snippet lease pins native code");
+    drop(snippets);
     assert!(!copy.exists());
     assert_eq!(owned, input);
     assert_eq!(

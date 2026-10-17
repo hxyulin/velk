@@ -134,13 +134,13 @@ assuming ranking keys from unrelated servers share a scale.
 
 Equivalence requires the same title, filter text, overload detail, and concrete
 action, including target, revision, ranges, replacement text, additional edits, and
-snippet stops. Workspace edit document/replacement order is normalized for the
+snippet template/context. Workspace edit document/replacement order is normalized for the
 comparison. File-backed document words use UTF-8 workspace edits, allowing exact
 matches with concrete LSP edits without comparing different target representations.
 Untitled buffers retain buffer-ID edits.
 
 Repeated entries within a single source remain available for overloads. Different
-imports, edits, details, or snippet stops remain distinct. Deferred semantic actions
+imports, edits, details, or snippet templates remain distinct. Deferred semantic actions
 also stay separate: resolve tokens can hide additional edits, and comparing labels
 or opaque payloads cannot prove equivalence. The reducer does not resolve every
 candidate just to deduplicate it. Documentation comes from the retained candidate.
@@ -278,15 +278,18 @@ rendering does not fetch URLs or execute link actions.
 
 ## Snippet sessions
 
-`ChoiceAction::Snippet` and `Outcome::Snippet` carry a `commands::snippet::SnippetEdit`:
-one workspace edit, the document/replacement indices identifying its primary
-insertion, and relative Unicode-scalar tabstops in that insertion's expanded text.
+`ChoiceAction::Snippet` and `Outcome::Snippet` carry a `commands::snippet::Template`:
+one workspace edit containing the raw template, document/replacement indices
+identifying its primary insertion, and explicit variable values. On acceptance,
+the host calls the selected `snippet_provider` service, validates its expansion,
+and constructs a `SnippetEdit` with relative Unicode-scalar placeholder ranges.
 Positive indices navigate in ascending order; exactly one index-zero stop ends the
 session. Repeated positive indices edit together through the normal multi-selection
 transaction path. Ranges must be valid, mirrors must have identical defaults, and
 the primary insertion must target the guarded source buffer.
 
-LSP advertises snippet support and expands numbered stops (`$1`, `${1}`), defaults
+LSP advertises snippet support and passes templates through without a dependency
+on a snippet implementation. The bundled `velk.snippets` plugin expands numbered stops (`$1`, `${1}`), defaults
 (`${1:value}`), nested defaults, mirrors, escaped characters, and interactive choices
 (`${1|one,two|}`, initially selecting `one`). Expansion is bounded to 64 KiB,
 256 stops, and 16 nesting levels.
@@ -304,9 +307,26 @@ parent default removes its nested stops. Sessions belong to a view; new views an
 redo do not recreate them. Placeholder selection uses the existing selection and
 multi-caret renderer.
 
+### Provider boundary
+
+`snippet_provider` selects a loaded `commands::snippet::Provider`; the bundled
+default is `velk.snippets`. Providers register with `Registrar::snippets` and
+expose a context-free C callback for expansion and transform evaluation. Calls
+exchange bounded JSON in caller-owned storage and must perform local CPU work only.
+The editor and LSP have no runtime dependency edge on the bundled provider.
+
+An unavailable provider or rejected template leaves the entire completion edit
+unapplied and shows a notice. Syntax validation happens on acceptance, so unsupported
+templates can still appear in a completion list. Plain-text completions work without
+a snippet provider. Active sessions retain their chosen provider lease even when
+the setting changes; retirement prevents future callbacks and ends navigation
+safely when a derived occurrence needs evaluation. Code remains pinned until all
+leases are dropped. The model validates and applies derived edits as one transaction;
+regex parsing and evaluation run only in the provider.
+
 ### Variables
 
-`commands::snippet::expand_with_variables` takes an explicit `Variables` map.
+`velk_plugin_snippets::expand_with_variables` takes an explicit `Variables` map.
 `$NAME` and `${NAME}` insert a supplied value; `${NAME:default}` uses its default
 when the value is absent or empty. An unknown variable without a default becomes
 an editable placeholder containing its name; repeated occurrences edit together.
@@ -314,7 +334,7 @@ Known empty values insert nothing. Variable text is literal, with normalized LF
 line endings; it is never parsed as another snippet. `expand` uses an empty map.
 Neither entry point reads environment variables, files, network, or clipboard.
 
-The LSP contributor supplies `TM_FILENAME`, `TM_FILENAME_BASE`, `TM_DIRECTORY`,
+The LSP contributor supplies referenced names from `TM_FILENAME`, `TM_FILENAME_BASE`, `TM_DIRECTORY`,
 `TM_FILEPATH`, `TM_LINE_INDEX` (zero-based), `TM_LINE_NUMBER` (one-based),
 `TM_CURRENT_LINE`, and `TM_CURRENT_WORD` from its revisioned document snapshot.
 Line or word values larger than 64 KiB resolve empty rather than copying an

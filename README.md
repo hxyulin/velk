@@ -162,6 +162,7 @@ The bundled pack contains:
 - `velk.vim`: opt-in Normal, Insert, and Visual modes (including blocks) with [basic Vim motions](plugins/vim/README.md).
 - `velk.completion`: [completion](docs/completion.md) from optional contributors, with automatic triggers and Ctrl+Space.
 - `velk.completion.compact`: an optional compact completion frontend, selected with `completion_frontend`.
+- `velk.snippets`: replaceable snippet expansion, variables, choices, and transforms, selected with `snippet_provider`.
 - `velk.completion.words`: document-word suggestions, including untitled buffers.
 - `velk.autosave`: opt-in saves after an idle delay.
 - `velk.quick-open`: fuzzy project file opening with Cmd/Ctrl+P.
@@ -228,7 +229,8 @@ Current limitations include:
   Escape dismisses. Selected suggestions can show formatted documentation. Automatic suggestions start after two identifier characters or
   supported provider trigger characters, and can be disabled in plugin settings.
   Snippet placeholders support Tab/Shift+Tab navigation and mirrored editing.
-  Snippets support document variables, interactive choices, and bounded Rust-regex transforms.
+  The replaceable Snippets plugin supports document variables, interactive choices,
+  and bounded Rust-regex transforms; select it with `snippet_provider`.
   Server command execution remains deferred.
   The completion frontend and local matcher are independently replaceable plugin services.
   Ctrl+Shift+Space displays LSP signature help, and ready suggestions support provider-declared punctuation commit characters.

@@ -199,7 +199,7 @@ impl WorkspaceEdit {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChoiceAction {
     Snippet {
-        snippet: snippet::SnippetEdit,
+        snippet: snippet::Template,
     },
     BufferEdit {
         id: u64,
@@ -262,7 +262,7 @@ pub enum Outcome {
         help: Option<signature::Help>,
     },
     Snippet {
-        snippet: snippet::SnippetEdit,
+        snippet: snippet::Template,
     },
     RevealDiagnostic {
         location: DiagnosticLocation,

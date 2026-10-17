@@ -488,7 +488,7 @@ fn completion_action_with_variables(
         return Err("Command-based completion is not supported".into());
     }
     let is_snippet = item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET);
-    let mut primary = match item.text_edit {
+    let primary = match item.text_edit {
         Some(lsp_types::CompletionTextEdit::Edit(edit)) => edit,
         Some(lsp_types::CompletionTextEdit::InsertAndReplace(edit)) => lsp_types::TextEdit {
             range: edit.replace,
@@ -510,13 +510,11 @@ fn completion_action_with_variables(
             }
         }
     };
-    let expansion = if is_snippet {
-        let expansion = snippet::expand_with_variables(&primary.new_text, variables)?;
-        primary.new_text = expansion.text.clone();
-        Some(expansion)
-    } else {
-        None
-    };
+    let variables = variables
+        .iter()
+        .filter(|(name, _)| primary.new_text.contains(name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
     let mut edits = vec![primary];
     edits.extend(item.additional_text_edits.unwrap_or_default());
     let edit = velk_plugin_sdk::commands::WorkspaceEdit {
@@ -527,18 +525,17 @@ fn completion_action_with_variables(
             encoding,
         )],
     };
-    Ok(match expansion {
-        Some(expansion) => {
-            let snippet = snippet::SnippetEdit {
-                edit,
-                document: 0,
-                replacement: 0,
-                stops: expansion.stops,
-            };
-            snippet.validate()?;
-            ChoiceAction::Snippet { snippet }
-        }
-        None => ChoiceAction::Edit { edit },
+    Ok(if is_snippet {
+        let snippet = snippet::Template {
+            edit,
+            document: 0,
+            replacement: 0,
+            variables,
+        };
+        snippet.validate()?;
+        ChoiceAction::Snippet { snippet }
+    } else {
+        ChoiceAction::Edit { edit }
     })
 }
 
@@ -643,7 +640,7 @@ mod documentation_tests {
 mod snippet_tests {
     use super::*;
     #[test]
-    fn resolved_snippets_keep_additional_edits_and_plain_items_survive_unsupported_snippets() {
+    fn resolved_snippet_templates_preserve_additional_edits_and_leave_syntax_to_the_provider() {
         let source = DocumentSnapshot {
             path: "/test.rs".into(),
             language: "rust".into(),
@@ -677,14 +674,14 @@ mod snippet_tests {
             panic!("missing snippet");
         };
         assert_eq!(snippet.edit.documents[0].edits.len(), 2);
-        assert_eq!(snippet.edit.documents[0].edits[0].text, "call(世界)");
-        assert_eq!(snippet.stops[0].range, 5..7);
+        assert_eq!(snippet.edit.documents[0].edits[0].text, "call(${1:世界})$0");
+        assert!(snippet.variables.is_empty());
         let outcome = completion(json!([{"label":"unsupported", "insertTextFormat":2,"insertText":"${1/a/b/x}"},{"label":"plain"}]), Encoding::Utf16, &source, position, &Value::Null).unwrap();
         let Outcome::Completions { items, .. } = outcome else {
             panic!("missing candidates");
         };
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].title, "plain");
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().any(|item| item.title == "plain"));
     }
 }
 
@@ -993,7 +990,7 @@ mod snippet_variable_tests {
         assert_eq!(variables["TM_FILENAME"], "large.rs");
     }
     #[test]
-    fn file_and_document_variables_expand_without_ambient_access() {
+    fn file_and_document_variables_come_from_the_snapshot() {
         let source = DocumentSnapshot {
             path: "/project/some_file.rs".into(),
             language: "rust".into(),
@@ -1001,10 +998,10 @@ mod snippet_variable_tests {
             text: ropey::Rope::from_str("first\nhello_world"),
         };
         let variables = snippet_variables(&source, 9);
-        let expansion = velk_plugin_sdk::commands::snippet::expand_with_variables(r"$TM_FILENAME ${TM_FILENAME_BASE/(.*)/${1:/pascalcase}/} $TM_LINE_NUMBER $TM_CURRENT_WORD ${TM_SELECTED_TEXT:fallback}", &variables).unwrap();
-        assert_eq!(
-            expansion.text,
-            "some_file.rs SomeFile 2 hello_world fallback"
-        );
+        assert_eq!(variables["TM_FILENAME"], "some_file.rs");
+        assert_eq!(variables["TM_FILENAME_BASE"], "some_file");
+        assert_eq!(variables["TM_LINE_NUMBER"], "2");
+        assert_eq!(variables["TM_CURRENT_WORD"], "hello_world");
+        assert_eq!(variables["TM_SELECTED_TEXT"], "");
     }
 }

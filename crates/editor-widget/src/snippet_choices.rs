@@ -122,9 +122,14 @@ impl Editor {
 mod tests {
     use super::*;
     fn snippet(source: &str) -> Editor {
-        let expansion = velk_commands::snippet::expand(source).unwrap();
+        let expansion = velk_plugin_snippets::expand(source).unwrap();
         let mut editor = Editor::new(&expansion.text);
-        editor.start_snippet(expansion.stops).unwrap();
+        editor
+            .start_snippet(
+                expansion.stops,
+                Some(std::sync::Arc::new(velk_plugin_snippets::Engine)),
+            )
+            .unwrap();
         editor
     }
     #[test]

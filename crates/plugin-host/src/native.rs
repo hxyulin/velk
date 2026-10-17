@@ -5,6 +5,7 @@ mod completion_frontend;
 mod editing;
 mod hooks;
 mod matching;
+mod snippets;
 mod syntax;
 mod undo;
 use code::Code;
@@ -52,6 +53,7 @@ struct Generation {
     syntax: Option<SyntaxApi>,
     matching: Option<MatchingApi>,
     completion_frontend: Option<CompletionFrontendApi>,
+    snippet_provider: Option<SnippetApi>,
     undo: Option<UndoApi>,
     language: Option<LanguageApi>,
     semantic: Option<SemanticApi>,
@@ -108,6 +110,7 @@ impl Generation {
             syntax: None,
             matching: None,
             completion_frontend: None,
+            snippet_provider: None,
             undo: None,
             language: None,
             semantic: None,
@@ -835,6 +838,7 @@ mod tests {
                 syntax: None,
                 matching: None,
                 completion_frontend: None,
+                snippet_provider: None,
                 undo: None,
                 language: None,
                 semantic: None,
@@ -1002,6 +1006,7 @@ pub(super) mod test_provider {
                 syntax: None,
                 matching: None,
                 completion_frontend: None,
+                snippet_provider: None,
                 undo: None,
                 language: None,
                 semantic: None,

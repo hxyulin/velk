@@ -1,14 +1,12 @@
 //! Bounded Rust-regex transforms; no scripting or backtracking engine.
 use regex::{Captures, Regex, RegexBuilder};
-use serde::{Deserialize, Serialize};
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Transform {
-    pub pattern: String,
-    pub format: String,
-    pub options: String,
+use velk_commands::snippet::Transform;
+pub(crate) trait TransformExt {
+    fn regex(&self) -> Result<Regex, String>;
+    fn validate(&self) -> Result<(), String>;
+    fn apply(&self, value: &str) -> Result<String, String>;
 }
-impl Transform {
+impl TransformExt for Transform {
     fn regex(&self) -> Result<Regex, String> {
         if self.pattern.len() > 4096
             || self.format.len() > 4096
@@ -27,12 +25,12 @@ impl Transform {
             .build()
             .map_err(|e| format!("unsupported snippet regex: {e}"))
     }
-    pub fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         self.regex()?;
         // Validate even branches that an actual capture might never select.
         validate_format(&self.format, 0)
     }
-    pub fn apply(&self, value: &str) -> Result<String, String> {
+    fn apply(&self, value: &str) -> Result<String, String> {
         if value.len() > 64 * 1024 {
             return Err("snippet transform input too large".into());
         }
@@ -294,8 +292,8 @@ mod tests {
             transform("(.*)", r"\w-$1", "").apply("value").unwrap(),
             r"\w-value"
         );
-        assert!(transform("(?=foo)", "$0", "").validate().is_err());
-        assert!(transform("(.*)", "${1:/unknown}", "").validate().is_err());
+        assert!(TransformExt::validate(&transform("(?=foo)", "$0", "")).is_err());
+        assert!(TransformExt::validate(&transform("(.*)", "${1:/unknown}", "")).is_err());
         assert!(
             transform(".", &"x".repeat(4096), "g")
                 .apply(&"a".repeat(100))

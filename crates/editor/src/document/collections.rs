@@ -611,7 +611,7 @@ impl Document {
             return;
         }
         match action {
-            ChoiceAction::Snippet { snippet } => self.apply_workspace_snippet(snippet, guard, cx),
+            ChoiceAction::Snippet { snippet } => self.apply_snippet_template(snippet, guard, cx),
             ChoiceAction::Edit { edit } => {
                 self.apply_guarded_outcome(Outcome::Edit { edit }, guard, cx)
             }

@@ -7,7 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-regex = "1"
 velk-search.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

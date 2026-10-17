@@ -1,6 +1,6 @@
 //! Test-only native probe, never staged among bundled application plugins.
 use velk_plugin_sdk::{
-    Plugin, Registrar,
+    Plugin, Registrar, commands,
     hooks::{Event, Request},
 };
 #[derive(Default)]
@@ -78,6 +78,7 @@ impl Plugin for Probe {
             serde_json::to_vec(&response).map_err(|e| e.to_string())
         })?;
         reg.editing::<EditingProbe>()?;
+        reg.snippets::<SnippetProbe>()?;
         reg.matching::<MatchingProbe>()?;
         reg.completion_frontend::<FrontendProbe>()?;
         reg.provide(
@@ -197,5 +198,41 @@ impl velk_plugin_sdk::commands::completion::frontend::Provider for FrontendProbe
             view.rows[0].candidate = 9999;
         }
         Ok(view)
+    }
+}
+
+#[derive(Debug, Default)]
+struct SnippetProbe;
+impl commands::snippet::Provider for SnippetProbe {
+    fn expand(
+        &self,
+        source: &str,
+        _: &commands::snippet::Variables,
+    ) -> Result<commands::snippet::Expansion, String> {
+        if source == "panic" {
+            panic!("snippet probe panic");
+        }
+        let text = format!("custom:{source}");
+        let end = text.chars().count();
+        Ok(commands::snippet::Expansion {
+            text,
+            stops: vec![commands::snippet::Tabstop {
+                index: 0,
+                range: if source == "invalid" {
+                    end + 1..end + 1
+                } else {
+                    end..end
+                },
+                choices: vec![],
+                transform: None,
+            }],
+        })
+    }
+    fn transform(&self, _: &commands::snippet::Transform, value: &str) -> Result<String, String> {
+        Ok(if value == "invalid" {
+            "\r".into()
+        } else {
+            format!("custom:{value}")
+        })
     }
 }

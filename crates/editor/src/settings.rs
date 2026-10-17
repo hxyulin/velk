@@ -22,6 +22,7 @@ pub struct Preferences {
     pub syntax_provider: String,
     pub completion_matching_provider: String,
     pub completion_frontend: String,
+    pub snippet_provider: String,
     pub undo_provider: String,
     pub indentation_provider: String,
     pub pairing_provider: String,
@@ -46,6 +47,7 @@ impl Default for Preferences {
             syntax_provider: velk_syntax::DEFAULT_PROVIDER.into(),
             completion_matching_provider: "velk.completion".into(),
             completion_frontend: "velk.completion".into(),
+            snippet_provider: velk_commands::snippet::DEFAULT_PROVIDER.into(),
             undo_provider: velk_core::history::DEFAULT_PROVIDER.into(),
             indentation_provider: "velk.indentation".into(),
             pairing_provider: "velk.autopairs".into(),
@@ -218,6 +220,7 @@ impl Preferences {
                 | "syntax_provider"
                 | "completion_matching_provider"
                 | "completion_frontend"
+                | "snippet_provider"
                 | "undo_provider"
                 | "indentation_provider"
                 | "pairing_provider"
@@ -412,6 +415,18 @@ fn completion_matching_providers(
     }
     choices
 }
+fn snippet_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    plugins
+        .iter()
+        .filter(|plugin| {
+            plugin
+                .hooks
+                .iter()
+                .any(|hook| hook == velk_commands::snippet::HOOK)
+        })
+        .map(|plugin| (plugin.id.clone(), plugin.metadata.name.clone()))
+        .collect()
+}
 fn completion_frontends(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
     let mut choices = vec![(
         "velk.completion".into(),
@@ -538,6 +553,12 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         key: "undo_provider".into(), title: "Undo provider".into(),
         description: "History engine for newly opened documents. Existing documents retain their provider and history. Bundled undo is the fallback.".into(),
         category: Category::Plugins, control: Control::Choice(undo_providers),
+    },
+    Setting {
+        plugin: None, keywords: "snippet template placeholder transform choices".into(), default: Value::Null,
+        key: "snippet_provider".into(), title: "Snippet provider".into(),
+        description: "Expands completion templates and evaluates placeholder transforms. Unavailable providers leave documents unchanged. Active sessions retain their provider.".into(),
+        category: Category::Plugins, control: Control::Choice(snippet_providers),
     },
     Setting {
         plugin: None, keywords: "completion popup menu presentation compact".into(), default: Value::Null,

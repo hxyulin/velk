@@ -649,9 +649,14 @@ mod snippet_tests {
     use super::*;
     use velk_editor_model::EditCommand;
     fn snippet(source: &str) -> Editor {
-        let expanded = velk_commands::snippet::expand(source).unwrap();
+        let expanded = velk_plugin_snippets::expand(source).unwrap();
         let mut editor = Editor::new(&expanded.text);
-        editor.start_snippet(expanded.stops).unwrap();
+        editor
+            .start_snippet(
+                expanded.stops,
+                Some(std::sync::Arc::new(velk_plugin_snippets::Engine)),
+            )
+            .unwrap();
         editor
     }
     #[test]
@@ -727,14 +732,19 @@ mod snippet_tests {
                 <velk_plugin_vim::Vim as velk_plugin_sdk::EditingBehavior>::evaluate(request)
             }
         }
-        let expansion = velk_commands::snippet::expand("${1:arg} + $1$0").unwrap();
+        let expansion = velk_plugin_snippets::expand("${1:arg} + $1$0").unwrap();
         let mut editor = Editor::new(&expansion.text);
         editor.set_editing_providers(std::collections::BTreeMap::from([(
             velk_editing::Role::Keymap,
             std::sync::Arc::new(Vim) as std::sync::Arc<dyn velk_editing::Provider>,
         )]));
         editor.committed_text("i", rxui::TextInsertSource::Keyboard);
-        editor.start_snippet(expansion.stops).unwrap();
+        editor
+            .start_snippet(
+                expansion.stops,
+                Some(std::sync::Arc::new(velk_plugin_snippets::Engine)),
+            )
+            .unwrap();
         editor.committed_text("z", rxui::TextInsertSource::Keyboard);
         assert_eq!(editor.buffer().text().to_string(), "z + z");
         assert!(editor.snippet_active());
@@ -749,9 +759,14 @@ mod snippet_keyboard_tests {
     #[test]
     fn tab_and_shift_tab_take_priority_over_completion_and_escape_ends_navigation() {
         let graphics = pollster::block_on(rxui::astrelis::GraphicsContext::headless()).unwrap();
-        let expansion = velk_commands::snippet::expand("${1:first} ${2:second}$0").unwrap();
+        let expansion = velk_plugin_snippets::expand("${1:first} ${2:second}$0").unwrap();
         let mut editor = Editor::new(&expansion.text);
-        editor.start_snippet(expansion.stops).unwrap();
+        editor
+            .start_snippet(
+                expansion.stops,
+                Some(std::sync::Arc::new(velk_plugin_snippets::Engine)),
+            )
+            .unwrap();
         editor.show_completions(
             vec![
                 velk_commands::Choice {
@@ -907,9 +922,14 @@ mod commit_character_tests {
     }
     #[test]
     fn snippet_opener_preserves_placeholder_and_plain_edits_use_autopairs() {
-        let expanded = velk_commands::snippet::expand("print(${1:value})$0").unwrap();
+        let expanded = velk_plugin_snippets::expand("print(${1:value})$0").unwrap();
         let mut editor = Editor::new(&expanded.text);
-        editor.start_snippet(expanded.stops).unwrap();
+        editor
+            .start_snippet(
+                expanded.stops,
+                Some(std::sync::Arc::new(velk_plugin_snippets::Engine)),
+            )
+            .unwrap();
         editor.finish_completion_commit('(');
         assert_eq!(editor.buffer().text().to_string(), "print(value)");
         assert_eq!(editor.selected_text(), "value");

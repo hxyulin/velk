@@ -150,3 +150,6 @@ pub use matching::*;
 pub struct CompletionFrontendApi {
     pub present: unsafe extern "C" fn(Bytes, *mut u8, usize, *mut usize) -> i32,
 }
+
+mod snippets;
+pub use snippets::*;

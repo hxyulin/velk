@@ -57,14 +57,17 @@ interpreting feature-specific protocol data. A stateless `commands::completion::
 output storage. Calls run locally and must perform bounded CPU work without I/O or
 host calls. Retired leases fall back safely while pinning native code until dropped.
 
-`commands::snippet::expand_with_variables` resolves explicit provider context;
-`Tabstop` carries optional choices and a derived-occurrence transform. The editor
-model owns choice replacement, mirror selection, and transform application on
-navigation. Expansion performs no ambient I/O and uses bounded Rust regex syntax.
-Completion actions can return a `commands::snippet::SnippetEdit`, identifying the
-primary replacement and expanded placeholder ranges alongside a workspace edit.
-The host keeps atomic edit validation; editor-model owns navigation and mirrored
-editing. A stateless `commands::completion::frontend::Provider` registers through
+`commands::snippet::Template` carries a raw template, its primary workspace-edit
+indices, and explicit variables. `Registrar::snippets` exposes a stateless
+`commands::snippet::Provider` through the `velk.snippet.v1` C service. The
+`snippet_provider` preference selects the implementation; the bundled
+`velk.snippets` owns syntax, expansion, and bounded Rust-regex transforms.
+`Tabstop` carries optional choices and a derived-occurrence transform. The host
+validates the expanded `SnippetEdit` and atomically applies its edits; editor-model
+owns navigation, mirrored selections, range tracking, and validated derived-edit
+application. Sessions pin the selected provider lease, and retired providers cannot
+be called. No ambient I/O or host calls are allowed inside the service.
+A stateless `commands::completion::frontend::Provider` registers through
 `Registrar::completion_frontend`; its C table exchanges bounded snapshots and
 declarative rows/layouts. `completion_frontend` selects this service independently
 of the matcher. The host owns accessibility, focus, keyboard input and checked

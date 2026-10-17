@@ -4041,7 +4041,6 @@ version = "0.0.0-dev"
 name = "velk-commands"
 version = "0.0.0-dev"
 dependencies = [
- "regex",
  "serde",
  "serde_json",
  "velk-search",
@@ -4164,6 +4163,7 @@ dependencies = [
  "velk-plugin-completion",
  "velk-plugin-indentation",
  "velk-plugin-sdk",
+ "velk-plugin-snippets",
  "velk-plugin-tree-sitter",
  "velk-plugin-vim",
  "velk-syntax",
@@ -4236,6 +4236,7 @@ dependencies = [
  "velk-plugin-rust-analyzer",
  "velk-plugin-sdk",
  "velk-plugin-search",
+ "velk-plugin-snippets",
  "velk-plugin-terminal",
  "velk-plugin-tree-sitter",
  "velk-plugin-undo",
@@ -4387,6 +4388,15 @@ dependencies = [
  "regex",
  "velk-plugin-sdk",
  "velk-search",
+]
+
+[[package]]
+name = "velk-plugin-snippets"
+version = "0.0.0-dev"
+dependencies = [
+ "regex",
+ "velk-commands",
+ "velk-plugin-sdk",
 ]
 
 [[package]]
