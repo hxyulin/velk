@@ -6,9 +6,10 @@ use nucleo_matcher::{
 };
 use std::path::PathBuf;
 use velk_plugin_sdk::{
-    commands::{Choice, ChoiceAction, Encoding, Location, PickerReply, Position},
+    commands::{Encoding, Location, Position},
     host::{FileKind, MAX_DIRECTORY_ENTRIES, Request, Response},
 };
+use velk_project_contracts::{Match, Reply as QueryReply};
 
 pub(super) struct Index {
     pub root: PathBuf,
@@ -128,7 +129,7 @@ impl Index {
         &mut self,
         query: &str,
         cancelled: impl Fn() -> bool,
-    ) -> Result<PickerReply, String> {
+    ) -> Result<QueryReply, String> {
         let pattern = Pattern::new(
             query,
             CaseMatching::Smart,
@@ -150,25 +151,23 @@ impl Index {
             ranked.truncate(1000);
         }
         ranked.sort_unstable();
-        let items = ranked
+        let matches = ranked
             .into_iter()
-            .map(|(_, index)| Choice {
-                title: caption(&self.paths[index].to_string_lossy()),
-                detail: None,
-                action: ChoiceAction::Location {
-                    location: Location {
-                        path: self.root.join(&self.paths[index]),
-                        position: Position {
-                            line: 0,
-                            column: 0,
-                            encoding: Encoding::Utf32,
-                        },
+            .map(|(_, index)| Match {
+                relative: caption(&self.paths[index].to_string_lossy()),
+                preview: None,
+                location: Location {
+                    path: self.root.join(&self.paths[index]),
+                    position: Position {
+                        line: 0,
+                        column: 0,
+                        encoding: Encoding::Utf32,
                     },
                 },
             })
             .collect();
-        Ok(PickerReply::Ready {
-            items,
+        Ok(QueryReply::Ready {
+            matches,
             notice: format!(
                 "{total} matches · {} indexed files · {} skipped paths",
                 self.paths.len(),
@@ -214,8 +213,8 @@ mod tests {
             }
         }
     }
-    fn ready(reply: PickerReply) -> Vec<Choice> {
-        let PickerReply::Ready { items, .. } = reply else {
+    fn ready(reply: QueryReply) -> Vec<Match> {
+        let QueryReply::Ready { matches: items, .. } = reply else {
             panic!("expected results")
         };
         items
@@ -235,7 +234,7 @@ mod tests {
         assert_eq!(ready(index.filter("", || false).unwrap()).len(), 1000);
         let items = ready(index.filter("file-24999", || false).unwrap());
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].title, "file-24999.rs");
+        assert_eq!(items[0].relative, "file-24999.rs");
         assert!(ready(index.filter("missing", || false).unwrap()).is_empty());
         assert_eq!(project.reads.get(), reads);
         assert!(index.filter("file", || true).is_err());
@@ -255,11 +254,11 @@ mod tests {
         };
         let mut index = Index::build(&project, || false).unwrap();
         assert_eq!(
-            ready(index.filter("main", || false).unwrap())[0].title,
+            ready(index.filter("main", || false).unwrap())[0].relative,
             "main.rs"
         );
         assert_eq!(
-            ready(index.filter("世rs", || false).unwrap())[0].title,
+            ready(index.filter("世rs", || false).unwrap())[0].relative,
             "src/世界.rs"
         );
         project.paths.push("z-new.rs".into());

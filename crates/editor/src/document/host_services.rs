@@ -289,6 +289,9 @@ impl Document {
     ) -> Result<Response, String> {
         request.validate()?;
         match request {
+            Request::CallPlugin { .. } => {
+                return Err("plugin calls are handled by the native runtime".into());
+            }
             Request::Workspace => {
                 return Ok(Response::Workspace {
                     workspace: host::Workspace {

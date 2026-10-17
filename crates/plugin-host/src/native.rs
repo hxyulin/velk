@@ -36,6 +36,7 @@ pub struct PluginInfo {
     pub resident_code: bool,
     /// Names of the hooks this generation registered, in registration order.
     pub hooks: Vec<String>,
+    pub dependencies: Vec<String>,
 }
 struct Generation {
     info: PluginInfo,
@@ -90,6 +91,7 @@ impl Generation {
                 settings_error: None,
                 resident_code: code.resident,
                 hooks: vec![],
+                dependencies: spec.dependencies.clone(),
             },
             api,
             instance,
@@ -329,6 +331,7 @@ pub struct Manager {
     plugins: BTreeMap<String, Generation>,
     next_generation: u64,
     blocked: BTreeSet<String>,
+    excluded: BTreeSet<String>,
     sessions: BTreeMap<u64, semantic::DocumentSession>,
     resident_code: BTreeMap<(String, bool), Arc<Code>>,
     images: BTreeMap<(String, bool), Weak<Code>>,
@@ -343,6 +346,7 @@ impl Manager {
             plugins: BTreeMap::new(),
             next_generation: 1,
             blocked: BTreeSet::new(),
+            excluded: BTreeSet::new(),
             sessions: BTreeMap::new(),
             resident_code: BTreeMap::new(),
             images: BTreeMap::new(),
@@ -357,6 +361,34 @@ impl Manager {
             .values()
             .filter(|p| !p.destroyed)
             .map(|p| &p.info)
+    }
+    pub(crate) fn call_dependency(
+        &mut self,
+        caller: &str,
+        generation: u64,
+        provider: &str,
+        hook: &str,
+        input: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let caller = self
+            .plugins
+            .get(caller)
+            .filter(|p| p.info.generation == generation && !p.destroyed)
+            .ok_or("calling plugin retired")?;
+        if !caller.info.dependencies.iter().any(|id| id == provider) {
+            return Err("plugin call requires a declared direct dependency".into());
+        }
+        let consumer_id = caller.info.id.clone();
+        let handle = self.bind_hook(provider, hook)?;
+        let input = serde_json::to_vec(&velk_plugin_contracts::backend::Call {
+            consumer: velk_plugin_contracts::backend::Consumer {
+                plugin: consumer_id,
+                generation,
+            },
+            input: input.to_vec(),
+        })
+        .map_err(|e| e.to_string())?;
+        self.call_hook(&handle, &input)
     }
     pub fn describe(&mut self, id: &str) -> Result<String, String> {
         self.plugins
@@ -404,11 +436,30 @@ impl Manager {
         if !self.directory.join(crate::MANIFEST).exists() {
             return Ok(vec![]);
         }
-        let mut manifest = read_manifest(&self.directory)?;
-        manifest.plugins.retain(|spec| !excluded.contains(&spec.id));
-        unsafe { self.load_specs(manifest.plugins) }
+        self.excluded = excluded.iter().cloned().collect();
+        let manifest = read_manifest(&self.directory)?;
+        let roots = manifest
+            .plugins
+            .iter()
+            .filter(|p| {
+                p.install_reason != crate::InstallReason::Dependency && !excluded.contains(&p.id)
+            })
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>();
+        let selected = manifest.dependency_closure(&roots);
+        let specs = manifest
+            .plugins
+            .into_iter()
+            .filter(|p| selected.contains(&p.id) && !excluded.contains(&p.id))
+            .collect();
+        unsafe { self.load_specs(specs) }
     }
     /// IDs listed in the current manifest, loaded or not. Unreadable is empty.
+    pub fn inventory(&self) -> Vec<PluginSpec> {
+        read_manifest(&self.directory)
+            .map(|m| m.plugins)
+            .unwrap_or_default()
+    }
     pub fn available(&self) -> Vec<String> {
         if !self.directory.join(crate::MANIFEST).exists() {
             return vec![];
@@ -432,10 +483,14 @@ impl Manager {
                 message: "requested plugin is missing from plugins.json".into(),
             })
             .collect();
+        for id in ids {
+            self.excluded.remove(id);
+        }
+        let selected = manifest.dependency_closure(ids);
         let specs = manifest
             .plugins
             .into_iter()
-            .filter(|spec| ids.contains(&spec.id))
+            .filter(|spec| selected.contains(&spec.id) && !self.excluded.contains(&spec.id))
             .collect();
         events.extend(unsafe { self.load_specs(specs)? });
         Ok(events)
@@ -443,6 +498,13 @@ impl Manager {
     unsafe fn load_specs(&mut self, specs: Vec<PluginSpec>) -> Result<Vec<Event>, String> {
         let mut events = Vec::new();
         let mut verified = BTreeMap::new();
+        // Excluded or failed dependencies stay absent; consumers are rejected.
+        let order = crate::Manifest {
+            plugins: self.inventory(),
+        }
+        .dependency_order()?;
+        let mut specs = specs;
+        specs.sort_by_key(|spec| order.iter().position(|id| id == &spec.id));
         for spec in specs {
             let id = spec.id.clone();
             if self.blocked.contains(&id) {
@@ -453,6 +515,17 @@ impl Manager {
                 continue;
             }
             if self.plugins.contains_key(&id) {
+                continue;
+            }
+            if let Some(dependency) = spec
+                .dependencies
+                .iter()
+                .find(|id| !self.plugins.contains_key(*id))
+            {
+                events.push(Event::Rejected {
+                    id,
+                    message: format!("required dependency is unavailable: {dependency}"),
+                });
                 continue;
             }
             let generation = self.next_generation;
@@ -510,7 +583,7 @@ impl Manager {
     /// As with `load`, all selected native libraries must obey the v1 contract.
     #[tracing::instrument(level = "debug", skip_all, fields(plugin = id))]
     pub unsafe fn restart(&mut self, id: Option<&str>) -> Result<Vec<Event>, String> {
-        let ids: Vec<_> = self
+        let mut ids: Vec<_> = self
             .plugins
             .keys()
             .filter(|key| id.is_none_or(|id| id == key.as_str()))
@@ -522,6 +595,19 @@ impl Manager {
         if ids.is_empty() {
             return Ok(vec![]);
         }
+        loop {
+            let before = ids.len();
+            for plugin in self.plugins.values() {
+                if !ids.contains(&plugin.info.id)
+                    && plugin.info.dependencies.iter().any(|id| ids.contains(id))
+                {
+                    ids.push(plugin.info.id.clone());
+                }
+            }
+            if ids.len() == before {
+                break;
+            }
+        }
         let manifest = read_manifest(&self.directory)?;
         let specs: Vec<_> = manifest
             .plugins
@@ -532,7 +618,7 @@ impl Manager {
             return Err("an active plugin is missing from plugins.json; restart cancelled".into());
         }
         let states = self.snapshot_plugins(&ids)?;
-        let mut events: Vec<_> = ids.iter().filter_map(|id| self.unload(id)).collect();
+        let mut events = self.unload_ids(&ids.iter().cloned().collect());
         events.extend(unsafe { self.load_specs(specs)? });
         events.extend(self.restore_plugins(states));
         Ok(events)
@@ -571,7 +657,7 @@ impl Manager {
                 .bind_hook(&id, LIFECYCLE_RESTORE_HOOK)
                 .and_then(|handle| self.call_hook(&handle, &state));
             if let Err(message) = result {
-                events.extend(self.unload(&id));
+                events.extend(self.unload_with_dependents(&id));
                 events.push(Event::Rejected {
                     id,
                     message: format!("state restore failed: {message}"),
@@ -581,8 +667,79 @@ impl Manager {
         events
     }
     #[tracing::instrument(level = "debug", skip_all, fields(plugin = id))]
+    pub fn unload_with_dependents(&mut self, id: &str) -> Vec<Event> {
+        self.excluded.insert(id.to_owned());
+        let mut selected = BTreeSet::from([id.to_owned()]);
+        loop {
+            let before = selected.len();
+            for plugin in self.plugins.values() {
+                if plugin
+                    .info
+                    .dependencies
+                    .iter()
+                    .any(|id| selected.contains(id))
+                {
+                    selected.insert(plugin.info.id.clone());
+                }
+            }
+            if selected.len() == before {
+                break;
+            }
+        }
+        self.unload_ids(&selected)
+    }
+    fn unload_ids(&mut self, ids: &BTreeSet<String>) -> Vec<Event> {
+        // Deactivate every endpoint first so workers waiting for dispatch can join.
+        for id in ids {
+            if let Some(plugin) = self.plugins.get(id) {
+                plugin.deactivate();
+            }
+        }
+        let mut order = crate::Manifest {
+            plugins: self.inventory(),
+        }
+        .dependency_order()
+        .unwrap_or_default();
+        for id in ids {
+            if !order.contains(id) {
+                order.push(id.clone());
+            }
+        }
+        order
+            .into_iter()
+            .rev()
+            .filter(|id| ids.contains(id))
+            .filter_map(|id| self.unload_one(&id))
+            .collect()
+    }
     pub fn unload(&mut self, id: &str) -> Option<Event> {
-        self.plugins.get(id)?.deactivate();
+        if let Some(consumer) = self.plugins.values().find(|p| {
+            p.info
+                .dependencies
+                .iter()
+                .any(|dependency| dependency == id)
+                && *p.services_active.read().unwrap()
+        }) {
+            return Some(Event::Rejected {
+                id: id.into(),
+                message: format!(
+                    "{} still depends on this plugin; unload dependents first",
+                    consumer.info.id
+                ),
+            });
+        }
+        self.unload_one(id)
+    }
+    fn unload_one(&mut self, id: &str) -> Option<Event> {
+        let plugin = self.plugins.get(id)?;
+        let consumer = velk_plugin_contracts::backend::Consumer {
+            plugin: id.into(),
+            generation: plugin.info.generation,
+        };
+        plugin.deactivate();
+        if let Ok(bytes) = serde_json::to_vec(&consumer) {
+            let _ = self.emit_hook(velk_plugin_contracts::backend::RELEASE_HOOK, &bytes);
+        }
         let sessions_retired = self.retire_semantics(id);
         let mut plugin = self.plugins.remove(id)?;
         if sessions_retired && plugin.retire() {
@@ -596,8 +753,8 @@ impl Manager {
         }
     }
     pub fn unload_all(&mut self) -> Vec<Event> {
-        let ids: Vec<_> = self.plugins.keys().cloned().collect();
-        ids.into_iter().filter_map(|id| self.unload(&id)).collect()
+        let ids = self.plugins.keys().cloned().collect();
+        self.unload_ids(&ids)
     }
 }
 
@@ -629,6 +786,7 @@ mod tests {
                     settings_error: None,
                     resident_code: false,
                     hooks: vec![],
+                    dependencies: Vec::new(),
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,
@@ -665,6 +823,8 @@ mod tests {
         assert!(manager.unload("test.failed").is_none());
         let manifest = crate::Manifest {
             plugins: vec![PluginSpec {
+                dependencies: Vec::new(),
+                install_reason: Default::default(),
                 id: "test.failed".into(),
                 library: "absent-library".into(),
                 digest: "0".repeat(64),
@@ -689,6 +849,8 @@ mod tests {
         let mut manager = Manager::new(directory.path().into());
         assert!(manager.available().is_empty());
         let spec = |id: &str| PluginSpec {
+            dependencies: Vec::new(),
+            install_reason: Default::default(),
             id: id.into(),
             library: format!("{id}.dylib").into(),
             digest: "0".repeat(64),
@@ -789,6 +951,7 @@ pub(super) mod test_provider {
                     settings_error: None,
                     resident_code: false,
                     hooks: vec![],
+                    dependencies: Vec::new(),
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,

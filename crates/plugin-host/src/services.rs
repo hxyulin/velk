@@ -33,6 +33,8 @@ pub(crate) struct Bridge {
     pub sender: async_channel::Sender<HostRequest>,
     pub receiver: async_channel::Receiver<HostRequest>,
     pub closed: Arc<AtomicBool>,
+    pub plugin_sender: std::sync::Mutex<Option<crate::Sender>>,
+    pub plugin_thread: std::sync::Mutex<Option<std::thread::ThreadId>>,
     pub workspace: std::sync::Mutex<Option<velk_plugin_contracts::host::Workspace>>,
 }
 impl Bridge {
@@ -43,6 +45,8 @@ impl Bridge {
             receiver,
             closed: Arc::new(AtomicBool::new(false)),
             workspace: Default::default(),
+            plugin_sender: Default::default(),
+            plugin_thread: Default::default(),
             diagnostics: Default::default(),
         })
     }

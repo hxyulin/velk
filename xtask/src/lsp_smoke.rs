@@ -13,7 +13,7 @@ pub(super) fn run_pack(root: &Path, output: &Path) -> Result<(), String> {
 fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String> {
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let directory = temp.path().join("plugins");
-    let (markdown, lsp, rust) = if pack {
+    let (markdown, mut lsp, mut rust) = if pack {
         let specs = stage_builtins(output, &directory)?;
         let find = |id: &str| {
             specs
@@ -39,6 +39,10 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
             )?,
         )
     };
+    // These fixtures exercise the semantic broker's missing-transport path
+    // independently of manifest dependency validation and load closure.
+    rust.dependencies.clear();
+    lsp.install_reason = velk_plugin_host::InstallReason::Explicit;
     let source = temp.path().join("file 世界.rs");
     std::fs::write(&source, "fn café() {}\n").map_err(|e| e.to_string())?;
     std::fs::write(temp.path().join("unopened.rs"), "fn broken() {}\n")

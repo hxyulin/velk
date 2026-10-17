@@ -23,6 +23,16 @@ there is no search engine fallback linked into the app. Plugin lifecycle changes
 refresh an open search. Settings are read at startup as described in
 [editor-shell.md](editor-shell.md).
 
+## Alternative frontends
+
+The built-in find bar is a host frontend over `velk-search`. Plugin frontends can
+use the same engine by declaring a `velk.search.literal` dependency and
+`plugin.call`, then calling `velk.search.backend` through `Host::call_plugin`.
+The upload, polling, result, and cancellation types remain `velk_search::Request`
+and `Reply`; backend state is isolated per consuming plugin generation. The
+host find bar's existing hook is a separate session and is unaffected. See
+[feature backends](feature-backends.md).
+
 ## Scheduling and lifetime
 
 Only a cheap Rope snapshot clone is taken on the UI thread. The host's background

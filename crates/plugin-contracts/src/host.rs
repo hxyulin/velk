@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub const PLUGIN_CALL: &str = "plugin.call";
 pub const WORKSPACE_READ: &str = "workspace.read";
 pub const PROJECT_READ: &str = "filesystem.project.read";
 pub const DIAGNOSTICS_PUBLISH: &str = "editor.diagnostics.publish";
@@ -50,6 +51,12 @@ pub enum FileKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    /// Call a declared dependency's byte-request hook from a background worker.
+    CallPlugin {
+        provider: String,
+        hook: String,
+        input: Vec<u8>,
+    },
     Workspace,
     /// Relative paths resolve against the selected project root; no implicit cwd fallback.
     ReadFile {
@@ -106,6 +113,7 @@ pub enum Request {
 impl Request {
     pub fn capability(&self) -> &'static str {
         match self {
+            Self::CallPlugin { .. } => PLUGIN_CALL,
             Self::Workspace => WORKSPACE_READ,
             Self::Diagnostics => DIAGNOSTICS_READ,
             Self::PublishDiagnostics { .. } | Self::ClearDiagnostics { .. } => DIAGNOSTICS_PUBLISH,
@@ -117,6 +125,18 @@ impl Request {
     }
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::CallPlugin {
+                provider,
+                hook,
+                input,
+            } => {
+                if crate::parse_plugin_id(provider).is_none()
+                    || crate::parse_plugin_id(hook).is_none()
+                    || input.len() > 256 * 1024
+                {
+                    return Err("invalid or oversized plugin call".into());
+                }
+            }
             Self::PublishDiagnostics { publication, .. } => {
                 let length = publication.text.chars().count();
                 if publication.collection.is_empty()
@@ -151,6 +171,9 @@ impl Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
+    Plugin {
+        output: Vec<u8>,
+    },
     Diagnostics {
         documents: Vec<DiagnosticDocument>,
         truncated: bool,

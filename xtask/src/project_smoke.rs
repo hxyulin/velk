@@ -333,6 +333,7 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
         }
         Ok::<_, String>(())
     })?;
+    file_frontend_smoke(&client, project.path())?;
     client.publish_buffer_events(vec![velk_plugin_host::buffers::Event::Changed {
         buffer: buffer.clone(),
     }])?;
@@ -348,4 +349,117 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
         "Project feature smoke passed: packed native Quick Open session caching and refresh, ignored paths, unsaved workspace search, cancellation, buffer events, opt-in autosave deadline and revision-bound host saves, unload."
     );
     Ok(())
+}
+
+fn file_frontend_smoke(client: &velk_plugin_host::Client, root: &Path) -> Result<(), String> {
+    pollster::block_on(async {
+        let panel = client
+            .bind_hook("velk.files".into(), velk_panels::HOOK.into())?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        let describe = velk_panels::encode(&velk_panels::Request::Describe {
+            context: velk_panels::Context {
+                root: Some(velk_panels::NativePath::new(root)),
+                ..Default::default()
+            },
+        })?;
+        let mut reply: velk_panels::Reply =
+            velk_panels::decode(&client.call_hook(panel.clone(), describe.clone()).await?)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let snapshot = loop {
+            match reply {
+                velk_panels::Reply::Ready { snapshot } => break snapshot,
+                velk_panels::Reply::Pending { id } => {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(std::time::Duration::from_millis(8));
+                    reply = velk_panels::decode(
+                        &client
+                            .call_hook(
+                                panel.clone(),
+                                velk_panels::encode(&velk_panels::Request::Poll { id })?,
+                            )
+                            .await?,
+                    )?;
+                }
+                _ => panic!("unexpected frontend reply"),
+            }
+        };
+        snapshot.validate()?;
+        let velk_panels::Content::Tree(rows) = &snapshot.panels[0].content else {
+            panic!()
+        };
+        assert!(rows.iter().any(|row| row.label == "src"));
+        std::fs::write(root.join("watched-frontend.txt"), "created").map_err(|e| e.to_string())?;
+        loop {
+            let reply: velk_panels::Reply = velk_panels::decode(
+                &client
+                    .call_hook(
+                        panel.clone(),
+                        velk_panels::encode(&velk_panels::Request::Changes)?,
+                    )
+                    .await?,
+            )?;
+            if matches!(reply, velk_panels::Reply::Invalidated) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watch invalidation did not reach frontend"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let report = client
+            .restart(Some("velk.files.backend".into()))?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        for id in ["velk.files.backend", "velk.files"] {
+            assert!(report.events.iter().any(
+                |event| matches!(event, velk_plugin_host::Event::Loaded(info) if info.id == id)
+            ));
+        }
+        assert!(
+            client.call_hook(panel, describe.clone()).await.is_err(),
+            "backend restart retires its frontend handles"
+        );
+        let panel = client
+            .bind_hook("velk.files".into(), velk_panels::HOOK.into())?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        client.call_hook(panel, describe).await?;
+        let start = std::time::Instant::now();
+        let report = client
+            .unload("velk.files.backend".into())?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "unload waited on frontend dispatch"
+        );
+        assert!(
+            !report
+                .plugins
+                .iter()
+                .any(|p| p.id == "velk.files" || p.id == "velk.files.backend")
+        );
+        let report = client
+            .load_selected(vec!["velk.files".into()])?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        assert!(
+            !report.plugins.iter().any(|p| p.id == "velk.files"),
+            "explicitly disabled backend must stay disabled"
+        );
+        let report = client
+            .load_selected(vec!["velk.files.backend".into(), "velk.files".into()])?
+            .recv()
+            .await
+            .map_err(|e| e.to_string())??;
+        assert!(report.plugins.iter().any(|p| p.id == "velk.files"));
+        Ok(())
+    })
 }

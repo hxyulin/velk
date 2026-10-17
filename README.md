@@ -144,7 +144,7 @@ separate editor stacks.
 
 The bundled pack contains:
 
-- `velk.files`: a lazy, watched workspace file tree.
+- `velk.files`: the default file-tree frontend, using `velk.files.backend` for lazy directory reads and watching.
 - `velk.problems`: a live [Problems panel and diagnostic navigation](plugins/problems/README.md) across workspace files.
 - `velk.search.literal`: Unicode-aware literal search in the active buffer.
 - `velk.terminal`: a terminal session with an owned PTY and Ghostty VT processing.
@@ -158,6 +158,7 @@ The bundled pack contains:
 - `velk.autosave`: opt-in saves after an idle delay.
 - `velk.quick-open`: fuzzy project file opening with Cmd/Ctrl+P.
 - `velk.workspace-find`: workspace text search with Cmd/Ctrl+Shift+F.
+- `velk.project.files` and `velk.project.search`: reusable file-index and workspace-search backends.
 
 Plugins declare a display name, a short description, a Markdown README, and
 required or optional capabilities with explanations. The plugin manager exposes
@@ -181,6 +182,13 @@ but native plugins retain ambient OS access and are not sandboxed. A plugin can
 crash or block the process. The
 native ABI and extension contracts are experimental: rebuild the editor and
 plugins together when those contracts change.
+
+File tree, Quick Open, and workspace search have separate default frontend and
+backend plugins, connected through [feature-owned contract libraries](docs/feature-backends.md)
+that the editor host does not depend on.
+Plugin frontends can also reuse the buffer-search engine. The plugin manager
+groups bundled defaults, explicit installs, and dependencies, and offers a
+dependency tree with links to requirements and consumers.
 
 Plugin-declared settings appear in the existing Settings page, with validation,
 defaults, and Reset controls. Changes apply after an explicit plugin restart.
@@ -228,6 +236,7 @@ Current limitations include:
 - [Buffers](docs/buffers.md) and [edit transactions](docs/edit-transactions.md)
 - [Editor shell](docs/editor-shell.md), [panels](docs/panels.md), and
   [window reloading](docs/reloading.md)
+- [Feature backends and dependency graphs](docs/feature-backends.md)
 - [Plugin API and shared contracts](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
   [plugin settings](docs/plugin-settings.md)
 - [Keybindings and command configuration](docs/keybindings.md)

@@ -3,8 +3,13 @@
 `velk.files` ships in the built-in plugin pack. Run
 `cargo xtask run --release -- <file>` and open Panels with Command+B / Control+B.
 Click a folder to expand or collapse it, and click a file to open or select its
-buffer. Existing unsaved buffers are preserved. Plugins can unload or restart
-Files independently.
+buffer. Existing unsaved buffers are preserved. The `velk.files` frontend depends on `velk.files.backend`, which owns directory
+caches and watches. Other frontends can reuse that backend through the shared
+[file-tree protocol](feature-backends.md), without linking or copying its implementation.
+The hidden-file setting now belongs to **File tree backend**.
+
+Plugins can unload or restart Files independently; restarting the backend also
+restarts its active frontends.
 
 The initial file determines the default root: prefer its nearest Git ancestor
 (`.git` directory or worktree file), otherwise its nearest Cargo project,
@@ -26,7 +31,8 @@ Creation, removal and rename events invalidate the tree automatically. Ordinary
 content and metadata writes are ignored because this panel only displays names
 and structure. Events coalesce into one invalidation bit: a 100 ms quiet period,
 with a 500 ms maximum debounce under a sustained stream. The host checks that bit
-every 200 ms on its async executor; idle checks perform no directory I/O and no
+every 200 ms on its async executor; the frontend also checks the backend on its
+owned worker every 200 ms; idle checks perform no directory I/O and no
 UI updates. Native event delivery can add backend-specific latency.
 
 An update reloads the root and expanded branches. Descendants below a collapsed

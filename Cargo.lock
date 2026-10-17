@@ -4142,6 +4142,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "velk-files-contracts"
+version = "0.0.0-dev"
+dependencies = [
+ "serde",
+ "velk-commands",
+]
+
+[[package]]
 name = "velk-markup"
 version = "0.0.0-dev"
 
@@ -4218,7 +4226,9 @@ version = "0.0.0-dev"
 dependencies = [
  "blake3",
  "notify",
+ "serde_json",
  "tempfile",
+ "velk-files-contracts",
  "velk-panels",
  "velk-plugin-sdk",
 ]
@@ -4294,6 +4304,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "velk-plugin-sdk",
+ "velk-project-contracts",
  "velk-search",
 ]
 
@@ -4366,6 +4377,15 @@ dependencies = [
  "velk-core",
  "velk-editor-model",
  "velk-plugin-sdk",
+]
+
+[[package]]
+name = "velk-project-contracts"
+version = "0.0.0-dev"
+dependencies = [
+ "serde",
+ "velk-commands",
+ "velk-search",
 ]
 
 [[package]]
@@ -5267,6 +5287,7 @@ dependencies = [
  "velk-diagnostics",
  "velk-editing",
  "velk-editor-model",
+ "velk-files-contracts",
  "velk-markup",
  "velk-panels",
  "velk-plugin-contracts",

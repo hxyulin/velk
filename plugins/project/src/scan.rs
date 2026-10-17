@@ -2,9 +2,10 @@ use super::Mode;
 use std::{collections::BTreeMap, path::PathBuf};
 use velk_plugin_sdk::{
     Host,
-    commands::{Choice, ChoiceAction, Encoding, Location, PickerReply, Position},
+    commands::{Encoding, Location, Position},
     host::{Request, Response},
 };
+use velk_project_contracts::{Match, Reply as QueryReply};
 const MAX_RESULTS: usize = 1000;
 const MAX_SEARCH_BYTES: usize = 32 * 1024 * 1024;
 pub(super) trait Files {
@@ -20,7 +21,7 @@ pub(super) fn run(
     mode: Mode,
     query: &velk_search::Query,
     cancelled: impl Fn() -> bool,
-) -> Result<PickerReply, String> {
+) -> Result<QueryReply, String> {
     search(host, mode, query, &cancelled)
 }
 pub(super) fn bytes(host: &impl Files, path: PathBuf) -> Result<Vec<u8>, String> {
@@ -34,10 +35,10 @@ fn search(
     mode: Mode,
     query: &velk_search::Query,
     cancelled: &impl Fn() -> bool,
-) -> Result<PickerReply, String> {
+) -> Result<QueryReply, String> {
     if matches!(mode, Mode::Content) && query.text.is_empty() {
-        return Ok(PickerReply::Ready {
-            items: vec![],
+        return Ok(QueryReply::Ready {
+            matches: vec![],
             notice: "Enter text to search".into(),
         });
     }
@@ -103,22 +104,15 @@ fn search(
             continue;
         };
         for (line, column, preview) in matches(text, query, MAX_RESULTS - items.len()) {
-            items.push(Choice {
-                title: format!(
-                    "{}:{}:{}",
-                    caption(&relative.to_string_lossy()),
-                    line + 1,
-                    column + 1
-                ),
-                detail: Some(preview),
-                action: ChoiceAction::Location {
-                    location: Location {
-                        path: path.clone(),
-                        position: Position {
-                            line: line as u32,
-                            column: column as u32,
-                            encoding: Encoding::Utf32,
-                        },
+            items.push(Match {
+                relative: caption(&relative.to_string_lossy()),
+                preview: Some(preview),
+                location: Location {
+                    path: path.clone(),
+                    position: Position {
+                        line: line as u32,
+                        column: column as u32,
+                        encoding: Encoding::Utf32,
                     },
                 },
             });
@@ -128,19 +122,20 @@ fn search(
             break;
         }
     }
-    {
-        items.sort_by(|a, b| match (&a.action, &b.action) {
-            (ChoiceAction::Location { location: a }, ChoiceAction::Location { location: b }) => (
-                &a.path,
-                a.position.line,
-                a.position.column,
-            )
-                .cmp(&(&b.path, b.position.line, b.position.column)),
-            _ => a.title.cmp(&b.title),
-        });
-    }
-    Ok(PickerReply::Ready {
-        items,
+    items.sort_by(|a, b| {
+        (
+            &a.location.path,
+            a.location.position.line,
+            a.location.position.column,
+        )
+            .cmp(&(
+                &b.location.path,
+                b.location.position.line,
+                b.location.position.column,
+            ))
+    });
+    Ok(QueryReply::Ready {
+        matches: items,
         notice: format!(
             "{} entries checked; {skipped} unreadable or oversized paths skipped{}",
             index.paths.len(),
@@ -333,7 +328,7 @@ mod tests {
             root: root.path().into(),
             overlay: Some("first\n世界 needle".into()),
         };
-        let PickerReply::Ready { items, .. } = search(
+        let QueryReply::Ready { matches: items, .. } = search(
             &disk,
             Mode::Files,
             &velk_search::Query {
@@ -346,8 +341,8 @@ mod tests {
             panic!()
         };
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].title, "src/main.rs");
-        let PickerReply::Ready { items, .. } = search(
+        assert_eq!(items[0].relative, "src/main.rs");
+        let QueryReply::Ready { matches: items, .. } = search(
             &disk,
             Mode::Content,
             &velk_search::Query {
@@ -360,9 +355,7 @@ mod tests {
             panic!()
         };
         assert_eq!(items.len(), 1);
-        let ChoiceAction::Location { location } = &items[0].action else {
-            panic!()
-        };
+        let location = &items[0].location;
         assert_eq!(location.position.line, 1);
         assert_eq!(location.position.column, 3);
         assert!(

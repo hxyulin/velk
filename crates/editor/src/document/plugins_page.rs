@@ -14,6 +14,7 @@ impl Command for FocusFilter {}
 #[derive(Default)]
 pub(super) struct Page {
     query: String,
+    tree: bool,
     selected: Option<String>,
     filter: FocusHandle,
 }
@@ -100,6 +101,31 @@ fn markdown_body(document: &velk_markup::Document) -> Element {
     )
 }
 
+fn enabled_dependents(
+    id: String,
+    inventory: &[velk_plugin_host::PluginSpec],
+    disabled: &[String],
+) -> Vec<String> {
+    let mut selected = vec![id];
+    loop {
+        let before = selected.len();
+        for spec in inventory {
+            if !selected.contains(&spec.id)
+                && !disabled.contains(&spec.id)
+                && spec
+                    .dependencies
+                    .iter()
+                    .any(|dependency| selected.contains(dependency))
+            {
+                selected.push(spec.id.clone());
+            }
+        }
+        if selected.len() == before {
+            return selected;
+        }
+    }
+}
+
 impl Document {
     pub(super) fn set_plugin_enabled(
         &mut self,
@@ -112,10 +138,19 @@ impl Document {
         if !enabled {
             disabled.push(id.clone());
         }
+        let selected = enabled.then(|| {
+            enabled_dependents(
+                id.clone(),
+                self.plugins
+                    .as_ref()
+                    .map_or(&[], |state| state.inventory.as_slice()),
+                &self.shell.store.preferences.disabled_plugins,
+            )
+        });
         self.persist_shell(cx);
         self.plugin_operation(
-            if enabled {
-                Operation::LoadSelected(vec![id], Vec::new())
+            if let Some(selected) = selected {
+                Operation::LoadSelected(selected, Vec::new())
             } else {
                 Operation::Unload(id)
             },
@@ -157,6 +192,20 @@ impl Document {
         self.plugin_info(id)
             .filter(|p| !p.metadata.name.is_empty())
             .map_or_else(|| display_name(id), |p| p.metadata.name.clone())
+    }
+    fn plugin_install_label(&self, id: &str) -> &'static str {
+        use velk_plugin_host::InstallReason;
+        match self
+            .plugins
+            .as_ref()
+            .and_then(|state| state.inventory.iter().find(|p| p.id == id))
+            .map(|p| p.install_reason)
+        {
+            Some(InstallReason::Explicit) => "Explicitly installed",
+            Some(InstallReason::Bundled) => "Bundled default",
+            Some(InstallReason::Dependency) => "Dependency",
+            None => "Not in manifest",
+        }
     }
     fn plugin_list_row(&self, id: &str, selected: bool, cx: &mut ViewContext<'_, Self>) -> Element {
         let status = self.plugin_status(id);
@@ -210,6 +259,11 @@ impl Document {
                                 .min_width(0.)
                                 .clip()
                                 .child(label(self.plugin_name(id)).font_weight(FontWeight::MEDIUM))
+                                .child(
+                                    label(self.plugin_install_label(id))
+                                        .font_size(11.)
+                                        .color(ThemeColor::TextDisabled),
+                                )
                                 .child(
                                     label(description)
                                         .font_size(12.)
@@ -326,6 +380,56 @@ impl Document {
             .and_then(|s| s.failed.get(id))
         {
             detail = detail.child(error_box("Failed to load", message.clone()));
+        }
+        detail = detail.child(
+            label(self.plugin_install_label(id))
+                .font_size(12.)
+                .color(ThemeColor::TextMuted),
+        );
+        if let Some(state) = &self.plugins {
+            if let Some(spec) = state.inventory.iter().find(|spec| spec.id == id) {
+                detail = detail.child(
+                    label("Requires")
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .padding_y(6.),
+                );
+                if spec.dependencies.is_empty() {
+                    detail = detail.child(label("No plugin dependencies").font_size(12.));
+                }
+                for dependency in &spec.dependencies {
+                    let target = dependency.clone();
+                    detail = detail.child(
+                        button(format!("{} ({dependency})", self.plugin_name(dependency)))
+                            .variant(ButtonVariant::Quiet)
+                            .on_click(cx.listener(move |this, _, _| {
+                                this.plugin_page.selected = Some(target.clone());
+                            })),
+                    );
+                }
+            }
+            let consumers: Vec<_> = state
+                .inventory
+                .iter()
+                .filter(|spec| spec.dependencies.iter().any(|dependency| dependency == id))
+                .collect();
+            if !consumers.is_empty() {
+                detail = detail.child(
+                    label("Required by")
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .padding_y(6.),
+                );
+                for consumer in consumers {
+                    let target = consumer.id.clone();
+                    detail = detail.child(
+                        button(self.plugin_name(&consumer.id))
+                            .variant(ButtonVariant::Quiet)
+                            .on_click(cx.listener(move |this, _, _| {
+                                this.plugin_page.selected = Some(target.clone());
+                            })),
+                    );
+                }
+                detail = detail.child(label("Disabling this plugin also stops its dependents. Restarting it restarts active dependents.").font_size(12.).color(ThemeColor::TextMuted));
+            }
         }
         if let Some(info) = info {
             if !info.description.is_empty() {
@@ -467,8 +571,73 @@ impl Document {
             .min_height(0.)
             .scroll_y()
             .on_command(focus_filter.clone());
-        for id in &ids {
-            rows = rows.child(self.plugin_list_row(id, selected.as_ref() == Some(id), cx));
+        if page.tree && terms.is_empty() {
+            let manifest = velk_plugin_host::Manifest {
+                plugins: self
+                    .plugins
+                    .as_ref()
+                    .map(|s| s.inventory.clone())
+                    .unwrap_or_default(),
+            };
+            for (index, node) in manifest.dependency_tree().into_iter().enumerate() {
+                let reference = node.reference;
+                rows = rows.child(
+                    row()
+                        .key(format!("dependency-row-{index}"))
+                        .fill_width()
+                        .child(
+                            column()
+                                .width((node.depth.min(8) * 14) as f32)
+                                .flex_shrink(0.),
+                        )
+                        .child(
+                            column()
+                                .flex_grow(1.)
+                                .flex_shrink(1.)
+                                .min_width(0.)
+                                .children(reference.then(|| {
+                                    label("Shared dependency")
+                                        .font_size(11.)
+                                        .color(ThemeColor::TextDisabled)
+                                }))
+                                .child(self.plugin_list_row(
+                                    &node.id,
+                                    selected.as_ref() == Some(&node.id),
+                                    cx,
+                                )),
+                        ),
+                );
+            }
+            for id in ids
+                .iter()
+                .filter(|id| !manifest.plugins.iter().any(|spec| &spec.id == *id))
+            {
+                rows = rows.child(self.plugin_list_row(id, selected.as_ref() == Some(id), cx));
+            }
+        } else {
+            for label_text in [
+                "Explicitly installed",
+                "Bundled default",
+                "Dependency",
+                "Not in manifest",
+            ] {
+                let group: Vec<_> = ids
+                    .iter()
+                    .filter(|id| self.plugin_install_label(id) == label_text)
+                    .collect();
+                if group.is_empty() {
+                    continue;
+                }
+                rows = rows.child(
+                    label(label_text)
+                        .font_size(12.)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .padding(8.),
+                );
+                for id in group {
+                    rows = rows.child(self.plugin_list_row(id, selected.as_ref() == Some(id), cx));
+                }
+            }
         }
         let empty = match &self.plugins {
             None => Some("Plugin worker unavailable."),
@@ -499,6 +668,18 @@ impl Document {
                             this.plugin_page.query = event.value.clone();
                         })),
                 ),
+            )
+            .child(
+                button(if page.tree {
+                    "View: Dependencies"
+                } else {
+                    "View: Installed"
+                })
+                .key("plugin-dependency-view")
+                .variant(ButtonVariant::Quiet)
+                .on_click(cx.listener(|this, _, _| {
+                    this.plugin_page.tree = !this.plugin_page.tree;
+                })),
             )
             .child(rows)
             .children(self.plugins.as_ref().map(|state| {
@@ -597,6 +778,31 @@ impl Document {
 mod tests {
     use super::*;
     #[test]
+    fn reenabling_backend_restores_enabled_frontends_but_preserves_disabled_ones() {
+        let spec = |id: &str, dependencies: &[&str]| velk_plugin_host::PluginSpec {
+            id: id.into(),
+            library: "test.so".into(),
+            digest: "a".repeat(64),
+            pack: true,
+            dependencies: dependencies.iter().map(|id| (*id).into()).collect(),
+            install_reason: Default::default(),
+        };
+        let inventory = vec![
+            spec("test.backend", &[]),
+            spec("test.frontend", &["test.backend"]),
+            spec("test.other", &["test.backend"]),
+            spec("test.extension", &["test.frontend"]),
+        ];
+        assert_eq!(
+            enabled_dependents("test.backend".into(), &inventory, &["test.other".into()]),
+            ["test.backend", "test.frontend", "test.extension"]
+        );
+        assert_eq!(
+            enabled_dependents("test.backend".into(), &inventory, &["test.frontend".into()]),
+            ["test.backend", "test.other"]
+        );
+    }
+    #[test]
     fn display_names_and_contributions_come_from_ids_and_hooks() {
         assert_eq!(
             display_name("velk.language-server.rust-analyzer"),
@@ -604,6 +810,7 @@ mod tests {
         );
         assert_eq!(display_name("velk.files"), "Files");
         let info = PluginInfo {
+            dependencies: Vec::new(),
             id: "velk.files".into(),
             version: "1".into(),
             generation: 1,

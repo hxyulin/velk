@@ -385,3 +385,6 @@ pub struct PickerCancel {
     pub plugin: String,
     pub id: u64,
 }
+
+mod path;
+pub use path::NativePath;

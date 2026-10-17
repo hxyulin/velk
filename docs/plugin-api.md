@@ -248,3 +248,10 @@ bundled integrations, SDK example, and contract limits.
 The [syntax service](syntax-services.md) uses a dedicated version-1 C table for
 worker-owned document sessions. Register a factory with `Registrar::syntax`; the
 bundled `velk.tree-sitter` plugin supplies the default Rust implementation.
+
+## Reusable feature backends and dependencies
+
+See [feature backends](feature-backends.md) for Core/Backend/Frontend boundaries,
+`Host::call_plugin`, authenticated consumer sessions, manifest dependencies,
+install intent, and the plugin manager dependency tree. Internal contract
+versions remain 1; rebuild the host, SDK, and bundled plugins together.

@@ -25,8 +25,10 @@ and any checks that could not run.
   projections without renderer dependencies.
 - `crates/editor` adapts document lifecycle, saves, recovery, workspace state,
   and the shell. `crates/editor-widget` adapts Core to RXUI input and rendering.
-- Shared contracts and services live in `crates/`; feature plugins live in
-  `plugins/`. Build and staging commands live in `xtask/`.
+- Platform contracts and services live in `crates/`; feature plugins and their
+  shared contract libraries live in `plugins/`. The host must not depend on
+  feature-specific protocols or re-export them through the platform SDK.
+  Build and staging commands live in `xtask/`.
 - Common plugin definitions live in `plugin-contracts`; native tables/codecs in
   `plugin-api`. The host must not depend on SDK authoring/lifecycle code.
 - Keep one authoritative document model and a consistent service interface.

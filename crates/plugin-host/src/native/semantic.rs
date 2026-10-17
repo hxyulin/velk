@@ -350,6 +350,7 @@ mod tests {
             "test.stateful".into(),
             Generation {
                 info: PluginInfo {
+                    dependencies: Vec::new(),
                     id: "test.stateful".into(),
                     version: "1".into(),
                     generation: 1,

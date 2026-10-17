@@ -28,6 +28,50 @@ impl Endpoint {
         };
         let directory = matches!(request, Request::ReadDirectory { .. });
         match request {
+            Request::CallPlugin {
+                provider,
+                hook,
+                input,
+            } => {
+                if self.bridge.plugin_thread.lock().unwrap().as_ref()
+                    == Some(&std::thread::current().id())
+                {
+                    return Err(
+                        "plugin calls require a background worker; dispatch re-entry is forbidden"
+                            .into(),
+                    );
+                }
+                let (reply, receive) = std::sync::mpsc::sync_channel(1);
+                self.bridge
+                    .plugin_sender
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .ok_or("plugin runtime unavailable")?
+                    .try_send(crate::Request::DependencyCall {
+                        caller: self.plugin.clone(),
+                        generation: self.generation,
+                        provider,
+                        hook,
+                        input,
+                        reply,
+                    })
+                    .map_err(|_| "plugin call queue unavailable")?;
+                loop {
+                    if !self.active.load(Ordering::Acquire)
+                        || self.bridge.closed.load(Ordering::Acquire)
+                    {
+                        return Err("plugin call retired".into());
+                    }
+                    match receive.recv_timeout(std::time::Duration::from_millis(25)) {
+                        Ok(result) => return result.map(|output| Response::Plugin { output }),
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            return Err("plugin call dropped".into());
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                }
+            }
             Request::Diagnostics => {
                 self.bridge.reconcile_diagnostics();
                 self.dispatch(Request::Diagnostics)
@@ -418,4 +462,50 @@ pub(super) fn test_endpoint() -> Arc<Endpoint> {
         capabilities: BTreeSet::new(),
         active: Arc::new(AtomicBool::new(true)),
     })
+}
+
+#[cfg(test)]
+mod dependency_call_tests {
+    use super::*;
+    #[test]
+    fn dispatch_reentry_is_rejected_and_retirement_unblocks_waiting_frontends() {
+        let bridge = Bridge::new();
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        *bridge.plugin_sender.lock().unwrap() = Some(crate::Sender(send));
+        *bridge.plugin_thread.lock().unwrap() = Some(std::thread::current().id());
+        let endpoint = Arc::new(Endpoint {
+            bridge: bridge.clone(),
+            plugin: "test.frontend".into(),
+            generation: 3,
+            capabilities: [host::PLUGIN_CALL.into()].into(),
+            active: Arc::new(AtomicBool::new(true)),
+        });
+        let request = Request::CallPlugin {
+            provider: "test.backend".into(),
+            hook: "test.query".into(),
+            input: vec![],
+        };
+        assert!(
+            endpoint
+                .request(request.clone())
+                .unwrap_err()
+                .contains("re-entry")
+        );
+        assert!(receive.try_recv().is_err());
+        let worker_endpoint = endpoint.clone();
+        let worker = std::thread::spawn(move || worker_endpoint.request(request));
+        let queued = receive
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(matches!(
+            queued.request,
+            crate::Request::DependencyCall { generation: 3, .. }
+        ));
+        endpoint.active.store(false, Ordering::Release);
+        assert!(worker.join().unwrap().unwrap_err().contains("retired"));
+        assert!(
+            bridge.receiver.is_empty(),
+            "dependency calls never visit the UI"
+        );
+    }
 }

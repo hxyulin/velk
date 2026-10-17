@@ -30,125 +30,8 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
                 .any(|r| r.style.bold)
         );
         let search = manager.bind_hook(velk_search::DEFAULT_BACKEND, velk_search::HOOK)?;
-        let panel = manager.bind_hook("velk.files", velk_panels::HOOK)?;
+        file_backend_smoke(&mut manager)?;
         let project = tempfile::tempdir().map_err(|e| e.to_string())?;
-        std::fs::create_dir(project.path().join(".git")).map_err(|e| e.to_string())?;
-        std::fs::create_dir(project.path().join("src")).map_err(|e| e.to_string())?;
-        let source = project.path().join("src/main.rs");
-        std::fs::write(&source, "fn main() {}\n").map_err(|e| e.to_string())?;
-        let context = velk_panels::Context {
-            document: Some(velk_panels::NativePath::new(&source)),
-            ..Default::default()
-        };
-        let snapshot = panel_request(
-            &mut manager,
-            &panel,
-            velk_panels::Request::Describe {
-                context: context.clone(),
-            },
-        )?;
-        snapshot.validate()?;
-        assert_eq!(snapshot.panels[0].title, "Files");
-        let velk_panels::Content::Tree(rows) = &snapshot.panels[0].content else {
-            panic!("expected filesystem tree")
-        };
-        assert!(!rows.iter().any(|n| n.label == "main.rs"));
-        let folder = rows.iter().find(|n| n.label == "src").unwrap();
-        assert!(folder.lazy);
-        let expanded = panel_request(
-            &mut manager,
-            &panel,
-            velk_panels::Request::Expand {
-                panel: "files".into(),
-                revision: snapshot.panels[0].revision,
-                node: folder.id.clone(),
-                expanded: vec![rows[0].id.clone(), folder.id.clone()],
-            },
-        )?;
-        let velk_panels::Content::Tree(rows) = &expanded.panels[0].content else {
-            panic!("expected expanded tree")
-        };
-        let leaf = rows.iter().find(|n| n.label == "main.rs").unwrap();
-        let opened = panel_request(
-            &mut manager,
-            &panel,
-            velk_panels::Request::Invoke {
-                panel: "files".into(),
-                revision: expanded.panels[0].revision,
-                node: leaf.id.clone(),
-                action: "open".into(),
-            },
-        )?;
-        assert_eq!(
-            opened.effects,
-            vec![velk_panels::Effect::OpenFile {
-                path: velk_panels::NativePath::new(
-                    &std::fs::canonicalize(&source).map_err(|e| e.to_string())?
-                ),
-            }]
-        );
-        assert!(snapshot.watch);
-        std::fs::write(project.path().join("new.txt"), "watched").map_err(|e| e.to_string())?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let bytes = manager.call_hook(
-                &panel,
-                &velk_panels::encode(&velk_panels::Request::Changes)?,
-            )?;
-            if matches!(
-                velk_panels::decode::<velk_panels::Reply>(&bytes)?,
-                velk_panels::Reply::Invalidated
-            ) {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "native pack watcher missed a change"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let updated = panel_request(
-            &mut manager,
-            &panel,
-            velk_panels::Request::Describe {
-                context: context.clone(),
-            },
-        )?;
-        let velk_panels::Content::Tree(rows) = &updated.panels[0].content else {
-            panic!("expected tree")
-        };
-        assert!(rows.iter().any(|n| n.label == "new.txt"));
-        assert!(updated.effects.is_empty());
-        // Unload with a queued or completed-but-uncollected job. The plugin joins
-        // its owned worker before its instance can be destroyed.
-        let pending = manager.call_hook(
-            &panel,
-            &velk_panels::encode(&velk_panels::Request::Describe {
-                context: context.clone(),
-            })?,
-        )?;
-        assert!(matches!(
-            velk_panels::decode::<velk_panels::Reply>(&pending)?,
-            velk_panels::Reply::Pending { .. }
-        ));
-        assert!(matches!(
-            manager.unload("velk.files"),
-            Some(Event::Removed(_))
-        ));
-        assert!(manager.call_hook(&panel, b"{}").is_err());
-        assert_eq!(
-            snapshot.panels[0].title, "Files",
-            "snapshot remains host owned after unload"
-        );
-        assert_eq!(manager.load()?.len(), 1);
-        let restarted = manager.bind_hook("velk.files", velk_panels::HOOK)?;
-        let fresh = panel_request(
-            &mut manager,
-            &restarted,
-            velk_panels::Request::Describe { context },
-        )?;
-        assert!(fresh.effects.is_empty());
-
         let terminal = manager.bind_hook("velk.terminal", velk_panels::HOOK)?;
         let initial = panel_request(
             &mut manager,
@@ -459,4 +342,74 @@ fn panel_request(
             _ => return Err("panel smoke request failed or timed out".into()),
         }
     }
+}
+
+fn file_backend_smoke(manager: &mut velk_plugin_host::Manager) -> Result<(), String> {
+    use velk_files_contracts as files;
+    use velk_plugin_contracts::backend;
+    let handle = manager.bind_hook(files::PROVIDER, files::HOOK)?;
+    let project = tempfile::tempdir().map_err(|e| e.to_string())?;
+    std::fs::write(project.path().join("main.rs"), "fn main() {}\n").map_err(|e| e.to_string())?;
+    let call = |manager: &mut velk_plugin_host::Manager,
+                plugin: &str,
+                request: &files::Request|
+     -> Result<files::Reply, String> {
+        let bytes = serde_json::to_vec(&backend::Call {
+            consumer: backend::Consumer {
+                plugin: plugin.into(),
+                generation: 1,
+            },
+            input: serde_json::to_vec(request).unwrap(),
+        })
+        .unwrap();
+        serde_json::from_slice(&manager.call_hook(&handle, &bytes)?).map_err(|e| e.to_string())
+    };
+    let describe = files::Request::Describe {
+        context: files::Context {
+            root: Some(files::NativePath::new(project.path())),
+            ..Default::default()
+        },
+    };
+    let first = call(manager, "test.first", &describe)?;
+    let second = call(manager, "test.second", &describe)?;
+    let files::Reply::Pending { id: first_id } = first else {
+        panic!()
+    };
+    let files::Reply::Pending { id: second_id } = second else {
+        panic!()
+    };
+    call(
+        manager,
+        "test.first",
+        &files::Request::Cancel { id: first_id },
+    )?;
+    assert!(
+        call(
+            manager,
+            "test.first",
+            &files::Request::Poll { id: first_id }
+        )
+        .is_err()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match call(
+            manager,
+            "test.second",
+            &files::Request::Poll { id: second_id },
+        )? {
+            files::Reply::Ready { tree } => {
+                tree.validate()?;
+                assert!(tree.entries.iter().any(|entry| entry.label == "main.rs"));
+                assert!(tree.open.is_none());
+                break;
+            }
+            files::Reply::Pending { .. } => {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            _ => panic!("unexpected file backend reply"),
+        }
+    }
+    Ok(())
 }

@@ -1,6 +1,7 @@
 //! UI-independent current-buffer search contract. Owned Rust values stay local;
 //! the named request carries bounded JSON bytes across the plugin ABI.
 use serde::{Deserialize, Serialize};
+pub const BACKEND_HOOK: &str = "velk.search.backend";
 pub const HOOK: &str = "velk.search.buffer.v1";
 pub const DEFAULT_BACKEND: &str = "velk.search.literal";
 pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;

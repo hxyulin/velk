@@ -1,10 +1,9 @@
 //! Host-rendered panel contributions carried by a named byte request. No UI,
 //! callbacks, plugin-owned memory or filesystem I/O cross this boundary.
 pub mod grid;
-mod path;
-pub use path::NativePath;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+pub use velk_commands::NativePath;
 pub const HOOK: &str = "velk.ui.panels.v1";
 pub const MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_PANELS: usize = 16;

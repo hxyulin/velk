@@ -25,6 +25,23 @@ impl Drop for Host {
     }
 }
 impl Host {
+    /// Invoke an exact declared dependency. Use only on an owned background
+    /// worker; synchronous plugin-dispatch re-entry is rejected by the host.
+    pub fn call_plugin(
+        &self,
+        provider: &str,
+        hook: &str,
+        input: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
+        match self.request(Request::CallPlugin {
+            provider: provider.into(),
+            hook: hook.into(),
+            input,
+        })? {
+            Response::Plugin { output } => Ok(output),
+            _ => Err("invalid plugin call reply".into()),
+        }
+    }
     pub fn request(&self, request: Request) -> Result<Response, String> {
         request.validate()?;
         let input = serde_json::to_vec(&request).map_err(|e| e.to_string())?;

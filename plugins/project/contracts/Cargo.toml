@@ -1,0 +1,15 @@
+[package]
+name = "velk-project-contracts"
+description = "Project file-index and text-search protocols owned by the Project feature"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+velk-commands.workspace = true
+velk-search.workspace = true
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

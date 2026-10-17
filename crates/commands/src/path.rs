@@ -55,9 +55,9 @@ mod tests {
         let path = PathBuf::from(std::ffi::OsString::from_vec(
             b"/tmp/name-\xff\n.rs".to_vec(),
         ));
-        let encoded = crate::encode(&NativePath::new(&path)).unwrap();
+        let encoded = serde_json::to_vec(&NativePath::new(&path)).unwrap();
         assert_eq!(
-            crate::decode::<NativePath>(&encoded)
+            serde_json::from_slice::<NativePath>(&encoded)
                 .unwrap()
                 .to_path()
                 .unwrap(),

@@ -1,14 +1,11 @@
+use velk_project_contracts::{Reply as QueryReply, Request as QueryRequest};
 mod index;
 mod scan;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use velk_plugin_sdk::{
-    CapabilityDeclaration, Host, Plugin, Registrar,
-    commands::{self, PickerCancel, PickerMode, PickerReply, PickerRequest},
-    hooks,
-};
+use velk_plugin_sdk::{CapabilityDeclaration, Host, Plugin, Registrar, hooks};
 #[derive(Clone, Copy)]
 enum Mode {
     Files,
@@ -25,7 +22,7 @@ struct State {
     host: Option<Host>,
     job: Option<Job>,
     active: Option<u64>,
-    result: Option<(u64, Result<PickerReply, String>)>,
+    result: Option<(u64, Result<QueryReply, String>)>,
 }
 struct Worker {
     shared: Arc<(Mutex<State>, Condvar)>,
@@ -54,7 +51,7 @@ impl Worker {
         let state = shared.clone();
         let current = ticket.clone();
         let thread = std::thread::Builder::new()
-            .name("velk-project-picker".into())
+            .name("velk-project-query".into())
             .spawn(move || {
                 let mut index = None::<(u64, index::Index)>;
                 loop {
@@ -104,7 +101,7 @@ impl Worker {
             session,
         }
     }
-    fn request(&mut self, request: PickerRequest) -> Result<PickerReply, String> {
+    fn request(&mut self, request: QueryRequest) -> Result<QueryReply, String> {
         if self
             .thread
             .as_ref()
@@ -114,7 +111,7 @@ impl Worker {
         }
         let mut state = self.shared.0.lock().unwrap();
         match request {
-            PickerRequest::Begin {
+            QueryRequest::Begin {
                 id, session, query, ..
             } => {
                 if query.text.len() > 1024 {
@@ -131,11 +128,16 @@ impl Worker {
                     query,
                 });
                 self.shared.1.notify_one();
-                Ok(PickerReply::Pending)
+                Ok(QueryReply::Pending)
             }
-            PickerRequest::Poll { id } => {
+            QueryRequest::Cancel { id } => {
+                drop(state);
+                self.cancel(id);
+                Ok(QueryReply::Cancelled)
+            }
+            QueryRequest::Poll { id } => {
                 if state.active != Some(id) {
-                    return Err("picker request cancelled or superseded".into());
+                    return Err("project query cancelled or superseded".into());
                 }
                 if state
                     .result
@@ -144,7 +146,7 @@ impl Worker {
                 {
                     return state.result.take().unwrap().1;
                 }
-                Ok(PickerReply::Pending)
+                Ok(QueryReply::Pending)
             }
         }
     }
@@ -172,25 +174,36 @@ impl Drop for Worker {
         }
     }
 }
-pub struct QuickOpen(Worker);
-pub struct WorkspaceFind(Worker);
-impl Default for QuickOpen {
+
+#[derive(Default)]
+pub struct FileIndex(
+    velk_plugin_sdk::backend::Sessions<FileSession>,
+    Option<Host>,
+);
+#[derive(Default)]
+pub struct WorkspaceSearch(
+    velk_plugin_sdk::backend::Sessions<SearchSession>,
+    Option<Host>,
+);
+struct FileSession(Worker);
+struct SearchSession(Worker);
+impl Default for FileSession {
     fn default() -> Self {
         Self(Worker::new(Mode::Files))
     }
 }
-impl Default for WorkspaceFind {
+impl Default for SearchSession {
     fn default() -> Self {
         Self(Worker::new(Mode::Content))
     }
 }
-macro_rules! plugin {
-    ($ty:ty,$id:literal,$name:literal,$hook:literal,$key:literal,$shift:literal,$mode:expr,$readme:literal) => {
+macro_rules! backend {
+    ($ty:ty, $id:literal, $name:literal) => {
         impl Plugin for $ty {
             const ID: &'static str = $id;
             const NAME: &'static str = $name;
+            const README: &'static str = concat!("# ", $name, "\n\nProvides project query data to frontend plugins without prescribing a panel or picker. Each consuming plugin generation has independent queries, cancellation, and caches.");
             const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-            const README: &'static str = $readme;
             const CAPABILITIES: &'static [CapabilityDeclaration] = &[
                 CapabilityDeclaration::required(
                     "workspace.read",
@@ -204,72 +217,40 @@ macro_rules! plugin {
                     "editor.buffer.read",
                     "Prefer unsaved buffer contents when searching.",
                 ),
-                CapabilityDeclaration::required(
-                    "editor.buffer.manage",
-                    "Open the selected project result through the host.",
-                ),
             ];
             fn describe(&mut self) -> String {
                 $name.into()
             }
             fn attach_host(&mut self, host: Host) {
-                self.0.host(host);
-            }
-            fn commands() -> Vec<commands::Declaration> {
-                vec![commands::Declaration {
-                    id: $id.into(),
-                    title: $name.into(),
-                    language: None,
-                    input: None,
-                    shortcut: Some(commands::Shortcut {
-                        key: $key.into(),
-                        primary: true,
-                        shift: $shift,
-                        ..Default::default()
-                    }),
-                    handler: commands::Handler::Picker {
-                        hook: $hook.into(),
-                        mode: $mode,
-                    },
-                }]
+                self.1 = Some(host);
             }
             fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
-                reg.provide(hooks::Request($hook), |this: &mut Self, bytes: &[u8]| {
-                    let request = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-                    serde_json::to_vec(&this.0.request(request)?).map_err(|e| e.to_string())
-                })?;
-                reg.on(
-                    hooks::Event(commands::PICKER_CANCEL_HOOK),
+                reg.provide(
+                    hooks::Request(velk_project_contracts::HOOK),
                     |this: &mut Self, bytes: &[u8]| {
-                        let cancel: PickerCancel =
-                            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-                        if cancel.plugin == Self::ID {
-                            this.0.cancel(cancel.id);
-                        }
-                        Ok(())
+                        let host = this.1.clone().ok_or("host services not attached")?;
+                        this.0.request(bytes, |session, bytes| {
+                            session.0.host(host);
+                            let request =
+                                serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+                            serde_json::to_vec(&session.0.request(request)?)
+                                .map_err(|e| e.to_string())
+                        })
                     },
+                )?;
+                reg.on(
+                    hooks::Event(velk_plugin_sdk::contracts::backend::RELEASE_HOOK),
+                    |this: &mut Self, bytes: &[u8]| this.0.release(bytes),
                 )
             }
         }
     };
 }
-plugin!(
-    QuickOpen,
-    "velk.quick-open",
-    "Quick Open",
-    "velk.quick-open.query",
-    "p",
-    false,
-    PickerMode::Files,
-    "# Quick Open\n\nFind project files with Nucleo fuzzy path matching. Cmd/Ctrl+P indexes all eligible files, then filters them in memory. Reopen to refresh the index. Respects project ignore files and skips symlinks. Select a result with Enter or click to open it."
+backend!(FileIndex, "velk.project.files", "Project file index");
+backend!(
+    WorkspaceSearch,
+    "velk.project.search",
+    "Project text search"
 );
-plugin!(
-    WorkspaceFind,
-    "velk.workspace-find",
-    "Find in Workspace",
-    "velk.workspace-find.query",
-    "f",
-    true,
-    PickerMode::Content,
-    "# Find in Workspace\n\nCmd/Ctrl+Shift+F searches project text, preferring unsaved open buffers. Case and whole-word controls update the search. Results show file, line, and matching text. Enter or click navigates to a result. Scans are cancellable and explicitly bounded."
-);
+mod frontend;
+pub use frontend::{QuickOpen, WorkspaceFind};

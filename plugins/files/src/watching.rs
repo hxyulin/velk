@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use velk_panels::{Content, Node, Snapshot};
+use velk_files_contracts::Tree as Snapshot;
 #[derive(Default)]
 pub(super) struct Signal {
     directories: BTreeSet<PathBuf>,
@@ -155,26 +155,9 @@ impl Watches {
         let signal = self.signal.lock().unwrap();
         if let Some(error) = signal.error.as_ref().or(self.setup_error.as_ref()) {
             let message = crate::model::caption(format!(
-                "[File watching unavailable: {error}; use Panels: Refresh]"
+                "[File watching unavailable: {error}; refresh the file tree]"
             ));
-            if let Some(panel) = snapshot.panels.first_mut() {
-                match &mut panel.content {
-                    Content::Grid(_) => {}
-                    Content::Tree(rows) => rows.push(Node {
-                        id: "watch-error".into(),
-                        label: message,
-                        depth: 0,
-                        branch: false,
-                        expanded: false,
-                        lazy: false,
-                        action: None,
-                    }),
-                    Content::Text(text) => {
-                        text.push('\n');
-                        text.push_str(&message);
-                    }
-                }
-            }
+            snapshot.notice = Some(message);
         }
     }
 }

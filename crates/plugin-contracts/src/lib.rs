@@ -14,3 +14,5 @@ pub use metadata::{Capability, CapabilityDeclaration, PluginMetadata};
 pub use velk_commands as commands;
 
 pub use velk_syntax as syntax;
+
+pub mod backend;

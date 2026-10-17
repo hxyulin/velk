@@ -34,7 +34,7 @@ Only user overrides are stored, under exact plugin IDs:
 ```json
 {
   "plugins": {
-    "velk.files": {
+    "velk.files.backend": {
       "show_hidden": false
     },
     "velk.terminal": {
@@ -70,7 +70,7 @@ Do not use ordinary settings as secret storage.
 
 ## Bundled integrations
 
-- **Files:** `show_hidden` defaults to `true`, preserving the existing tree
+- **File tree backend:** `show_hidden` defaults to `true`, preserving the existing tree
   behavior. Turning it off excludes dot-prefixed files and directories.
 - **Terminal:** `shell` defaults to an empty string, preserving the
   `VELK_TERMINAL_SHELL`, `SHELL`, `/bin/sh` fallback. A configured executable

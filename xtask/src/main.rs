@@ -92,6 +92,9 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
         "velk.lsp",
         "velk.language-server.rust-analyzer",
         velk_search::DEFAULT_BACKEND,
+        "velk.files.backend",
+        "velk.project.files",
+        "velk.project.search",
         "velk.files",
         "velk.terminal",
         "velk.vim",
@@ -106,6 +109,19 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
     .map(|id| PluginSpec {
         id: id.into(),
         pack: true,
+        dependencies: match id {
+            "velk.files" => vec!["velk.files.backend".into()],
+            "velk.quick-open" => vec!["velk.project.files".into()],
+            "velk.workspace-find" => vec!["velk.project.search".into()],
+            "velk.language-server.rust-analyzer" => vec!["velk.lsp".into()],
+            _ => Vec::new(),
+        },
+        install_reason: match id {
+            "velk.files.backend" | "velk.project.files" | "velk.project.search" | "velk.lsp" => {
+                velk_plugin_host::InstallReason::Dependency
+            }
+            _ => velk_plugin_host::InstallReason::Bundled,
+        },
         ..artifact.clone()
     })
     .collect())
@@ -163,6 +179,8 @@ fn stage_plugin(
         temporary.persist(&target).map_err(|e| e.to_string())?;
     }
     Ok(PluginSpec {
+        dependencies: Vec::new(),
+        install_reason: Default::default(),
         id: id.into(),
         library: relative,
         digest,
@@ -361,6 +379,8 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     publish(
         directory,
         vec![PluginSpec {
+            dependencies: Vec::new(),
+            install_reason: Default::default(),
             id: ID.into(),
             library: "invalid-library".into(),
             digest: blake3::hash(b"not a dynamic library").to_hex().to_string(),

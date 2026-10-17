@@ -141,6 +141,7 @@ mod tests {
     fn profile(id: &str) -> Generation {
         Generation {
             info: PluginInfo {
+                dependencies: Vec::new(),
                 id: id.into(),
                 version: "1".into(),
                 generation: 1,

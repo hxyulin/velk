@@ -12,24 +12,31 @@ generation, dependency resolution, and load/unload controls.
 
 Run `cargo xtask setup-terminal` once to cache the pinned terminal build inputs.
 `cargo xtask build [--release]`, `plugins`, and `run` build/stage this pack.
-The manifest has fourteen entries selecting IDs from one content-addressed artifact:
+The manifest has seventeen entries selecting IDs from one content-addressed artifact:
 
 ```json
 {
   "id": "velk.markdown",
   "library": "artifacts/<digest>/libvelk_plugin_builtin.dylib",
   "digest": "<digest>",
-  "pack": true
+  "pack": true,
+  "dependencies": [],
+  "install_reason": "bundled"
 }
 ```
 
 The other entries select `velk.tree-sitter`, `velk.problems`, `velk.lsp`, `velk.language-server.rust-analyzer`, and
-`velk.search.literal`, `velk.files`, `velk.terminal`, `velk.indentation`,
+`velk.search.literal`, `velk.files.backend`, `velk.project.files`,
+`velk.project.search`, `velk.files`, `velk.terminal`, `velk.indentation`,
 `velk.autopairs`, `velk.vim`, `velk.autosave`, `velk.quick-open`, and `velk.workspace-find` using
 the same library and digest. A manifest selects which
 members to instantiate; discovery never automatically enables unlisted members.
 Absent/false `pack` retains the standalone v1 format. Conflicting digests/formats
 for one artifact path and duplicate selected IDs are rejected.
+
+See [feature backends and dependency graphs](feature-backends.md) for required
+plugin IDs, install intent, and dependency-aware lifecycle behavior. Sharing a
+code image does not imply a dependency between its logical members.
 
 ## Implementation and exports
 

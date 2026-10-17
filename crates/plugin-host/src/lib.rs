@@ -1,6 +1,6 @@
 //! Native plugins with host-scheduled async requests and scoped semantic sessions.
 //! No Rust future crosses the ABI. Language definitions resolve exact transport
-//! dependencies; general dependency graphs remain deferred.
+//! dependencies; manifests declare a validated dependency graph.
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Component, Path, PathBuf},
@@ -8,8 +8,10 @@ use std::{
     thread,
 };
 mod disk_diagnostics;
+mod graph;
 mod native;
 mod services;
+pub use graph::{DependencyRow, InstallReason};
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
 pub use services::HostRequest;
 
@@ -44,9 +46,17 @@ pub struct PluginSpec {
     /// Select this ID from a multi-plugin image. Absent/false means standalone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pack: bool,
+    /// Exact required plugin IDs. Distribution metadata, independent of packaging.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub install_reason: InstallReason,
 }
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
+        if self.plugins.len() > 256 {
+            return Err("plugin manifest exceeds 256 entries".into());
+        }
         let mut ids = std::collections::HashSet::new();
         let mut libraries = std::collections::HashMap::new();
         for p in &self.plugins {
@@ -75,6 +85,7 @@ impl Manifest {
                 return Err(format!("invalid digest for {}", p.id));
             }
         }
+        self.dependency_order()?;
         Ok(())
     }
 }
@@ -94,6 +105,7 @@ pub struct Report {
     pub events: Vec<Event>,
     /// Manifest IDs, including plugins that are not loaded.
     pub available: Vec<String>,
+    pub inventory: Vec<PluginSpec>,
 }
 enum Operation {
     Load(Vec<String>),
@@ -137,6 +149,14 @@ enum Request {
         reply: async_channel::Sender<Result<PluginStates, String>>,
     },
     Settings(settings::PluginValues),
+    DependencyCall {
+        caller: String,
+        generation: u64,
+        provider: String,
+        hook: String,
+        input: Vec<u8>,
+        reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
+    },
     Stop,
 }
 struct Queued {
@@ -164,6 +184,7 @@ impl Sender {
             Request::Emit { .. } => "hook.emit",
             Request::Snapshot { .. } => "snapshot",
             Request::Settings(_) => "settings",
+            Request::DependencyCall { .. } => "dependency_call",
             Request::Stop => "stop",
         };
         let span = tracing::debug_span!("plugin.request", async_work = true, operation);
@@ -430,11 +451,13 @@ impl Runtime {
     fn spawn(make_manager: impl FnOnce() -> Manager + Send + 'static) -> Result<Self, String> {
         let (sender, receive) = mpsc::sync_channel::<Queued>(16);
         let host = services::Bridge::new();
+        *host.plugin_sender.lock().unwrap() = Some(Sender(sender.clone()));
         let worker_host = host.clone();
         let worker = thread::Builder::new()
             .name("velk-plugins".into())
             .spawn(move || {
                 let mut manager = make_manager();
+                *worker_host.plugin_thread.lock().unwrap() = Some(thread::current().id());
                 manager.host = Some(worker_host);
                 while let Ok(queued) = receive.recv() {
                     let _entered = queued.span.enter();
@@ -447,6 +470,11 @@ impl Runtime {
                     let request = queued.request;
                     let (operation, reply) = match request {
                         Request::Stop => break,
+                        Request::DependencyCall { caller, generation, provider, hook, input, reply } => {
+                            let result = manager.call_dependency(&caller, generation, &provider, &hook, &input);
+                            let _ = reply.try_send(result);
+                            continue;
+                        }
                         Request::Settings(settings) => {
                             manager.set_settings(settings);
                             continue;
@@ -510,7 +538,7 @@ impl Runtime {
                         }
                         Operation::Restart(id) => unsafe { manager.restart(id.as_deref()) },
                         Operation::UnloadAll => Ok(manager.unload_all()),
-                        Operation::Unload(id) => Ok(manager.unload(&id).into_iter().collect()),
+                        Operation::Unload(id) => Ok(manager.unload_with_dependents(&id)),
                     };
                     if let Ok(events) = &events {
                         for event in events {
@@ -529,6 +557,7 @@ impl Runtime {
                         plugins: manager.plugins().cloned().collect(),
                         events,
                         available: manager.available(),
+                        inventory: manager.inventory(),
                     });
                     let _ = reply.try_send(result);
                 }
@@ -629,6 +658,8 @@ mod tests {
     fn rejects_duplicate_ids_and_nonlocal_paths_before_loading() {
         let spec = PluginSpec {
             id: "velk.test".into(),
+            dependencies: Vec::new(),
+            install_reason: Default::default(),
             library: "../escape.dylib".into(),
             digest: "0".repeat(64),
             pack: false,

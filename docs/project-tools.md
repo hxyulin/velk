@@ -1,8 +1,12 @@
 # Quick Open and workspace search
 
-The bundled `velk.quick-open` and `velk.workspace-find` plugins share scan machinery
-in `plugins/project`, but have separate identities, workers, commands, and unload
-lifecycles. Disable or replace either plugin independently.
+The bundled `velk.quick-open` and `velk.workspace-find` plugins are default picker
+frontends. They depend on `velk.project.files` and `velk.project.search`, respectively.
+The backend plugins own indexing, matching, project reads, and cancellation;
+The feature-owned `velk-project-contracts` library defines their data protocol. Each consuming frontend
+has independent backend state. Disable or replace either frontend independently,
+or implement another frontend without linking or copying the backend. See
+[feature backends](feature-backends.md) for authoring and dependency declarations.
 
 Choose the project with **Open folder…** (Cmd/Ctrl+Shift+O) first. Opening a
 single file alone does not select a project folder.

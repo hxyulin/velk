@@ -23,6 +23,7 @@ pub(super) struct State {
     pub(super) readmes: std::collections::BTreeMap<String, velk_markup::Document>,
     /// Manifest IDs from the latest lifecycle report.
     pub(super) available: Vec<String>,
+    pub(super) inventory: Vec<velk_plugin_host::PluginSpec>,
     /// Latest rejection per ID, cleared when that plugin loads.
     pub(super) failed: std::collections::BTreeMap<String, String>,
 }
@@ -39,6 +40,7 @@ impl State {
             known: Default::default(),
             readmes: Default::default(),
             available: Vec::new(),
+            inventory: Vec::new(),
             failed: Default::default(),
         }
     }
@@ -185,6 +187,7 @@ impl Document {
                 &report.plugins,
             );
             state.available = report.available;
+            state.inventory = report.inventory;
             state.loaded = report.plugins;
             let errors: Vec<_> = report
                 .events
@@ -409,6 +412,7 @@ mod tests {
                 assert_eq!(initial.read(cx).input_mode_id(), "insert");
                 this.apply_plugin_report(
                     velk_plugin_host::Report {
+                        inventory: Vec::new(),
                         syntax: Default::default(),
                         editing: BTreeMap::from([(
                             ("test.keymap".into(), Role::Keymap),
@@ -427,6 +431,7 @@ mod tests {
                 }
                 this.apply_plugin_report(
                     velk_plugin_host::Report {
+                        inventory: Vec::new(),
                         syntax: Default::default(),
                         editing: BTreeMap::new(),
                         loaded: 0,
@@ -455,6 +460,7 @@ mod tests {
             }
         }
         let info = velk_plugin_host::PluginInfo {
+            dependencies: Vec::new(),
             id: "velk.vim".into(),
             version: "0.0.0-dev".into(),
             generation: 1,

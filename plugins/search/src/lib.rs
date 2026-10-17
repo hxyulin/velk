@@ -21,6 +21,7 @@ struct Queue {
     stop: bool,
 }
 pub struct Search {
+    consumers: velk_plugin_sdk::backend::Sessions<Search>,
     upload: Option<Job>,
     id: Option<u64>,
     running: bool,
@@ -58,6 +59,7 @@ impl Default for Search {
             })
             .ok();
         Self {
+            consumers: Default::default(),
             upload: None,
             id: None,
             running: false,
@@ -91,6 +93,18 @@ impl Plugin for Search {
         reg.provide(
             hooks::Request(model::HOOK),
             |this: &mut Self, bytes: &[u8]| model::encode(&this.request(model::decode(bytes)?)?),
+        )?;
+        reg.provide(
+            hooks::Request(model::BACKEND_HOOK),
+            |this: &mut Self, bytes: &[u8]| {
+                this.consumers.request(bytes, |engine, input| {
+                    model::encode(&engine.request(model::decode(input)?)?)
+                })
+            },
+        )?;
+        reg.on(
+            hooks::Event(velk_plugin_sdk::contracts::backend::RELEASE_HOOK),
+            |this: &mut Self, bytes: &[u8]| this.consumers.release(bytes),
         )
     }
     fn describe(&mut self) -> String {

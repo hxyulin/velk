@@ -6,7 +6,7 @@ use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
-use velk_panels::{Reply, Request, Snapshot};
+use velk_files_contracts::{Reply, Request, Tree as Snapshot};
 use velk_plugin_sdk::{Plugin, Registrar, hooks};
 struct Job {
     id: u64,
@@ -20,7 +20,7 @@ struct Queue {
     result: Option<(u64, Result<Snapshot, String>)>,
     stop: bool,
 }
-pub struct Files {
+struct Engine {
     shared: Arc<(Mutex<Queue>, Condvar)>,
     worker: Option<std::thread::JoinHandle<()>>,
     current: Option<(u64, Arc<AtomicBool>)>,
@@ -28,7 +28,7 @@ pub struct Files {
     show_hidden: bool,
     signal: Arc<Mutex<watching::Signal>>,
 }
-impl Default for Files {
+impl Default for Engine {
     fn default() -> Self {
         let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let state = shared.clone();
@@ -86,7 +86,7 @@ impl Default for Files {
         }
     }
 }
-impl Drop for Files {
+impl Drop for Engine {
     fn drop(&mut self) {
         if let Some((_, cancel)) = &self.current {
             cancel.store(true, Ordering::Release);
@@ -98,51 +98,7 @@ impl Drop for Files {
         }
     }
 }
-impl Plugin for Files {
-    const ID: &'static str = "velk.files";
-    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const NAME: &'static str = "Files";
-    const README: &'static str = include_str!("../README.md");
-    const CAPABILITIES: &'static [velk_plugin_sdk::CapabilityDeclaration] = &[
-        velk_plugin_sdk::CapabilityDeclaration::required(
-            "filesystem.read",
-            "Read project directories and file metadata.",
-        ),
-        velk_plugin_sdk::CapabilityDeclaration::required(
-            "filesystem.watch",
-            "Watch project directories for file tree updates.",
-        ),
-    ];
-    fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
-        use velk_plugin_sdk::settings::{Definition, Kind};
-        vec![Definition {
-            key: "show_hidden".into(),
-            title: "Show hidden files".into(),
-            description: "Include files and directories whose names begin with a dot.".into(),
-            kind: Kind::Boolean,
-            default: true.into(),
-        }]
-    }
-    fn configure(&mut self, values: &velk_plugin_sdk::settings::Values) -> Result<(), String> {
-        self.show_hidden = values["show_hidden"]
-            .as_bool()
-            .ok_or("invalid hidden-file preference")?;
-        Ok(())
-    }
-    fn describe(&mut self) -> String {
-        "Lazy project file tree".into()
-    }
-    fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
-        reg.provide(
-            hooks::Request(velk_panels::HOOK),
-            |this: &mut Self, bytes| {
-                let _trace = velk_plugin_sdk::diagnostics::scope!("files.protocol");
-                velk_panels::encode(&this.request(velk_panels::decode(bytes)?)?)
-            },
-        )
-    }
-}
-impl Files {
+impl Engine {
     fn request(&mut self, request: Request) -> Result<Reply, String> {
         match request {
             Request::Changes => Ok(if self.signal.lock().unwrap().changed() {
@@ -161,7 +117,7 @@ impl Files {
                 let mut queue = self.shared.0.lock().unwrap();
                 if queue.result.as_ref().is_some_and(|(job, _)| *job == id) {
                     let (_, result) = queue.result.take().unwrap();
-                    return result.map(|snapshot| Reply::Ready { snapshot });
+                    return result.map(|snapshot| Reply::Ready { tree: snapshot });
                 }
                 if self.worker.as_ref().is_none_or(|w| w.is_finished()) {
                     return Err("file tree worker unavailable".into());
@@ -211,20 +167,87 @@ impl Files {
     }
 }
 
+pub struct FilesBackend {
+    sessions: velk_plugin_sdk::backend::Sessions<Engine>,
+    show_hidden: bool,
+}
+impl Default for FilesBackend {
+    fn default() -> Self {
+        Self {
+            sessions: Default::default(),
+            show_hidden: true,
+        }
+    }
+}
+impl Plugin for FilesBackend {
+    const ID: &'static str = "velk.files.backend";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const NAME: &'static str = "File tree backend";
+    const README: &'static str = "# File tree backend\n\nProvides lazy directory data, stable file identities, and filesystem watching for frontend plugins. Settings apply to all consumers; their caches and requests are independent.";
+    const CAPABILITIES: &'static [velk_plugin_sdk::CapabilityDeclaration] = &[
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "filesystem.read",
+            "Read project directories and file metadata.",
+        ),
+        velk_plugin_sdk::CapabilityDeclaration::required(
+            "filesystem.watch",
+            "Watch project directories for file tree updates.",
+        ),
+    ];
+    fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
+        use velk_plugin_sdk::settings::{Definition, Kind};
+        vec![Definition {
+            key: "show_hidden".into(),
+            title: "Show hidden files".into(),
+            description: "Include files and directories whose names begin with a dot.".into(),
+            kind: Kind::Boolean,
+            default: true.into(),
+        }]
+    }
+    fn configure(&mut self, values: &velk_plugin_sdk::settings::Values) -> Result<(), String> {
+        self.show_hidden = values["show_hidden"]
+            .as_bool()
+            .ok_or("invalid hidden-file preference")?;
+        Ok(())
+    }
+    fn describe(&mut self) -> String {
+        "Lazy project file tree".into()
+    }
+    fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+        reg.provide(
+            hooks::Request(velk_files_contracts::HOOK),
+            |this: &mut Self, bytes| {
+                this.sessions.request(bytes, |engine, input| {
+                    engine.show_hidden = this.show_hidden;
+                    let request = serde_json::from_slice(input).map_err(|e| e.to_string())?;
+                    serde_json::to_vec(&engine.request(request)?).map_err(|e| e.to_string())
+                })
+            },
+        )?;
+        reg.on(
+            hooks::Event(velk_plugin_sdk::contracts::backend::RELEASE_HOOK),
+            |this: &mut Self, bytes: &[u8]| this.sessions.release(bytes),
+        )
+    }
+}
+mod frontend;
+pub use frontend::Files;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn ready(files: &mut Files, mut reply: Reply) -> Snapshot {
+    use velk_panels::Snapshot;
+    fn ready(files: &mut Engine, mut reply: Reply) -> Snapshot {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             match reply {
-                Reply::Ready { snapshot } => return snapshot,
+                Reply::Ready { tree } => return crate::frontend::snapshot(tree),
                 Reply::Pending { id } => {
                     assert!(std::time::Instant::now() < deadline);
                     std::thread::sleep(std::time::Duration::from_millis(1));
                     reply = files.request(Request::Poll { id }).unwrap();
                 }
-                Reply::Ack | Reply::Invalidated | Reply::Unchanged => {
+                Reply::Invalidated | Reply::Unchanged => {
                     panic!("unexpected change reply")
                 }
                 Reply::Cancelled => panic!("unexpected cancellation"),
@@ -233,7 +256,7 @@ mod tests {
     }
     #[test]
     fn requests_are_async_cancellable_and_restart_with_a_fresh_worker() {
-        let mut files = Files::default();
+        let mut files = Engine::default();
         let pending = files
             .request(Request::Describe {
                 context: Default::default(),
@@ -257,7 +280,7 @@ mod tests {
         assert!(snapshot.effects.is_empty());
         assert_eq!(snapshot.panels[0].title, "Files");
         drop(files); // Cancels/wakes/joins the worker, including a pending receive.
-        let mut restarted = Files::default();
+        let mut restarted = Engine::default();
         let pending = restarted
             .request(Request::Describe {
                 context: Default::default(),
@@ -265,10 +288,10 @@ mod tests {
             .unwrap();
         assert_eq!(ready(&mut restarted, pending).panels[0].title, "Files");
     }
-    fn describe(files: &mut Files, path: &std::path::Path) -> Snapshot {
+    fn describe(files: &mut Engine, path: &std::path::Path) -> Snapshot {
         let pending = files
             .request(Request::Describe {
-                context: velk_panels::Context {
+                context: velk_files_contracts::Context {
                     root: Some(velk_panels::NativePath::new(path)),
                     ..Default::default()
                 },
@@ -276,7 +299,7 @@ mod tests {
             .unwrap();
         ready(files, pending)
     }
-    fn changed(files: &mut Files) {
+    fn changed(files: &mut Engine) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             if matches!(files.request(Request::Changes).unwrap(), Reply::Invalidated) {
@@ -302,14 +325,9 @@ mod tests {
         std::fs::write(root.path().join("visible.txt"), "visible").unwrap();
         std::fs::write(root.path().join(".hidden"), "hidden").unwrap();
         std::fs::create_dir(root.path().join(".hidden-directory")).unwrap();
-        let mut files = Files::default();
+        let mut files = Engine::default();
         assert!(names(&describe(&mut files, root.path())).contains(&".hidden"));
-        files
-            .configure(&velk_plugin_sdk::settings::Values::from([(
-                "show_hidden".into(),
-                false.into(),
-            )]))
-            .unwrap();
+        files.show_hidden = false;
         let snapshot = describe(&mut files, root.path());
         assert!(names(&snapshot).contains(&"visible.txt"));
         assert!(!names(&snapshot).contains(&".hidden"));
@@ -322,7 +340,7 @@ mod tests {
         std::fs::create_dir(root.join(".git")).unwrap();
         let nested = root.join("nested");
         std::fs::create_dir(&nested).unwrap();
-        let mut files = Files::default();
+        let mut files = Engine::default();
         let initial = describe(&mut files, &nested);
         assert_eq!(
             names(&initial),
@@ -366,7 +384,7 @@ mod tests {
         assert!(names(&describe(&mut files, &other)).contains(&"reattached.txt"));
         drop(files); // Watcher threads are stopped along with the owned worker.
         std::fs::write(other.join("after-unload.txt"), "").unwrap();
-        let mut restarted = Files::default();
+        let mut restarted = Engine::default();
         assert!(names(&describe(&mut restarted, &other)).contains(&"after-unload.txt"));
     }
 }

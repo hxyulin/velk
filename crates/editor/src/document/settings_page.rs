@@ -679,6 +679,7 @@ mod tests {
         // SAFETY: this test-owned directory contains no native libraries.
         let plugins = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
         let info = PluginInfo {
+            dependencies: Vec::new(),
             id: "test.files".into(),
             version: "1".into(),
             generation: 1,

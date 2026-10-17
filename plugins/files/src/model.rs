@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use velk_panels::{Content, Context, Effect, NativePath, Node, Panel, Request, Slot, Snapshot};
+use velk_files_contracts::{Context, Entry as Node, NativePath, Request, Tree as Snapshot};
 const MAX_DIRECTORY: usize = 1_000;
 const MAX_ENTRIES: usize = 1_800;
 const MAX_ROWS: usize = 2_000;
@@ -164,12 +164,11 @@ impl Model {
                 }
             }
             Request::Expand {
-                panel,
                 revision,
                 node,
                 expanded,
             } => {
-                self.check(&panel, revision)?;
+                self.check(revision)?;
                 Context {
                     expanded: expanded.clone(),
                     ..Default::default()
@@ -183,16 +182,8 @@ impl Model {
                     .clone();
                 self.expand(&item, &expanded.into_iter().collect(), cancel, watch)?;
             }
-            Request::Invoke {
-                panel,
-                revision,
-                node,
-                action,
-            } => {
-                self.check(&panel, revision)?;
-                if action != "open" {
-                    return Err("unknown file action".into());
-                }
+            Request::Resolve { revision, node } => {
+                self.check(revision)?;
                 let item = self
                     .nodes
                     .get(&node)
@@ -200,15 +191,11 @@ impl Model {
                     .ok_or("unknown file row")?;
                 let path = NativePath::new(&item.path);
                 let mut snapshot = self.snapshot()?;
-                snapshot.effects.push(Effect::OpenFile { path });
+                snapshot.open = Some(path);
                 snapshot.validate()?;
                 return Ok(snapshot);
             }
-            Request::Input { .. }
-            | Request::Updates { .. }
-            | Request::Changes
-            | Request::Poll { .. }
-            | Request::Cancel { .. } => {
+            Request::Changes | Request::Poll { .. } | Request::Cancel { .. } => {
                 return Err("worker received a control request".into());
             }
         }
@@ -219,8 +206,8 @@ impl Model {
             .ok_or("file tree revision exhausted")?;
         self.snapshot()
     }
-    fn check(&self, panel: &str, revision: u64) -> Result<(), String> {
-        if panel != "files" || revision != self.revision {
+    fn check(&self, revision: u64) -> Result<(), String> {
+        if revision != self.revision {
             Err("stale or unknown file tree snapshot".into())
         } else {
             Ok(())
@@ -319,10 +306,10 @@ impl Model {
             id: node_id.clone(),
             label: caption(format!("{name}{suffix}")),
             depth: item.depth,
-            branch: item.directory,
+            directory: item.directory,
+            path: Some(NativePath::new(&item.path)),
             expanded: item.depth == 0,
             lazy: item.directory && item.depth < 32 && !self.directories.contains_key(&item.path),
-            action: (!item.directory).then(|| "open".into()),
         });
         self.nodes.insert(node_id.clone(), item.clone());
         if let Some(listing) = self.directories.get(&item.path) {
@@ -339,17 +326,17 @@ impl Model {
                     id: format!("notice:{node_id}"),
                     label: caption(notice),
                     depth: item.depth + 1,
-                    branch: false,
+                    directory: false,
+                    path: None,
                     expanded: false,
                     lazy: false,
-                    action: None,
                 });
             }
         }
     }
     fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.nodes.clear();
-        let content = if let Some(path) = self.root.clone() {
+        let entries = if let Some(path) = self.root.clone() {
             let mut rows = Vec::new();
             self.append(
                 Item {
@@ -366,27 +353,24 @@ impl Model {
                     id: "row-limit".into(),
                     label: "[Tree row limit reached]".into(),
                     depth: 1,
-                    branch: false,
+                    directory: false,
+                    path: None,
                     expanded: false,
                     lazy: false,
-                    action: None,
                 });
             }
-            Content::Tree(rows)
+            rows
         } else {
-            Content::Text("Open a file to show its project directory.".into())
+            Vec::new()
         };
         let snapshot = Snapshot {
-            watch: true,
-            stream: false,
-            panels: vec![Panel {
-                id: "files".into(),
-                title: "Files".into(),
-                slot: Slot::Left,
-                revision: self.revision,
-                content,
-            }],
-            effects: Vec::new(),
+            revision: self.revision,
+            entries,
+            notice: self
+                .root
+                .is_none()
+                .then(|| "Open a file to show its project directory.".into()),
+            open: None,
         };
         snapshot.validate()?;
         Ok(snapshot)
@@ -396,6 +380,7 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use velk_panels::{Content, Effect, Node, Snapshot};
     fn context(document: &Path) -> Context {
         Context {
             document: Some(NativePath::new(document)),
@@ -409,9 +394,11 @@ mod tests {
         rows
     }
     fn apply(model: &mut Model, request: Request) -> Snapshot {
-        model
-            .apply(request, &Arc::new(AtomicBool::new(false)))
-            .unwrap()
+        crate::frontend::snapshot(
+            model
+                .apply(request, &Arc::new(AtomicBool::new(false)))
+                .unwrap(),
+        )
     }
     #[test]
     fn only_open_directories_are_read_and_refresh_rehydrates_expansions() {
@@ -446,7 +433,6 @@ mod tests {
         let second = apply(
             &mut model,
             Request::Expand {
-                panel: "files".into(),
                 revision: first.panels[0].revision,
                 node: src.clone(),
                 expanded: expanded.clone(),
@@ -463,11 +449,9 @@ mod tests {
             .clone();
         let open = apply(
             &mut model,
-            Request::Invoke {
-                panel: "files".into(),
+            Request::Resolve {
                 revision: second.panels[0].revision,
                 node: leaf.clone(),
-                action: "open".into(),
             },
         );
         assert_eq!(model.reads, 2, "file activation performs no filesystem I/O");
@@ -480,11 +464,9 @@ mod tests {
         assert!(
             model
                 .apply(
-                    Request::Invoke {
-                        panel: "files".into(),
+                    Request::Resolve {
                         revision: 0,
                         node: leaf,
-                        action: "open".into()
                     },
                     &Arc::new(AtomicBool::new(false))
                 )
@@ -526,7 +508,6 @@ mod tests {
         let reopened = apply(
             &mut restored,
             Request::Expand {
-                panel: "files".into(),
                 revision: collapsed.panels[0].revision,
                 node: expanded[0].clone(),
                 expanded,
@@ -556,7 +537,6 @@ mod tests {
         let failed = apply(
             &mut model,
             Request::Expand {
-                panel: "files".into(),
                 revision: first.panels[0].revision,
                 node: gone,
                 expanded: Vec::new(),
@@ -618,11 +598,9 @@ mod tests {
         assert!(!leaf.label.contains('\n'));
         let open = apply(
             &mut model,
-            Request::Invoke {
-                panel: "files".into(),
+            Request::Resolve {
                 revision: first.panels[0].revision,
                 node: leaf.id.clone(),
-                action: "open".into(),
             },
         );
         let Effect::OpenFile { path: actual } = &open.effects[0] else {

@@ -713,6 +713,7 @@ mod tests {
                     velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
                 );
                 plugins.loaded.push(velk_plugin_host::PluginInfo {
+                    dependencies: Vec::new(),
                     id: "test.commands".into(),
                     version: "1".into(),
                     generation: 1,
@@ -1077,6 +1078,7 @@ mod edit_interaction_tests {
                     velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
                 );
                 plugins.loaded.push(velk_plugin_host::PluginInfo {
+                    dependencies: Vec::new(),
                     id: "test.commands".into(),
                     version: "1".into(),
                     generation: 1,
