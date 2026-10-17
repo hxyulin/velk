@@ -48,11 +48,19 @@ Stop capture through the command palette and run `cargo xtask trace-summary`
 against the completed trace. Inspect the interval after the marker separately
 from startup. Retain raw traces and generated summaries only in ignored output.
 
-## Follow-ups observed
+## Follow-up resolution
 
-- The initially opened file did not enter the configured Vim mode until the
-  keymap setting was changed to Standard editing and back to Vim. The measured
-  interval began after Normal mode was confirmed in the status line.
-- Captures started after app initialization omitted renderer-preparation scopes
-  in this run. A continuous capture enabled at startup included them. Investigate
-  this before relying on mid-session captures for renderer latency comparisons.
+The initially opened file did not enter the configured Vim mode because editing
+providers were selected before asynchronous plugin loading completed. The host
+now refreshes editing providers for all existing buffers when plugin lifecycle
+operations finish. A native check confirmed Normal mode on the initial file and
+working motions without changing settings.
+
+The missing renderer scopes were caused by native window occlusion. A temporary
+local scheduling probe confirmed `occluded=true` and presentation ineligible while
+CPU layout and accessibility continued. Uncovering the window cleared occlusion;
+a subsequent mid-session capture with the unmodified dependencies recorded five
+painter-preparation and five native frame-preparation scopes with zero dropped
+events. No collector or renderer
+change was needed. Regression coverage warms renderer-style callsites before
+capture and checks that repeated captures started on a worker thread include them.

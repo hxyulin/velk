@@ -42,6 +42,15 @@ and queue-wait samples are reported separately. In-flight async spans at the
 capture boundary are reported as incomplete, rather than assigned a fabricated
 duration.
 
+Keep the native window visible while measuring rendering. macOS can mark a
+covered or minimized window as occluded; Astrelis then pauses presentation while
+RXUI still updates CPU layout and accessibility state. Such a capture can contain
+`rxui::Ui::prepare` without `rxui::UiPainter::prepare` or surface acquisition.
+A window screenshot or accessibility response alone does not prove that frames
+were presented. Uncover the window and confirm renderer scopes before comparing
+rendering latency. Captures started mid-session support the same scopes as
+startup captures.
+
 ## Generated artifacts
 
 Keep benchmark CSVs, capture manifests, rendered reports, logs, traces, and

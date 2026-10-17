@@ -120,6 +120,50 @@ impl Document {
             });
         }
     }
+    fn apply_plugin_report(
+        &mut self,
+        report: velk_plugin_host::Report,
+        cx: &mut Context<'_, Self>,
+    ) -> String {
+        let state = self.plugins.as_mut().expect("plugin state");
+        let status = {
+            for event in &report.events {
+                if let Event::Rejected { id, message } = event {
+                    state.failed.insert(id.clone(), message.clone());
+                }
+            }
+            for plugin in &report.plugins {
+                state.failed.remove(&plugin.id);
+                if plugin.metadata.readme.is_empty() {
+                    state.readmes.remove(&plugin.id);
+                }
+                state.known.insert(plugin.id.clone(), plugin.clone());
+            }
+            state.editing = retain_editing_generations(
+                &state.editing,
+                report.editing,
+                &state.loaded,
+                &report.plugins,
+            );
+            state.available = report.available;
+            state.loaded = report.plugins;
+            let errors: Vec<_> = report
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Rejected { id, message } => Some(format!("{id}: {message}")),
+                    _ => None,
+                })
+                .collect();
+            if errors.is_empty() {
+                format!("Plugins: {} loaded", report.loaded)
+            } else {
+                format!("Plugins: {} loaded · {}", report.loaded, errors.join("; "))
+            }
+        };
+        self.refresh_editing(cx);
+        status
+    }
     pub(super) fn markup_renderer(&self) -> std::sync::Arc<dyn velk_markup::Renderer> {
         self.plugins.as_ref().map_or_else(
             || {
@@ -220,45 +264,12 @@ impl Document {
                     }
                     result
                 });
-                state.status = match result {
-                    Ok(Ok(Ok(report))) => {
-                        for event in &report.events {
-                            if let Event::Rejected { id, message } = event {
-                                state.failed.insert(id.clone(), message.clone());
-                            }
-                        }
-                        for plugin in &report.plugins {
-                            state.failed.remove(&plugin.id);
-                            if plugin.metadata.readme.is_empty() {
-                                state.readmes.remove(&plugin.id);
-                            }
-                            state.known.insert(plugin.id.clone(), plugin.clone());
-                        }
-                        state.editing = retain_editing_generations(
-                            &state.editing,
-                            report.editing,
-                            &state.loaded,
-                            &report.plugins,
-                        );
-                        state.available = report.available;
-                        state.loaded = report.plugins;
-                        let errors: Vec<_> = report
-                            .events
-                            .iter()
-                            .filter_map(|e| match e {
-                                Event::Rejected { id, message } => Some(format!("{id}: {message}")),
-                                _ => None,
-                            })
-                            .collect();
-                        if errors.is_empty() {
-                            format!("Plugins: {} loaded", report.loaded)
-                        } else {
-                            format!("Plugins: {} loaded · {}", report.loaded, errors.join("; "))
-                        }
-                    }
+                let status = match result {
+                    Ok(Ok(Ok(report))) => this.apply_plugin_report(report, cx),
                     Ok(Ok(Err(error))) => format!("Plugins: {error}"),
                     _ => "Plugin worker unavailable".into(),
                 };
+                this.plugins.as_mut().expect("plugin state").status = status;
                 this.publish_buffer_snapshot(cx);
                 this.refresh_panels(cx);
                 if this.has_buffers() && this.buffer.search.open {
@@ -314,6 +325,81 @@ mod tests {
     use crate::document::ClosePlugins;
     use rxui::{KeyEvent, Runtime, Ui};
 
+    #[test]
+    #[allow(unsafe_code)]
+    fn editing_providers_refresh_initial_and_inactive_buffers_after_loading() {
+        use std::{collections::BTreeMap, sync::Arc};
+        use velk_editing::{Decision, Intent, Request, Role, input};
+        #[derive(Debug)]
+        struct Keymap;
+        impl velk_editing::Provider for Keymap {
+            fn evaluate(&self, request: &Request) -> Result<Decision, String> {
+                let Intent::Key(key) = &request.intent else {
+                    return Ok(Decision::Decline);
+                };
+                Ok(Decision::Input(input::Response {
+                    handled: true,
+                    state: input::State {
+                        mode: if key.state.mode.is_empty() {
+                            "normal".into()
+                        } else {
+                            key.state.mode.clone()
+                        },
+                        capture_text: true,
+                        ..Default::default()
+                    },
+                    actions: vec![],
+                }))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        // SAFETY: this test-owned directory contains no native libraries.
+        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let mut runtime = Runtime::new();
+        let initial = runtime.update(|cx| cx.new(|_| velk_editor_widget::Editor::new("initial")));
+        let document = runtime.update(|cx| {
+            cx.new(|cx| Document::new(initial.clone(), None, "initial.txt".into(), cx))
+        });
+        runtime.update(|cx| {
+            document.update(cx, |this, cx| {
+                this.shell.store.preferences.keymap_provider = "test.keymap".into();
+                this.plugins = Some(State::new(host.client(), String::new()));
+                this.start_all_semantics(cx);
+                this.new_buffer(cx);
+                assert_eq!(initial.read(cx).input_mode_id(), "insert");
+                this.apply_plugin_report(
+                    velk_plugin_host::Report {
+                        editing: BTreeMap::from([(
+                            ("test.keymap".into(), Role::Keymap),
+                            Arc::new(Keymap) as Arc<dyn velk_editing::Provider>,
+                        )]),
+                        loaded: 1,
+                        plugins: vec![],
+                        events: vec![],
+                        available: vec![],
+                    },
+                    cx,
+                );
+                for buffer in this.buffer.iter().chain(this.inactive.values()) {
+                    assert_eq!(buffer.editor.read(cx).input_mode_id(), "normal");
+                    assert!(!buffer.editor.read(cx).buffer().is_dirty());
+                }
+                this.apply_plugin_report(
+                    velk_plugin_host::Report {
+                        editing: BTreeMap::new(),
+                        loaded: 0,
+                        plugins: vec![],
+                        events: vec![],
+                        available: vec![],
+                    },
+                    cx,
+                );
+                for buffer in this.buffer.iter().chain(this.inactive.values()) {
+                    assert_eq!(buffer.editor.read(cx).input_mode_id(), "insert");
+                }
+            })
+        });
+    }
     #[test]
     fn unchanged_provider_generations_keep_session_identity_across_plugin_reports() {
         #[derive(Debug)]

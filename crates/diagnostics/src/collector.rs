@@ -793,22 +793,28 @@ mod tests {
     fn probe() {
         let _scope = tracing::debug_span!("capture.probe", revision = 7).entered();
     }
+    fn renderer_probe() {
+        let _scope =
+            tracing::info_span!(target: "rxui::painting", "rxui::UiPainter::prepare").entered();
+    }
     #[test]
     fn capture_switches_live_callsites_tracks_threads_and_rejects_previous_sessions() {
         let directory = tempfile::tempdir().unwrap();
         let _guard = init_with(Config {
             directory: directory.path().into(),
             duration: Duration::from_millis(250),
-            filter: "off".into(),
+            filter: "warn,velk=info".into(),
             json_logs: true,
             startup_capture: false,
-            targets: vec!["velk".into()],
+            targets: vec!["velk".into(), "rxui".into()],
             log_directory: None,
         })
         .unwrap();
+        renderer_probe();
         probe(); // Register the callsite while recording is disabled.
         assert!(!recording());
-        let first = start().unwrap();
+        let first = thread::spawn(start).join().unwrap().unwrap();
+        renderer_probe();
         assert!(start().is_err());
         probe();
         let wall = tracing::debug_span!("capture.wall", async_work = true);
@@ -848,13 +854,31 @@ mod tests {
                 .any(|e| e["name"] == "thread_name" && e["args"]["name"] == "capture-test-worker")
         );
         assert!(events.iter().any(|e| e["name"] == "test marker"));
-        let next = start().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["name"] == "rxui::UiPainter::prepare")
+                .count(),
+            1
+        );
+        renderer_probe();
+        let next = thread::spawn(start).join().unwrap().unwrap();
+        renderer_probe();
         stale.in_scope(probe);
         drop(stale);
         std::thread::sleep(Duration::from_millis(300));
         assert!(!recording());
         assert_eq!(stop().unwrap().reason, "duration limit");
         let trace: Value = serde_json::from_reader(File::open(next).unwrap()).unwrap();
+        assert_eq!(
+            trace["traceEvents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["name"] == "rxui::UiPainter::prepare")
+                .count(),
+            1
+        );
         assert!(
             !trace["traceEvents"]
                 .as_array()
