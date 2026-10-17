@@ -1300,7 +1300,7 @@ mod tests {
             assert!(!e.reveal_caret);
             crate::syntax::SyntaxView::new(e.syntax_snapshot.as_ref().unwrap().clone(), &e.buffer)
                 .unwrap()
-                .spans(e.buffer.text(), 0..e.buffer.text().len_chars())
+                .spans(&e.buffer.text(), 0..e.buffer.text().len_chars())
         });
         let mut expected_editor = crate::Editor::new(text);
         expected_editor
@@ -1338,7 +1338,7 @@ mod tests {
         let buffer = crate::Buffer::new(include_str!("../../editor/src/main.rs"));
         let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
-            .update(0, buffer.text().clone(), &[], || false)
+            .update(0, buffer.text(), &[], || false)
             .unwrap();
         let syntax = crate::syntax::SyntaxView::new(
             velk_plugin_tree_sitter::prepare(
@@ -1387,7 +1387,7 @@ mod tests {
         let buffer = crate::Buffer::new(&text);
         let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
-            .update(0, buffer.text().clone(), &[], || false)
+            .update(0, buffer.text(), &[], || false)
             .unwrap();
         let mut full = surface(&text);
         full.syntax = crate::syntax::SyntaxView::new(
@@ -1425,7 +1425,7 @@ mod tests {
         let mut full = surface(&buffer.text().to_string());
         let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
-            .update(0, buffer.text().clone(), &[], || false)
+            .update(0, buffer.text(), &[], || false)
             .unwrap();
         full.syntax = crate::syntax::SyntaxView::new(
             velk_plugin_tree_sitter::prepare(

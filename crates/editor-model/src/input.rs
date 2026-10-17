@@ -110,7 +110,8 @@ fn column(buffer: &Buffer, position: usize) -> usize {
 }
 fn at_column(buffer: &Buffer, line: usize, column: usize) -> usize {
     let start = buffer.text().line_to_char(line);
-    let slice = buffer.text().line(line);
+    let text = buffer.text();
+    let slice = text.line(line);
     let end = start + slice.len_chars()
         - usize::from(slice.get_char(slice.len_chars().saturating_sub(1)) == Some('\n'));
     let mut cursor = start;

@@ -18,6 +18,7 @@ pub(super) struct State {
     pub hover: Option<PositionRequest>,
     pub command: Option<super::plugin_commands::Pending>,
     pub target: Option<HoverTarget>,
+    pub hover_view: Option<Entity<velk_editor_widget::Editor>>,
     pub next_request: u64,
     pub task: Option<Task>,
     pub render_task: Option<Task>,
@@ -47,6 +48,7 @@ impl Document {
             hover: None,
             command: None,
             target: None,
+            hover_view: None,
             next_request: 1,
             task: None,
             render_task: None,
@@ -67,23 +69,40 @@ impl Document {
                 .to_path_buf(),
             language: "rust".into(),
             revision: editor.buffer().revision(),
-            text: editor.buffer().text().clone(),
+            text: editor.buffer().text(),
         }
     }
     pub(super) fn sync_semantics(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        let Some(buffer) = self.buffer.as_ref() else {
+            return false;
+        };
+        self.sync_semantics_for(buffer.editor.clone(), cx)
+    }
+    pub(super) fn sync_semantics_for(
+        &mut self,
+        source: Entity<velk_editor_widget::Editor>,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
         let Some(active) = self.buffer.as_mut() else {
             return false;
         };
         let Some(state) = &mut active.semantic else {
             return false;
         };
-        let editor = active.editor.read(cx);
+        let editor = source.read(cx);
         let buffer = editor.buffer();
         let target = editor.hover_request();
-        if state.target != target {
+        let owner_matches = state
+            .hover_view
+            .as_ref()
+            .is_some_and(|view| view.id() == source.id());
+        if (target.is_some() || owner_matches || state.revision != buffer.revision())
+            && (state.target != target || !owner_matches)
+        {
             state.render_task = None;
             state.service.cancel_hover();
             state.target = target;
+            state.hover_view = target.map(|_| source.clone());
             state.hover = None;
             state.notice = None;
             if let Some(target) = target {
@@ -114,7 +133,7 @@ impl Document {
                 .to_path_buf(),
             language: "rust".into(),
             revision: buffer.revision(),
-            text: buffer.text().clone(),
+            text: buffer.text(),
         });
         visible_changed
     }
@@ -228,7 +247,11 @@ impl Document {
                     found = hover.is_some(),
                     "hover received"
                 );
-                let current = active.editor.read(cx);
+                let owner = state
+                    .hover_view
+                    .clone()
+                    .unwrap_or_else(|| active.editor.clone());
+                let current = owner.read(cx);
                 let valid = state.hover == Some(request)
                     && state.target.is_some()
                     && current.hover_request() == state.target
@@ -261,7 +284,10 @@ impl Document {
                                         Ok(Ok(document)) => document,
                                         _ => velk_markup::Document::plain(fallback),
                                     };
-                                    this.buffer.editor.update(cx, |editor, _| {
+                                    let Some(owner) = state.hover_view.clone() else {
+                                        return;
+                                    };
+                                    owner.update(cx, |editor, _| {
                                         editor.resolve_formatted_hover(
                                             target,
                                             range,
@@ -274,7 +300,7 @@ impl Document {
                         ) {
                             Ok(task) => state.render_task = Some(task),
                             Err(error) => {
-                                active.editor.update(cx, |editor, _| {
+                                owner.update(cx, |editor, _| {
                                     editor.resolve_hover(target, None, None);
                                 });
                                 if target.source == HoverSource::Caret {
@@ -283,7 +309,7 @@ impl Document {
                             }
                         }
                     } else {
-                        active.editor.update(cx, |editor, _| {
+                        owner.update(cx, |editor, _| {
                             editor.resolve_hover(
                                 target,
                                 hover.range,
@@ -295,7 +321,7 @@ impl Document {
                         });
                     }
                 } else {
-                    active.editor.update(cx, |editor, _| {
+                    owner.update(cx, |editor, _| {
                         editor.resolve_hover(target, None, None);
                     });
                     if target.source == HoverSource::Caret {
@@ -304,16 +330,20 @@ impl Document {
                 }
             }
             Event::RequestFailed { request, message } => {
+                let owner = state
+                    .hover_view
+                    .clone()
+                    .unwrap_or_else(|| active.editor.clone());
                 if state.hover != Some(request)
                     || state.target.is_none()
-                    || active.editor.read(cx).hover_request() != state.target
+                    || owner.read(cx).hover_request() != state.target
                 {
                     cx.unchanged();
                     return;
                 }
                 state.hover = None;
                 let target = state.target.unwrap();
-                active.editor.update(cx, |editor, _| {
+                owner.update(cx, |editor, _| {
                     editor.resolve_hover(target, None, None);
                 });
                 if target.source == HoverSource::Caret {
@@ -673,6 +703,7 @@ mod tests {
                     hover: None,
                     command: None,
                     target: None,
+                    hover_view: None,
                     next_request: 1,
                     task: None,
                     render_task: None,
@@ -795,6 +826,7 @@ mod tests {
                     hover: None,
                     command: None,
                     target: None,
+                    hover_view: None,
                     next_request: 1,
                     task: None,
                     render_task: None,
@@ -884,6 +916,7 @@ mod tests {
                     hover: Some(request),
                     command: None,
                     target: None,
+                    hover_view: None,
                     next_request: 3,
                     task: None,
                     render_task: None,

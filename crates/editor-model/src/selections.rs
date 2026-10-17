@@ -158,7 +158,7 @@ impl SelectionSet {
             })
             .map_err(|e| e.to_string())?;
         for region in &mut regions {
-            if !velk_core::graphemes::is_boundary(buffer.text(), region.caret) {
+            if !velk_core::graphemes::is_boundary(&buffer.text(), region.caret) {
                 let caret = buffer.next_grapheme_boundary(region.caret);
                 *region = SelectionRegion {
                     selection: Selection {

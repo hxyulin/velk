@@ -15,6 +15,7 @@ struct DocumentKey {
 }
 #[derive(PartialEq)]
 pub(super) struct RecoveryKey {
+    views: velk_editor_model::views::Snapshot,
     documents: Vec<DocumentKey>,
     active: u64,
     next_id: u64,
@@ -46,7 +47,9 @@ impl Document {
         if self.reloading() {
             return;
         }
+        let views = self.capture_editor_views(cx);
         let key = RecoveryKey {
+            views: views.clone(),
             active: self.buffer.as_ref().map_or(0, |b| b.id),
             next_id: self.next_buffer,
             root: self.workspace.root().map(std::path::Path::to_path_buf),
@@ -95,6 +98,7 @@ impl Document {
             })
             .collect();
         recovery.update(recovery::Pending {
+            views,
             next_id: self.next_buffer,
             documents,
             active: self.buffer.as_ref().map_or(0, |b| b.id),

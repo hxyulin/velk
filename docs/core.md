@@ -7,7 +7,7 @@ does not need to live permanently in the application executable.
 ## Current implementation
 
 `velk-core` is a linked Rust crate with no RXUI, plugin-host, or Tree-sitter
-dependency. It owns buffer text, selection and grapheme navigation, revisioned
+dependency. It owns shared document text, per-view selection and grapheme navigation, revisioned
 transactions, undo/redo, saved checkpoints, change tracking, and session snapshots.
 Its `lifecycle` module owns close/prompt decisions and Save All sequencing,
 returning actions for the frontend to execute against stable document IDs.
@@ -49,6 +49,25 @@ native frontend or terminal:
 cargo test -p velk-core --locked
 cargo test -p velk-editor-model --locked
 ```
+
+## Documents and views
+
+`TextDocument` owns one authoritative Rope, revision, undo/redo history, change
+journal, and saved checkpoint. `Buffer` is a view handle with an independent
+selection and preferred movement column. `Buffer::new_view()` duplicates that
+view's caret without copying text or history. Every edit, including undo and
+redo, rebases the other views' selections through the individual changes.
+
+`Buffer::text()` returns a cheap immutable Rope snapshot. It holds no document
+lock after returning and remains valid after later edits. Callers can borrow
+chunks from that snapshot without copying the full text.
+
+The editor model owns the renderer-independent split tree and serializable view
+state. Widgets own scroll, geometry, IME composition, hover targets, and editing
+provider state such as Vim modes and tracked pairs. The application owns file
+identity, saves, recovery, search, and one semantic service per document. A split
+creates another widget over the same document; it does not reopen the file or
+start another document service.
 
 ## Commands and lifecycle
 

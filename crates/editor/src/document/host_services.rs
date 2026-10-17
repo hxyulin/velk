@@ -411,7 +411,7 @@ impl Document {
                         revision: Some(revision),
                         edits,
                     },
-                    buffer.editor.read(cx).buffer().text(),
+                    &buffer.editor.read(cx).buffer().text(),
                     buffer.editor.read(cx).buffer().revision(),
                 )?;
                 buffer

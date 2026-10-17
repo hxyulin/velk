@@ -739,6 +739,7 @@ mod tests {
                     hover: None,
                     command: None,
                     target: None,
+                    hover_view: None,
                     next_request: 1,
                     task: None,
                     render_task: None,
@@ -908,7 +909,7 @@ mod tests {
                     cx,
                 );
                 assert!(matches!(d.command_result, Some(ResultView::Locations(_))));
-                let before = d.buffer.editor.read(cx).buffer().text().clone();
+                let before = d.buffer.editor.read(cx).buffer().text();
                 d.apply_command_outcome(
                     Outcome::Document {
                         title: "Expansion".into(),
@@ -921,7 +922,7 @@ mod tests {
                     d.command_result,
                     Some(ResultView::Document { .. })
                 ));
-                assert_eq!(*d.buffer.editor.read(cx).buffer().text(), before);
+                assert_eq!(d.buffer.editor.read(cx).buffer().text(), before);
                 assert!(d.plugin_command_entries(cx).is_empty());
             })
         });
@@ -1120,6 +1121,7 @@ mod edit_interaction_tests {
                     hover: None,
                     command: None,
                     target: None,
+                    hover_view: None,
                     next_request: 1,
                     task: None,
                     render_task: None,

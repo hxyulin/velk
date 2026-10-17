@@ -9,7 +9,7 @@ const LEAVE_GRACE: Duration = Duration::from_millis(180);
 
 #[derive(Default)]
 pub(super) struct State {
-    enabled: bool,
+    pub(super) enabled: bool,
     generation: u64,
     active: Option<Interaction>,
     delay: Option<Task>,
@@ -301,7 +301,11 @@ impl Editor {
             return;
         }
         let (position, range, anchor) = if let Some((position, anchor)) = source {
-            (position, symbol_range(self.buffer.text(), position), anchor)
+            (
+                position,
+                symbol_range(&self.buffer.text(), position),
+                anchor,
+            )
         } else {
             let annotation = annotation.as_ref().unwrap();
             (usize::MAX, 0..0, annotation.anchor)

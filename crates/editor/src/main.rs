@@ -115,6 +115,7 @@ fn run() -> Result<(), Error> {
         .map_or(2, |s| s.next_id.max(document_id + 1));
     let mut recovered_order = Vec::new();
     let mut recovered_documents = Vec::new();
+    let mut recovered_views = velk_editor_model::views::Snapshot::default();
     let mut recovered_workspace = workspace::Workspace::default();
     let mut recovered_notice = false;
     if let Some(mut recovered) = recovered {
@@ -159,6 +160,7 @@ fn run() -> Result<(), Error> {
         }
         recovered_documents = recovered.documents;
         recovered_workspace = recovered.workspace;
+        recovered_views = recovered.views;
     }
     let reload_buffers = restored
         .as_ref()
@@ -232,6 +234,10 @@ fn run() -> Result<(), Error> {
             });
         }
         handle.update(recovery::Pending {
+            views: restored.as_ref().map_or_else(
+                || recovered_views.clone(),
+                |session| session.ui.views.clone(),
+            ),
             next_id: next_document_id,
             documents,
             active: document_id,
@@ -368,6 +374,11 @@ fn run() -> Result<(), Error> {
                     this.restore_buffers(reload_buffers, session.active_index, cx)
                 });
             }
+            let views = restored.as_ref().map_or_else(
+                || recovered_views.clone(),
+                |session| session.ui.views.clone(),
+            );
+            root.update(cx, |this, cx| this.restore_editor_views(views, cx));
             root.update(cx, |this, cx| this.start_all_semantics(cx));
             root.update(cx, |this, cx| {
                 if let Some(handle) = recovery_handle {

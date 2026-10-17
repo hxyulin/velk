@@ -2,9 +2,9 @@
 
 The command line accepts `velk [file]`. A window can hold multiple
 file-backed or untitled buffers, shown in a horizontally scrollable tab bar above the editor.
-Only the selected editor is mounted and rendered. Inactive buffers keep their
-Rope, selection, undo/redo history, scroll offset, syntax state, semantic service,
-find query and disk-save baseline in memory.
+The active pane selects a document from these tabs. Several panes can show the
+same document or different documents. Hidden documents retain their text,
+history, last view state, semantic service, find query, and disk-save baseline.
 
 | Action | Shortcut |
 | --- | --- |
@@ -13,6 +13,7 @@ find query and disk-save baseline in memory.
 | Save All | Command+Option+S / Control+Alt+S |
 | Open another file | Command+O on macOS, Control+O elsewhere |
 | Save selected buffer | Command+S / Control+S |
+| Split editor right | Command+\ / Control+\ |
 | Close selected buffer | Command+W / Control+W |
 | Next buffer | Control+Tab |
 | Previous buffer | Control+Shift+Tab |
@@ -49,8 +50,8 @@ edits made during a save, aborts closing.
 ## Ownership and background work
 
 The window owns shared plugins, panel contributions, settings and palette state.
-Each `BufferState` owns an editor entity, file identity, subscription, pending
-save, semantic service and find state. Buffer-local async callbacks capture a
+Each `BufferState` owns a shared document, its view entities and subscriptions,
+file identity, pending save, semantic service and find state. Buffer-local async callbacks capture a
 stable ID and resolve it on completion. A closed buffer rejects late results;
 equal document revisions in different tabs cannot alias diagnostics or hover.
 Closing the buffer shuts down its semantic service and drops its subscriptions
@@ -63,17 +64,36 @@ buffers do not compete for the shared provider. The query and open/closed find
 bar state remain per-buffer.
 
 Reload Window transfers every buffer's unsaved text, history/checkpoints,
-selection, scroll, original disk baseline and find state. It restores the tab
-order and selected buffer along with the existing window/menu/plugin state.
+original disk baseline and find state. It also restores the split tree, divider
+positions, each view's selection and scroll, tab order, and focused pane along
+with the existing window/menu/plugin state.
 Syntax/rendering caches and semantic services rebuild in the replacement process.
 This remains a private process handoff; independent persistent recovery is
 described in [document-foundation.md](document-foundation.md).
 
 See [document-foundation.md](document-foundation.md) for untitled documents,
 Save As, Save All, persistent recovery, stable IDs, and disk-change handling.
-Current limits: one editor pane and no tab reordering. The semantic service still owns one document per session;
-multiple Rust buffers can therefore start multiple language-server sessions.
-Sharing one LSP connection across a workspace is a separate backend improvement.
+## Multiple views
+
+Use **Split editor right** or **Split editor down** in the command palette or
+native View menu. Splits can nest, support draggable dividers, and allow up to
+16 views per window. **Focus next editor view** cycles through panes.
+**Close editor view** or a pane header's close button removes that view; the
+last pane remains available. Closing a view keeps its document open, including
+unsaved changes. **Close buffer** closes the document and all its views, asking
+about unsaved changes once.
+
+Each view has its own caret, selection, scroll, Vim mode, and transient input
+state. Text, history, saved state, and diagnostics belong to the document.
+Undo from either pane uses the shared history and rebases the other pane's
+selection. Save and editing commands target the focused pane. Selecting a tab
+changes only that pane. Async caret-sensitive replies are rejected if focus
+has moved to another view, even when it shows the same document and position.
+
+Recovery stores text and history once per document, plus the layout and each
+visible view's state. Language-server connections are shared by provider and
+workspace; adding a view does not start another connection. Tab reordering is
+not implemented.
 
 ## External file reconciliation
 

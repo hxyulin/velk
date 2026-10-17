@@ -358,9 +358,9 @@ mod tests {
                 fs::write(&path, &source).unwrap();
                 let (state, mut editor) = FileState::open(&path).unwrap();
                 editor.insert("é");
-                let state = state.save(editor.buffer().text().clone()).unwrap();
+                let state = state.save(editor.buffer().text()).unwrap();
                 assert_eq!(fs::read_to_string(&path).unwrap(), format!("é{source}"));
-                state.save(editor.buffer().text().clone()).unwrap();
+                state.save(editor.buffer().text()).unwrap();
             }
         }
     }

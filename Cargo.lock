@@ -4112,6 +4112,7 @@ name = "velk-editor-model"
 version = "0.0.0-dev"
 dependencies = [
  "ropey",
+ "serde",
  "unicode-ident",
  "velk-commands",
  "velk-core",

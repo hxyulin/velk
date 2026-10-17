@@ -399,7 +399,7 @@ mod tests {
             restored
                 .file
                 .unwrap()
-                .save(editor.buffer().text().clone())
+                .save(editor.buffer().text())
                 .err()
                 .unwrap()
                 .to_string()

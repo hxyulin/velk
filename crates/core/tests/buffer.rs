@@ -203,7 +203,7 @@ fn collapsing_a_selection_does_not_skip_an_extra_grapheme() {
 #[test]
 fn history_is_bounded_and_rope_snapshots_remain_unchanged() {
     let mut b = Buffer::new("original");
-    let snapshot = b.text().clone();
+    let snapshot = b.text();
     b.document_edge(true, false);
     for _ in 0..150 {
         b.insert("x");

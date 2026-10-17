@@ -6,6 +6,7 @@ pub mod graphemes;
 pub mod lifecycle;
 
 pub use buffer::{
-    Buffer, BufferSnapshot, Checkpoint, Selection, TextEdit, Transaction, TransactionError,
+    Buffer, BufferSnapshot, Checkpoint, Selection, TextDocument, TextEdit, Transaction,
+    TransactionError,
 };
 pub use change::{Change, TextPoint};

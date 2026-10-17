@@ -1,7 +1,7 @@
 # Vim
 
 Select **Vim** in Settings > Keymap provider to enable this opt-in keymap.
-Each buffer starts in Normal mode and keeps its own mode and pending command.
+Each editor view starts in Normal mode and keeps its own mode and pending command.
 The status bar shows `NORMAL`, `INSERT`, `VISUAL`, `V-LINE`, `V-BLOCK`, and pending counts or prefixes.
 
 | Keys | Action |
@@ -65,7 +65,7 @@ rejected without partially changing the document.
 The keymap claims `Ctrl+v` and `Ctrl+q` while the editor is focused in Normal or
 Visual modes, ahead of application paste/quit shortcuts. It releases those keys
 in Insert mode. Menu and other native clipboard actions retain their standard
-behavior. The mode and selections remain local to each buffer.
+behavior. The mode and selections remain local to each editor view.
 
 This is an initial subset, not full Vim emulation. Registers,
 yank/put, operator–motion combinations (`dw`, `d$`), text objects, command-line

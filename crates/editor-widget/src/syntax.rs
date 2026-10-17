@@ -253,7 +253,7 @@ mod tests {
     fn view(buffer: &Buffer) -> SyntaxView {
         let snapshot = Engine::new(Language::Rust)
             .unwrap()
-            .update(buffer.revision(), buffer.text().clone(), &[], || false)
+            .update(buffer.revision(), buffer.text(), &[], || false)
             .unwrap();
         SyntaxView::new(
             velk_plugin_tree_sitter::prepare(
@@ -295,7 +295,7 @@ mod tests {
         let old = view(&buffer).snapshot;
         buffer.insert("// 👩‍💻\n");
         let mapped = SyntaxView::new(old.clone(), &buffer).unwrap();
-        let spans = mapped.spans(buffer.text(), 0..buffer.text().len_chars());
+        let spans = mapped.spans(&buffer.text(), 0..buffer.text().len_chars());
         assert!(
             spans
                 .iter()
@@ -310,12 +310,12 @@ mod tests {
         assert_eq!(
             SyntaxView::new(old.clone(), &buffer)
                 .unwrap()
-                .spans(buffer.text(), 0..buffer.text().len_chars()),
-            view(&buffer).spans(buffer.text(), 0..buffer.text().len_chars())
+                .spans(&buffer.text(), 0..buffer.text().len_chars()),
+            view(&buffer).spans(&buffer.text(), 0..buffer.text().len_chars())
         );
         buffer.redo();
         let mapped = SyntaxView::new(old, &buffer).unwrap();
-        let mut projected = buffer.text().clone();
+        let mut projected = buffer.text();
         projected.insert(0, "候補\n");
         let spans = mapped
             .project(0..0, 3)
@@ -336,7 +336,7 @@ mod tests {
     fn visible_window_is_local_and_explicit_annotations_override_syntax() {
         let buffer = Buffer::new("fn main() { let name = \"é👩‍💻\"; }\n");
         let syntax = view(&buffer);
-        let spans = syntax.spans(buffer.text(), 11..buffer.text().len_chars());
+        let spans = syntax.spans(&buffer.text(), 11..buffer.text().len_chars());
         assert!(
             spans
                 .iter()
@@ -365,9 +365,7 @@ mod tests {
     fn buffer_history_provides_incremental_coordinates_for_every_revision() {
         let mut buffer = Buffer::new("fn café() { let text = \"世界\"; }\n");
         let mut engine = Engine::new(Language::Rust).unwrap();
-        engine
-            .update(0, buffer.text().clone(), &[], || false)
-            .unwrap();
+        engine.update(0, buffer.text(), &[], || false).unwrap();
         for operation in 0..8 {
             match operation {
                 0 => buffer.insert("// 👩‍💻\n"),
@@ -385,11 +383,11 @@ mod tests {
             }
             let changes = buffer.edits_since(buffer.revision() - 1).unwrap();
             let incremental = engine
-                .update(buffer.revision(), buffer.text().clone(), &changes, || false)
+                .update(buffer.revision(), buffer.text(), &changes, || false)
                 .unwrap();
             let fresh = Engine::new(Language::Rust)
                 .unwrap()
-                .update(buffer.revision(), buffer.text().clone(), &[], || false)
+                .update(buffer.revision(), buffer.text(), &[], || false)
                 .unwrap();
             assert_eq!(
                 incremental.highlights(0..buffer.text().len_chars()),
@@ -404,9 +402,7 @@ mod tests {
         use crate::{TextEdit, Transaction};
         let mut buffer = Buffer::new("fn café() { let text = \"世界\"; }\n");
         let mut engine = Engine::new(Language::Rust).unwrap();
-        engine
-            .update(0, buffer.text().clone(), &[], || false)
-            .unwrap();
+        engine.update(0, buffer.text(), &[], || false).unwrap();
         let length = buffer.text().len_chars();
         buffer
             .apply_transaction(Transaction {
@@ -442,11 +438,11 @@ mod tests {
                 assert_eq!(change.revision, revision + index as u64 + 1);
             }
             let incremental = engine
-                .update(buffer.revision(), buffer.text().clone(), &changes, || false)
+                .update(buffer.revision(), buffer.text(), &changes, || false)
                 .unwrap();
             let fresh = Engine::new(Language::Rust)
                 .unwrap()
-                .update(buffer.revision(), buffer.text().clone(), &[], || false)
+                .update(buffer.revision(), buffer.text(), &[], || false)
                 .unwrap();
             assert_eq!(
                 incremental.highlights(0..buffer.text().len_chars()),

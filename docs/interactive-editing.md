@@ -54,7 +54,7 @@ standard editing. Select `velk.vim` to enable the bundled Normal/Insert/Visual k
 see its [supported keys and limitations](../plugins/vim/README.md).
 
 `Intent::Key` carries committed keyboard text or a named key, modifiers, and
-host-owned per-buffer `input::State`. An empty key initializes a buffer. Keymap
+host-owned per-view `input::State`. An empty key initializes a view. Keymap
 requests carry selection and document length but no document text or pair list,
 so their evaluation is independent of the size of selected lines.
 `Decision::Input` returns a bounded state and list of editor actions. A response
@@ -76,7 +76,7 @@ hyphens. An empty ID leaves the mode unspecified; the host uses `insert` for
 non-capturing input and `command` for capturing input. User [keybindings](keybindings.md)
 match this ID rather than the display label, which may include counts or prefixes.
 
-State is local to each buffer, reset when its provider is replaced or deselected,
+State is local to each editor view, reset when its provider is replaced or deselected,
 and is not serialized into recovery data. Unloaded provider leases decline and
 release modal capture. If an active capturing provider fails validation or
 execution, the editor consumes input and logs the error to avoid inserting
@@ -172,7 +172,7 @@ so language-aware quote, string, comment, and lifetime handling remains deferred
 Typing a closing delimiter skips only a matching tracked close at the caret.
 Backspace removes both delimiters only between an empty tracked pair. Skipping
 changes only the caret; paired deletion is one undo step. The most recent 256
-pairs per buffer are tracked; older pairs fall back to literal editing.
+pairs per view are tracked; older pairs fall back to literal editing.
 
 ## Configuration example
 

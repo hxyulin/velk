@@ -230,7 +230,7 @@ mod tests {
         let reference = actual.read(|e| Surface {
             syntax: None,
             syntax_demand: None,
-            rope: e.buffer.text().clone(),
+            rope: e.buffer.text(),
             revision: e.buffer.revision(),
             selection: e.buffer.selection(),
             caret: None,

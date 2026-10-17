@@ -56,6 +56,9 @@ the terminal plugin is disabled in this example workspace.
 
 - **Native editing:** Unicode and grapheme-aware navigation, IME input,
   selection, clipboard operations, undo/redo, and virtualized text rendering.
+- **Multiple views:** nested horizontal and vertical splits, independent carets
+  and scrolling over shared text and undo history, with layout recovery. Split
+  right with Command+\ / Control+\ or use the command palette.
 - **Configurable shortcuts:** text-file keybindings, chords, Vim mode filters, and
   direct invocation of host and plugin commands.
 - **Plugin-provided editing:** Tab / Shift+Tab indentation, aligned newlines, matching brackets, and selection wrapping.

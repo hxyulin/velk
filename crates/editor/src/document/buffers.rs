@@ -11,7 +11,7 @@ pub(super) struct OpenRequest {
     path: PathBuf,
     position: Option<velk_commands::Position>,
     diagnostic: Option<(u64, usize)>,
-    origin: Option<(velk_editor_model::navigation::Anchor, u64)>,
+    origin: Option<(velk_editor_model::navigation::Anchor, u64, u64)>,
 }
 enum Opened {
     Existing(u64),
@@ -77,7 +77,69 @@ pub(super) struct BufferState {
     pub saving: Option<Task>,
     pub semantic: Option<semantic::State>,
     pub search: search::State,
+    pub views: Vec<EditorView>,
+}
+pub(super) struct EditorView {
+    pub editor: Entity<Editor>,
     _subscription: Subscription,
+}
+impl EditorView {
+    pub fn new(id: u64, editor: Entity<Editor>, cx: &mut Context<'_, Document>) -> Self {
+        let subscription = observe_editor(id, &editor, cx);
+        Self {
+            editor,
+            _subscription: subscription,
+        }
+    }
+}
+fn observe_editor(
+    id: u64,
+    editor: &Entity<Editor>,
+    cx: &mut Context<'_, Document>,
+) -> Subscription {
+    cx.observe(editor, move |this, source, cx| {
+        this.synchronize_document_views(id, source, cx);
+        let mut changed = false;
+        let mut recovery_changed = false;
+        this.with_buffer(id, cx, |this, cx| {
+            let dirty = this.buffer.editor.read(cx).buffer().is_dirty();
+            let revision = this.buffer.editor.read(cx).buffer().revision();
+            recovery_changed =
+                revision != this.buffer.observed_revision || dirty != this.buffer.dirty;
+            if revision != this.buffer.observed_revision {
+                let changes = this
+                    .buffer
+                    .editor
+                    .read(cx)
+                    .buffer()
+                    .edits_since(this.buffer.observed_revision);
+                this.navigation.edited(id, changes.as_deref());
+                let buffer = this.buffer_info(&this.buffer, cx);
+                this.publish_buffer_event(
+                    velk_plugin_contracts::buffers::Event::Changed { buffer },
+                    cx,
+                );
+            }
+            this.buffer.observed_revision = revision;
+            let bindings_changed = this.sync_buffer_keybindings(cx);
+            let semantic_changed = this.sync_semantics_for(source.clone(), cx);
+            let search_changed = this.sync_search(cx);
+            changed = bindings_changed
+                || this.buffer.dirty != dirty
+                || (!this.background_buffer && (semantic_changed || search_changed));
+            this.buffer.dirty = dirty;
+        });
+        this.deliver_buffer_events(cx);
+        if recovery_changed {
+            this.schedule_recovery(cx);
+        }
+        if changed {
+            this.title();
+        } else {
+            cx.unchanged();
+        }
+    })
+    .expect("editor entity is live")
 }
 impl BufferState {
     pub fn new(
@@ -89,52 +151,10 @@ impl BufferState {
     ) -> Self {
         let dirty = editor.read(cx).buffer().is_dirty();
         let observed_revision = editor.read(cx).buffer().revision();
-        let subscription = cx
-            .observe(&editor, move |this, _, cx| {
-                let mut changed = false;
-                let mut recovery_changed = false;
-                this.with_buffer(id, cx, |this, cx| {
-                    let dirty = this.buffer.editor.read(cx).buffer().is_dirty();
-                    let revision = this.buffer.editor.read(cx).buffer().revision();
-                    recovery_changed =
-                        revision != this.buffer.observed_revision || dirty != this.buffer.dirty;
-                    if revision != this.buffer.observed_revision {
-                        let changes = this
-                            .buffer
-                            .editor
-                            .read(cx)
-                            .buffer()
-                            .edits_since(this.buffer.observed_revision);
-                        this.navigation.edited(id, changes.as_deref());
-                        let buffer = this.buffer_info(&this.buffer, cx);
-                        this.publish_buffer_event(
-                            velk_plugin_contracts::buffers::Event::Changed { buffer },
-                            cx,
-                        );
-                    }
-                    this.buffer.observed_revision = revision;
-                    let bindings_changed = this.sync_buffer_keybindings(cx);
-                    let semantic_changed = this.sync_semantics(cx);
-                    let search_changed = this.sync_search(cx);
-                    changed = bindings_changed
-                        || this.buffer.dirty != dirty
-                        || (!this.background_buffer && (semantic_changed || search_changed));
-                    this.buffer.dirty = dirty;
-                });
-                this.deliver_buffer_events(cx);
-                if recovery_changed {
-                    this.schedule_recovery(cx);
-                }
-                if changed {
-                    this.title();
-                } else {
-                    cx.unchanged();
-                }
-            })
-            .expect("editor entity is live");
+        let subscription = observe_editor(id, &editor, cx);
         Self {
             id,
-            editor,
+            editor: editor.clone(),
             file: file.into(),
             path,
             dirty,
@@ -146,7 +166,10 @@ impl BufferState {
             saving: None,
             semantic: None,
             search: search::State::default(),
-            _subscription: subscription,
+            views: vec![EditorView {
+                editor,
+                _subscription: subscription,
+            }],
         }
     }
 }
@@ -221,6 +244,7 @@ impl Document {
                 self.buffer.search.preserve_selection = true;
                 self.restart_search(cx);
             }
+            self.show_active_document(cx);
             self.title();
             self.schedule_recovery(cx);
             self.restore_focus_pending = true;
@@ -290,6 +314,7 @@ impl Document {
             self.panels.ui.source = Some(velk_panels::NativePath::new(file.path()));
             self.refresh_panels(cx);
         }
+        self.show_active_document(cx);
         self.start_buffer_semantics(cx);
         self.title();
         let buffer = self.buffer_info(&self.buffer, cx);
@@ -434,9 +459,13 @@ impl Document {
                 path: location.path,
                 position: Some(location.position),
                 diagnostic: None,
-                origin: self
-                    .navigation_anchor(cx)
-                    .map(|anchor| (anchor, self.buffer.editor.read(cx).buffer().revision())),
+                origin: self.navigation_anchor(cx).map(|anchor| {
+                    (
+                        anchor,
+                        self.buffer.editor.read(cx).buffer().revision(),
+                        self.views.layout.active,
+                    )
+                }),
             },
             cx,
         );
@@ -453,9 +482,13 @@ impl Document {
                 path,
                 position: None,
                 diagnostic: Some((text_hash, position)),
-                origin: self
-                    .navigation_anchor(cx)
-                    .map(|anchor| (anchor, self.buffer.editor.read(cx).buffer().revision())),
+                origin: self.navigation_anchor(cx).map(|anchor| {
+                    (
+                        anchor,
+                        self.buffer.editor.read(cx).buffer().revision(),
+                        self.views.layout.active,
+                    )
+                }),
             },
             cx,
         );
@@ -493,7 +526,7 @@ impl Document {
             return;
         };
         let offset =
-            velk_editor_model::resolve_position(position, active.editor.read(cx).buffer().text());
+            velk_editor_model::resolve_position(position, &active.editor.read(cx).buffer().text());
         match offset {
             Some(position) => {
                 if let Some(origin) = origin
@@ -561,8 +594,9 @@ impl Document {
             },
             move |this, result, cx| {
                 this.opening = None;
-                let stale = origin.is_some_and(|(anchor, revision)| {
-                    this.navigation_anchor(cx) != Some(anchor)
+                let stale = origin.is_some_and(|(anchor, revision, view)| {
+                    this.views.layout.active != view
+                        || this.navigation_anchor(cx) != Some(anchor)
                         || this
                             .buffer
                             .as_ref()
@@ -578,7 +612,7 @@ impl Document {
                             Ok(Ok(Opened::Existing(id))) => {
                                 let resolved = this.host_buffer(id).and_then(|b| {
                                     this.diagnostic_position(
-                                        b.editor.read(cx).buffer().text(),
+                                        &b.editor.read(cx).buffer().text(),
                                         diagnostic,
                                     )
                                 });
@@ -593,7 +627,7 @@ impl Document {
                                 if this.buffer.as_ref().is_some_and(|b| b.id == id) {
                                     this.navigate_position(
                                         position,
-                                        origin.map(|(anchor, _)| anchor),
+                                        origin.map(|(anchor, _, _)| anchor),
                                         cx,
                                     );
                                 }
@@ -601,7 +635,7 @@ impl Document {
                             Ok(Ok(Opened::Loaded(loaded))) => {
                                 let (file, buffer, path) = *loaded;
                                 let position =
-                                    match this.diagnostic_position(buffer.text(), diagnostic) {
+                                    match this.diagnostic_position(&buffer.text(), diagnostic) {
                                         Ok(value) => value.or(position),
                                         Err(error) => {
                                             this.notice(Some(error));
@@ -621,7 +655,7 @@ impl Document {
                                         {
                                             this.navigate_position(
                                                 position,
-                                                origin.map(|(anchor, _)| anchor),
+                                                origin.map(|(anchor, _, _)| anchor),
                                                 cx,
                                             );
                                         }
@@ -651,6 +685,7 @@ impl Document {
     pub(super) fn remove_current_buffer(&mut self, cx: &mut Context<'_, Self>) {
         if let Some(buffer) = self.buffer.as_ref() {
             let id = buffer.id;
+            self.remove_document_views(id);
             self.publish_buffer_event(velk_plugin_contracts::buffers::Event::Closed { id }, cx);
             self.navigation.retain(|buffer| buffer != id);
         }
@@ -678,6 +713,7 @@ impl Document {
         self.cancel_search(cx);
         self.buffer_order.retain(|id| *id != self.buffer.id);
         self.buffer.replace(next);
+        self.show_active_document(cx);
         if self.buffer.search.open {
             self.buffer.search.preserve_selection = true;
             self.restart_search(cx);

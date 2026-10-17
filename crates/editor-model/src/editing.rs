@@ -12,6 +12,13 @@ pub struct Session {
     multiple: Option<crate::selections::SelectionSet>,
 }
 impl Session {
+    /// A new view shares providers, with independent modes, pairs, and selections.
+    pub fn new_view(&self) -> Self {
+        Self {
+            providers: self.providers.clone(),
+            ..Self::default()
+        }
+    }
     pub fn set_providers(&mut self, providers: BTreeMap<Role, Arc<dyn Provider>>) {
         let unchanged = match (
             self.providers.get(&Role::Keymap),

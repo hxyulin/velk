@@ -21,6 +21,7 @@ pub struct PendingDocument {
     pub scroll: [f32; 2],
 }
 pub struct Pending {
+    pub views: velk_editor_model::views::Snapshot,
     pub next_id: u64,
     pub documents: Vec<PendingDocument>,
     pub active: u64,
@@ -40,6 +41,8 @@ struct SavedDocument {
 #[serde(deny_unknown_fields)]
 struct Saved {
     #[serde(default)]
+    views: velk_editor_model::views::Snapshot,
+    #[serde(default)]
     next_id: u64,
     version: u32,
     documents: Vec<SavedDocument>,
@@ -53,6 +56,7 @@ pub struct RestoredDocument {
     pub editor: Editor,
 }
 pub struct Restored {
+    pub views: velk_editor_model::views::Snapshot,
     pub next_id: u64,
     pub documents: Vec<RestoredDocument>,
     pub active: u64,
@@ -61,6 +65,7 @@ pub struct Restored {
 impl Pending {
     fn encode(self) -> Result<Saved, String> {
         Ok(Saved {
+            views: self.views,
             next_id: self.next_id,
             version: 1,
             active: self.active,
@@ -131,7 +136,10 @@ impl Saved {
         if next_id < minimum_next || next_id == u64::MAX {
             return Err("invalid next document identity".into());
         }
+        self.views
+            .validate(&ids.iter().copied().collect::<Vec<_>>())?;
         Ok(Restored {
+            views: self.views,
             next_id,
             documents,
             active: self.active,
@@ -383,6 +391,7 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.set_root(source.parent().unwrap().to_path_buf());
         Pending {
+            views: Default::default(),
             next_id: 20,
             active: 11,
             workspace,
@@ -409,6 +418,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let (store, _) = Store::open_in(directory.path().into(), false).unwrap();
         store.handle.update(Pending {
+            views: Default::default(),
             next_id: 42,
             documents: vec![],
             active: 0,
@@ -433,7 +443,29 @@ mod tests {
         let recovery = directory.path().join("recovery");
         let (first, restored) = Store::open_in(recovery.clone(), true).unwrap();
         assert!(restored.is_none());
-        first.handle.update(pending(&source));
+        let mut pending = pending(&source);
+        let first_view = pending.views.layout.show(11);
+        let second_view = pending
+            .views
+            .layout
+            .split(velk_editor_model::views::Axis::Horizontal)
+            .unwrap();
+        pending.views.states.insert(
+            first_view,
+            velk_editor_model::views::ViewState {
+                selection: velk_core::Selection { anchor: 2, head: 2 },
+                scroll: [0., 80.],
+            },
+        );
+        pending.views.states.insert(
+            second_view,
+            velk_editor_model::views::ViewState {
+                selection: velk_core::Selection { anchor: 7, head: 7 },
+                scroll: [12., 0.],
+            },
+        );
+        let expected_views = pending.views.clone();
+        first.handle.update(pending);
         first.handle.flush().unwrap();
         assert_eq!(fs::read_to_string(&source).unwrap(), "original\r\n");
         let (other, restored) = Store::open_in(recovery.clone(), true).unwrap();
@@ -446,6 +478,8 @@ mod tests {
         fs::write(&source, "external").unwrap();
         let (resumed, restored) = Store::open_in(recovery.clone(), true).unwrap();
         let restored = restored.unwrap();
+        assert_eq!(restored.views, expected_views);
+        assert_eq!(restored.documents.len(), 2);
         assert_eq!(restored.active, 11);
         assert_eq!(restored.next_id, 20);
         assert_eq!(restored.workspace.root(), source.parent());
@@ -472,7 +506,7 @@ mod tests {
                 .file
                 .clone()
                 .unwrap()
-                .save(restored.documents[0].editor.buffer().text().clone())
+                .save(restored.documents[0].editor.buffer().text())
                 .is_err()
         );
         let mut history = velk_core::Buffer::restore(

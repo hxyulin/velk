@@ -20,6 +20,7 @@ mod search;
 mod semantic;
 mod settings_page;
 mod shell;
+mod views;
 mod workspace_edits;
 use crate::file::FileState;
 use crate::settings;
@@ -51,6 +52,7 @@ pub use velk_core::lifecycle::CloseIntent as Intent;
 
 pub struct Document {
     buffer: buffers::ActiveBuffer,
+    views: views::State,
     window_status: Option<String>,
     inactive: std::collections::BTreeMap<u64, buffers::BufferState>,
     next_buffer: u64,
@@ -124,6 +126,11 @@ impl Document {
             )
             .menu(
                 NativeMenu::new("View")
+                    .command::<views::SplitRight>("Split editor right")
+                    .command::<views::SplitDown>("Split editor down")
+                    .command::<views::CloseView>("Close editor view")
+                    .command::<views::NextView>("Focus next editor view")
+                    .separator()
                     .command::<panels::Toggle>("Toggle panels")
                     .command::<panels::ToggleBottom>("Toggle terminal")
                     .separator()
@@ -169,7 +176,10 @@ impl Document {
         panel_source: Option<velk_panels::NativePath>,
     ) -> Self {
         let order = buffer.as_ref().map(|b| b.id).into_iter().collect();
+        let editor_focus = rxui::FocusHandle::new();
+        let views = views::State::new(buffer.as_ref(), editor_focus.clone());
         Self {
+            views,
             buffer: buffer.into(),
             window_status: None,
             inactive: Default::default(),
@@ -205,7 +215,7 @@ impl Document {
             plugins: None,
             plugin_menu_open: false,
             plugin_page: Default::default(),
-            editor_focus: rxui::FocusHandle::new(),
+            editor_focus,
             shell: shell::State::default(),
             palette: palette::State::default(),
             panels: panels::State::new(panel_source),
@@ -266,7 +276,7 @@ impl Document {
         }
         let (text, checkpoint) = {
             let editor = self.buffer.editor.read(cx);
-            (editor.buffer().text().clone(), editor.buffer().checkpoint())
+            (editor.buffer().text(), editor.buffer().checkpoint())
         };
         let saved_revision = self.buffer.editor.read(cx).buffer().revision();
         let buffer_id = self.buffer.id;
@@ -429,7 +439,10 @@ impl Document {
                 velk_core::lifecycle::DocumentState {
                     id: b.id,
                     dirty: editor.buffer().is_dirty(),
-                    composing: editor.has_composition(),
+                    composing: b
+                        .views
+                        .iter()
+                        .any(|view| view.editor.read(cx).has_composition()),
                     saving: b.saving.is_some(),
                 }
             })
@@ -478,6 +491,7 @@ impl Document {
                     };
                     std::mem::swap(self.buffer.as_mut().unwrap(), &mut next);
                     self.inactive.insert(next.id, next);
+                    self.show_active_document(cx);
                     self.title();
                 }
             }
@@ -821,6 +835,8 @@ impl View for Document {
             palette::Entry::new("velk.layout.rail", layout_rail.clone(), ""),
             palette::Entry::new("velk.layout.tiled", layout_tiled.clone(), ""),
         ];
+        let (view_entries, view_actions) = self.view_commands(cx);
+        entries.extend(view_entries);
         entries.extend(self.plugin_command_entries(cx));
         entries.extend(self.editing_command_entries(cx));
         let (open_bindings, reload_bindings, show_commands) = self.keybinding_actions(cx);
@@ -858,6 +874,7 @@ impl View for Document {
             .children(self.keybinding_notice())
             .child(self.body(layout, search_bar, cx))
             .children(self.status_line(layout, cx));
+        content = view_actions(content);
         content = column()
             .fill_width()
             .fill_height()
@@ -922,19 +939,7 @@ impl Document {
     ) -> rxui::Element {
         use velk_panels::Slot;
         let content: rxui::Element = if self.has_buffers() {
-            self.buffer
-                .editor
-                .clone()
-                .into_element()
-                .focus_handle(self.editor_focus.clone())
-                .on_key_down_capture(cx.listener(|this, event: &KeyInput, cx| {
-                    this.bound_key(event, velk_commands::keybindings::Scope::Editor, cx)
-                }))
-                .fill_width()
-                .fill_height()
-                .flex_shrink(1.)
-                .min_width(0.)
-                .min_height(0.)
+            self.editor_views(cx)
         } else {
             column()
                 .key("empty-workspace")

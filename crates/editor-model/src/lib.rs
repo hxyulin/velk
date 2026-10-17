@@ -20,3 +20,5 @@ pub use position::{prepare_document_edit, resolve_position};
 pub use commands::EditCommand;
 
 pub mod editing;
+
+pub mod views;

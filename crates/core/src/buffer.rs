@@ -1,4 +1,5 @@
 mod session;
+mod views;
 use ropey::{Rope, RopeBuilder};
 pub use session::BufferSnapshot;
 use std::{
@@ -10,13 +11,14 @@ use std::{
     sync::Arc,
 };
 use unicode_segmentation::UnicodeSegmentation;
+pub use views::{Buffer, TextDocument};
 
 use crate::{Change, graphemes};
 
 const HISTORY_LIMIT: usize = 128;
 
 /// A directed selection, in Unicode scalar (Ropey character) offsets.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Selection {
     pub anchor: usize,
     pub head: usize,
@@ -120,7 +122,9 @@ struct History {
 
 /// Rope document and editing state, independent of RXUI and the graphics host.
 /// Newlines are normalized to LF. All caret positions are grapheme boundaries.
-pub struct Buffer {
+struct DocumentState {
+    views: std::collections::BTreeMap<u64, views::State>,
+    next_view: u64,
     current: Snapshot,
     undo: VecDeque<History>,
     redo: Vec<History>,
@@ -133,13 +137,13 @@ pub struct Buffer {
     boundaries: RefCell<VecDeque<(usize, Arc<Vec<usize>>)>>,
 }
 
-impl Default for Buffer {
+impl Default for DocumentState {
     fn default() -> Self {
         Self::new("")
     }
 }
 
-impl Buffer {
+impl DocumentState {
     pub fn new(text: &str) -> Self {
         Self::from_rope(Rope::from_str(&normalize(text)))
     }
@@ -178,6 +182,8 @@ impl Buffer {
         static NEXT_DOCUMENT: AtomicU64 = AtomicU64::new(1);
         let document = NEXT_DOCUMENT.fetch_add(1, Ordering::Relaxed);
         Self {
+            views: Default::default(),
+            next_view: 1,
             current: Snapshot {
                 text,
                 selection: Selection::default(),
@@ -247,10 +253,6 @@ impl Buffer {
         }
         self.saved = checkpoint;
         true
-    }
-
-    pub fn selected_text(&self) -> String {
-        self.text().slice(self.selection().range()).to_string()
     }
 
     pub fn can_undo(&self) -> bool {
@@ -432,6 +434,22 @@ impl Buffer {
     }
 
     fn record(&mut self, edit: Change) {
+        for view in self.views.values_mut() {
+            let map = |position: usize| {
+                if position < edit.replaced.start {
+                    position
+                } else if position <= edit.replaced.end {
+                    edit.replaced.start + edit.inserted
+                } else {
+                    position - edit.replaced.len() + edit.inserted
+                }
+            };
+            view.selection = Selection {
+                anchor: map(view.selection.anchor),
+                head: map(view.selection.head),
+            };
+            view.goal_column = None;
+        }
         self.edits.push_back(edit);
         if self.edits.len() > HISTORY_LIMIT {
             self.edits.pop_front();

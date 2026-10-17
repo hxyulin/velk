@@ -119,9 +119,11 @@ impl Document {
     pub(super) fn refresh_editing(&mut self, cx: &mut Context<'_, Self>) {
         let providers = self.selected_editing();
         for buffer in self.buffer.iter().chain(self.inactive.values()) {
-            buffer.editor.update(cx, |editor, _| {
-                editor.set_editing_providers(providers.clone())
-            });
+            for view in &buffer.views {
+                view.editor.update(cx, |editor, _| {
+                    editor.set_editing_providers(providers.clone())
+                });
+            }
         }
     }
     pub(super) fn refresh_syntax(&mut self, cx: &mut Context<'_, Self>) {
@@ -135,11 +137,13 @@ impl Document {
             })
             .cloned();
         for buffer in self.buffer.iter().chain(self.inactive.values()) {
-            buffer.editor.update(cx, |editor, _| {
-                if let Err(error) = editor.set_syntax_provider(provider.clone()) {
-                    tracing::warn!(%error, "Cannot start syntax service");
-                }
-            });
+            for view in &buffer.views {
+                view.editor.update(cx, |editor, _| {
+                    if let Err(error) = editor.set_syntax_provider(provider.clone()) {
+                        tracing::warn!(%error, "Cannot start syntax service");
+                    }
+                });
+            }
         }
     }
     fn apply_plugin_report(

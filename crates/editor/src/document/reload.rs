@@ -13,6 +13,8 @@ impl Command for ReloadWindow {}
 #[derive(Default, Serialize, Deserialize)]
 pub struct UiState {
     preferences: Preferences,
+    #[serde(default)]
+    pub(crate) views: velk_editor_model::views::Snapshot,
     settings_open: bool,
     plugins_open: bool,
     palette_open: bool,
@@ -102,6 +104,7 @@ impl Document {
         }
         self.cancel_search(cx);
         let ui = UiState {
+            views: self.capture_editor_views(cx),
             preferences: self.shell.store.preferences.clone(),
             settings_open: self.shell.open,
             plugins_open: self.plugin_menu_open,

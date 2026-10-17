@@ -173,11 +173,7 @@ impl Document {
         let (text, revision, caret) = {
             let editor = self.buffer.editor.read(cx);
             let buffer = editor.buffer();
-            (
-                buffer.text().clone(),
-                buffer.revision(),
-                buffer.selection().head,
-            )
+            (buffer.text(), buffer.revision(), buffer.selection().head)
         };
         self.buffer.search.revision = revision;
         let query = self.buffer.search.query.clone();
@@ -329,7 +325,8 @@ impl Document {
                     let editor = entity.read(cx);
                     let range = editor.buffer().selection().range();
                     if !range.is_empty() && range.len() <= model::MAX_QUERY_BYTES {
-                        let selected = editor.buffer().text().slice(range);
+                        let text = editor.buffer().text();
+                        let selected = text.slice(range);
                         if selected.len_bytes() <= model::MAX_QUERY_BYTES {
                             this.buffer.search.query.text = selected.to_string();
                         }

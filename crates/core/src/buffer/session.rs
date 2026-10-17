@@ -138,7 +138,7 @@ fn history(
     result.reverse();
     Ok(result)
 }
-impl Buffer {
+impl DocumentState {
     pub fn snapshot(&self) -> BufferSnapshot {
         BufferSnapshot {
             current: self.current.clone(),

@@ -33,11 +33,12 @@ pub use velk_editor_model::{
 };
 pub use velk_syntax::Language;
 
-/// An editor view. Create a separate entity per open buffer; document state can be
-/// accessed through `buffer()` and programmatic inserts through `insert()`.
+/// One view of a Core document. Use `new_view` for independent selection, input,
+/// scrolling, and rendering over shared text and undo history.
 #[derive(Default)]
 pub struct Editor {
     buffer: Buffer,
+    document_revision: u64,
     editing: velk_editor_model::editing::Session,
     reserved_shortcuts: Vec<Shortcut>,
     syntax_worker: Option<Arc<velk_syntax::Worker>>,
@@ -204,26 +205,89 @@ impl Editor {
         }
     }
     pub fn new(text: &str) -> Self {
-        Self {
-            buffer: Buffer::new(text),
-            ..Self::default()
-        }
+        Self::from_buffer(Buffer::new(text))
     }
 
     /// Attach independently loaded document state to a UI view without copying text.
     pub fn from_buffer(buffer: Buffer) -> Self {
         Self {
+            document_revision: buffer.revision(),
             buffer,
             ..Self::default()
         }
     }
 
+    pub fn new_view(&self) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut view = Self::from_buffer(self.buffer.new_view());
+        view.appearance = self.appearance;
+        view.reserved_shortcuts = self.reserved_shortcuts.clone();
+        view.editing = self.editing.new_view();
+        view.keymap("", false, false, false, false);
+        view.annotations = self.annotations.clone();
+        view.hover.enabled = self.hover.enabled;
+        view.geometry.borrow_mut().offset = self.scroll_offset();
+        view.set_language(self.language)?;
+        view.set_syntax_provider(self.syntax_provider.clone())?;
+        Ok(view)
+    }
+    pub fn shared_annotations(&self) -> Option<Arc<Annotations>> {
+        self.annotations.clone()
+    }
+    pub fn semantic_hover_enabled(&self) -> bool {
+        self.hover.enabled
+    }
+    /// Reconcile presentation after another view or a host operation edits the
+    /// shared document. Preserve this view's scroll instead of revealing its caret.
+    pub fn synchronize_document(
+        &mut self,
+        annotations: Option<Arc<Annotations>>,
+        hover: bool,
+    ) -> bool {
+        let revision = self.buffer.revision();
+        let mut changed = self.document_revision != revision;
+        if changed {
+            self.composition = None;
+            self.edited();
+            self.reveal_caret = false;
+        }
+        let annotations = annotations.filter(|a| a.document_revision == revision);
+        let same = match (&self.annotations, &annotations) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.annotations = annotations;
+            self.refresh_hover_annotations();
+            self.epoch += 1;
+            changed = true;
+        }
+        if self.hover.enabled != hover {
+            self.set_semantic_hover(hover);
+            changed = true;
+        }
+        changed
+    }
+    pub fn restore_view(&mut self, selection: Selection, scroll: [f32; 2]) -> Result<(), String> {
+        if scroll.iter().any(|v| !v.is_finite() || *v < 0.) {
+            return Err("invalid view scroll position".into());
+        }
+        self.buffer.set_selection_preserving_column(selection);
+        self.geometry.borrow_mut().offset = scroll;
+        self.edited();
+        self.reveal_caret = false;
+        Ok(())
+    }
+    pub fn cancel_composition(&mut self) {
+        if self.composition.take().is_some() {
+            self.epoch += 1;
+            self.reveal_caret = false;
+        }
+    }
+
     /// Load a UTF-8 document without creating a full-document String.
     pub fn from_reader(reader: impl std::io::Read) -> std::io::Result<Self> {
-        Ok(Self {
-            buffer: Buffer::from_reader(reader)?,
-            ..Self::default()
-        })
+        Ok(Self::from_buffer(Buffer::from_reader(reader)?))
     }
 
     /// Recreate document state; rendering, syntax and semantic caches start fresh.
@@ -231,10 +295,7 @@ impl Editor {
         if scroll.iter().any(|v| !v.is_finite() || *v < 0.) {
             return Err("invalid scroll position".into());
         }
-        let editor = Self {
-            buffer: Buffer::restore(bytes)?,
-            ..Self::default()
-        };
+        let editor = Self::from_buffer(Buffer::restore(bytes)?);
         editor.geometry.borrow_mut().offset = scroll;
         Ok(editor)
     }
@@ -288,11 +349,7 @@ impl Editor {
             .as_ref()
             .map(|worker| syntax::Demand::new(worker.clone()));
         if let Some(worker) = &self.syntax_worker {
-            worker.request(
-                self.buffer.revision(),
-                self.buffer.text().clone(),
-                Vec::new(),
-            );
+            worker.request(self.buffer.revision(), self.buffer.text(), Vec::new());
         }
         Ok(())
     }
@@ -419,6 +476,7 @@ impl Editor {
         }
     }
     fn edited(&mut self) {
+        self.document_revision = self.buffer.revision();
         let visual = self.editing.has_visual_selection();
         self.editing.synchronize(&self.buffer);
         if visual && !self.editing.has_visual_selection() {
@@ -434,7 +492,7 @@ impl Editor {
             if let Some(worker) = &self.syntax_worker {
                 worker.request(
                     self.buffer.revision(),
-                    self.buffer.text().clone(),
+                    self.buffer.text(),
                     self.buffer
                         .edits_since(self.buffer.revision().saturating_sub(128))
                         .unwrap_or_default(),
@@ -688,7 +746,7 @@ impl View for Editor {
             .enabled(self.composition.is_none());
         let select_all = self.default_shortcut(select_all, Shortcut::primary("a"));
         let mut surface = rxui::custom(viewport::ViewportSurface(Surface {
-            rope: self.buffer.text().clone(),
+            rope: self.buffer.text(),
             revision: self.buffer.revision(),
             selection: self.buffer.selection(),
             caret: Some(self.caret_position()),

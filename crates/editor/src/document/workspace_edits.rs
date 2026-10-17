@@ -10,6 +10,7 @@ use velk_editor_widget::{Editor, Language};
 #[derive(Clone)]
 pub(super) struct Guard {
     pub source: Option<u64>,
+    view: u64,
     context: CommandContext,
     pub owner: Option<(String, u64)>,
     buffers: BTreeMap<PathBuf, (u64, u64)>,
@@ -35,6 +36,7 @@ enum Prepared {
 impl Document {
     pub(super) fn edit_guard(&self, cx: &impl rxui::ReadContext) -> Guard {
         Guard {
+            view: self.views.layout.active,
             source: self.buffer.as_ref().map(|b| b.id),
             context: self.command_context(cx),
             owner: None,
@@ -54,7 +56,8 @@ impl Document {
         }
     }
     pub(super) fn guard_valid(&self, guard: &Guard, cx: &impl rxui::ReadContext) -> bool {
-        self.buffer.as_ref().map(|b| b.id) == guard.source
+        self.views.layout.active == guard.view
+            && self.buffer.as_ref().map(|b| b.id) == guard.source
             && self.command_source_matches(&guard.context, cx)
             && guard
                 .owner
@@ -86,7 +89,7 @@ impl Document {
                         Snapshot {
                             id: b.id,
                             revision: buffer.buffer().revision(),
-                            text: buffer.buffer().text().clone(),
+                            text: buffer.buffer().text(),
                             dirty: buffer.buffer().is_dirty(),
                         },
                     )
@@ -260,7 +263,7 @@ fn prepare(
             let (file, mut buffer) = FileState::read(&document.path).map_err(|e| e.to_string())?;
             let transaction = velk_editor_model::prepare_document_edit(
                 &document,
-                buffer.text(),
+                &buffer.text(),
                 buffer.revision(),
             )?;
             if !buffer
@@ -399,6 +402,7 @@ mod tests {
         };
         let snapshots = BTreeMap::from([(path.clone(), snapshot)]);
         let guard = Guard {
+            view: 0,
             source: Some(1),
             context: CommandContext {
                 input: None,
@@ -437,6 +441,7 @@ mod tests {
             .is_err()
         );
         let guard = Guard {
+            view: 0,
             source: Some(2),
             ..guard
         };
