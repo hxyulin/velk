@@ -300,6 +300,8 @@ fn prepare_snippet(
         .stops
         .iter()
         .map(|stop| velk_commands::snippet::Tabstop {
+            choices: stop.choices.clone(),
+            transform: stop.transform.clone(),
             index: stop.index,
             range: start + stop.range.start..start + stop.range.end,
         })
@@ -648,10 +650,14 @@ mod snippet_tests {
                     replacement: 0,
                     stops: vec![
                         Tabstop {
+                            choices: vec![],
+                            transform: None,
                             index: 1,
                             range: 5..8,
                         },
                         Tabstop {
+                            choices: vec![],
+                            transform: None,
                             index: 0,
                             range: 9..9,
                         },

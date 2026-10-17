@@ -72,10 +72,12 @@ additional edits, including imports, apply as one transaction and undo step.
 Insert/replace items use their replacement range. Without a supplied range, the
 host proposal replaces the identifier prefix preceding the caret.
 
-Completion is plain-text only. The client advertises no snippet support, and
-snippet or command-based items are excluded. Automatic suggestions, snippet tab
-stops, completion documentation, and parameter hints are future work. Invoke
-completion again after dismissing the popup to start another session.
+Completion supports automatic suggestions, selected-item documentation, and
+snippets with variables, interactive choices, mirrors, and bounded transforms.
+Snippet insertion and imports share the checked transaction; subsequent choice
+and transform edits use normal Core transactions and undo. Ctrl+Shift+Space opens
+signature help. Server command-based items remain excluded. See the
+[completion guide](completion.md) for supported syntax, navigation, and limits.
 
 See [plugin commands](plugin-commands.md) for shortcuts, prompts, result handling,
 and the native contract version.

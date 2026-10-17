@@ -228,7 +228,8 @@ Current limitations include:
   Escape dismisses. Selected suggestions can show formatted documentation. Automatic suggestions start after two identifier characters or
   supported provider trigger characters, and can be disabled in plugin settings.
   Snippet placeholders support Tab/Shift+Tab navigation and mirrored editing.
-  Snippet variables, transforms, and server command execution remain deferred.
+  Snippets support document variables, interactive choices, and bounded Rust-regex transforms.
+  Server command execution remains deferred.
   The completion frontend and local matcher are independently replaceable plugin services.
   Ctrl+Shift+Space displays LSP signature help, and ready suggestions support provider-declared punctuation commit characters.
 - Language-server clients and diagnostic publications are shared by workspace.

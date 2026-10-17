@@ -7,6 +7,7 @@ mod documentation;
 mod horizontal;
 mod hover;
 mod signature;
+mod snippet_choices;
 mod surface;
 mod syntax;
 mod unicode_window;
@@ -664,6 +665,9 @@ impl Editor {
         {
             return;
         }
+        if self.snippet_choice_key(event) {
+            return;
+        }
         if self.signature_key(event) {
             return;
         }
@@ -1057,6 +1061,9 @@ impl View for Editor {
                 .into_element()
                 .pointer_events(PointerEvents::Auto),
             );
+        }
+        if let Some(popup) = self.snippet_choices_popup(cx) {
+            root = root.child(popup);
         }
         if let Some(popup) = self.signature_popup(cx) {
             root = root.child(popup);

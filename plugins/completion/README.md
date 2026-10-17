@@ -41,7 +41,10 @@ a pinned native lease; typing does not wait for the plugin worker.
 LSP function completions can insert snippets. Tab and Shift+Tab navigate numbered
 placeholders, repeated placeholders edit together, and the final stop returns to
 normal editing. Escape or undo ends the session. Imports and snippet insertion
-remain one checked undoable transaction. Variables and transforms are deferred.
+remain one checked undoable transaction. Snippet variables resolve from explicit
+provider context. Choice placeholders open a keyboard/pointer menu, and bounded
+Rust-regex transforms update derived occurrences when leaving their source stop.
+See `docs/completion.md` for syntax and resolver limits.
 
 `source_order` selects provider priority using comma-separated plugin IDs; the
 default prefers LSP over document words. `deduplicate` keeps the preferred copy

@@ -49,6 +49,7 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     for mode in [
         "normal",
+        "rich-snippet",
         "workspace",
         "pull",
         "runtime-stop",
@@ -286,6 +287,20 @@ pub(super) fn child(directory: &Path, path: &Path, log: &Path) -> Result<(), Str
                 matches!(e, Event::Status(Status::Ready(_)))
             })
             .await?;
+            if mode == "rich-snippet" {
+                use velk_plugin_contracts::commands::{Outcome, ChoiceAction};
+                service.command(PositionRequest { id: 1, revision: 0, position: 3 }, serde_json::json!({"method":"textDocument/completion","result":"completion","capability":"/completionProvider"}), None)?;
+                let Event::Command { result, .. } = until(&service.events, |event| matches!(event, Event::Command { .. })).await? else { panic!() };
+                let outcome = result?; outcome.validate()?;
+                let Outcome::Completions { items, .. } = outcome else { panic!() };
+                let ChoiceAction::Snippet { snippet } = &items[0].action else { panic!() };
+                assert!(snippet.edit.documents[0].edits[0].text.ends_with(": red red RED"));
+                assert_eq!(snippet.stops.iter().find(|stop| !stop.choices.is_empty()).unwrap().choices, ["red", "green", "blue"]);
+                assert_eq!(snippet.stops.iter().filter(|stop| stop.transform.is_some()).count(), 1);
+                assert_eq!(client.unload_all()?.recv().await.map_err(|e| e.to_string())??.loaded, 0);
+                assert_reaped(log);
+                return Ok(());
+            }
             if mode == "runtime-stop" {
                 // Mirror the application's exit hook with UI clients still alive.
                 drop(runtime.take());

@@ -1323,3 +1323,77 @@ async fn signature_command_uses_negotiated_document_position_and_neutral_paramet
         true
     );
 }
+
+#[tokio::test]
+async fn rich_snippet_completions_keep_variables_choices_and_derived_occurrences() {
+    use velk_plugin_sdk::{
+        Plugin,
+        commands::{ChoiceAction, Handler, Outcome},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let logfile = directory.path().join("rich-snippet.jsonl");
+    let service = Service::start(backend(&logfile, "rich-snippet")).unwrap();
+    service.update(document(&directory.path().join("some_file.rs"), 1, "ri"));
+    until(&service.events, |event| {
+        matches!(event, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let Handler::Semantic { payload } = velk_plugin_lsp::Lsp::contributions()
+        .remove(0)
+        .command
+        .handler
+    else {
+        panic!()
+    };
+    service
+        .command(
+            PositionRequest {
+                id: 1,
+                revision: 1,
+                position: 2,
+            },
+            payload,
+            None,
+        )
+        .unwrap();
+    let Event::Command { result, .. } = until(&service.events, |event| {
+        matches!(event, Event::Command { .. })
+    })
+    .await
+    else {
+        panic!()
+    };
+    let result = result.unwrap();
+    result.validate().unwrap();
+    let serialized = serde_json::to_vec(&result).unwrap();
+    let Outcome::Completions { items, .. } =
+        serde_json::from_slice::<Outcome>(&serialized).unwrap()
+    else {
+        panic!()
+    };
+    let ChoiceAction::Snippet { snippet } = &items[0].action else {
+        panic!()
+    };
+    assert_eq!(
+        snippet.edit.documents[0].edits[0].text,
+        "SomeFile: red red RED"
+    );
+    assert_eq!(
+        snippet
+            .stops
+            .iter()
+            .find(|stop| !stop.choices.is_empty())
+            .unwrap()
+            .choices,
+        ["red", "green", "blue"]
+    );
+    assert_eq!(
+        snippet
+            .stops
+            .iter()
+            .filter(|stop| stop.transform.is_some())
+            .count(),
+        1
+    );
+    service.shutdown_and_join().unwrap();
+}

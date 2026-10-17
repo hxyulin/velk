@@ -139,6 +139,9 @@ while (message := read()) is not None:
         send({"id": message["id"], "result": {"activeSignature": 0, "activeParameter": 1, "signatures": [{"label": "call(𐐀, value)", "parameters": [{"label": [5, 7]}, {"label": [9, 14]}]}]}})
     elif method == "textDocument/completion":
         completion_requests += 1
+        if mode == "rich-snippet":
+            send({"id": message["id"], "result": [{"label": "rich", "insertTextFormat": 2, "insertText": "${TM_FILENAME_BASE/(.*)/${1:/pascalcase}/}: ${1|red,green,blue|} $1 ${1/(.*)/${1:/upcase}/}$0"}]})
+            continue
         if mode == "incomplete-completion":
             items = [] if completion_requests == 2 else [{"label": "print"}]
             result = items if completion_requests >= 4 else {"isIncomplete": completion_requests < 3, "items": items}

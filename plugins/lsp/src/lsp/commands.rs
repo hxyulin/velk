@@ -355,6 +355,7 @@ fn completion(
             .cmp(b.sort_text.as_ref().unwrap_or(&b.label))
     });
     let mut items = Vec::new();
+    let variables = snippet_variables(source, request.position);
     for item in completions.into_iter().take(1000) {
         if item.command.is_some() {
             continue;
@@ -418,7 +419,7 @@ fn completion(
             }
             ChoiceAction::Semantic { payload }
         } else {
-            match completion_action(item, encoding, source, request) {
+            match completion_action_with_variables(item, encoding, source, request, &variables) {
                 Ok(action) => action,
                 Err(_) => continue,
             }
@@ -472,6 +473,16 @@ fn completion_action(
     source: &DocumentSnapshot,
     request: PositionRequest,
 ) -> Result<velk_plugin_sdk::commands::ChoiceAction, String> {
+    let variables = snippet_variables(source, request.position);
+    completion_action_with_variables(item, encoding, source, request, &variables)
+}
+fn completion_action_with_variables(
+    item: lsp_types::CompletionItem,
+    encoding: Encoding,
+    source: &DocumentSnapshot,
+    request: PositionRequest,
+    variables: &velk_plugin_sdk::commands::snippet::Variables,
+) -> Result<velk_plugin_sdk::commands::ChoiceAction, String> {
     use velk_plugin_sdk::commands::{ChoiceAction, snippet};
     if item.command.is_some() {
         return Err("Command-based completion is not supported".into());
@@ -500,7 +511,7 @@ fn completion_action(
         }
     };
     let expansion = if is_snippet {
-        let expansion = snippet::expand(&primary.new_text)?;
+        let expansion = snippet::expand_with_variables(&primary.new_text, variables)?;
         primary.new_text = expansion.text.clone();
         Some(expansion)
     } else {
@@ -668,7 +679,7 @@ mod snippet_tests {
         assert_eq!(snippet.edit.documents[0].edits.len(), 2);
         assert_eq!(snippet.edit.documents[0].edits[0].text, "call(世界)");
         assert_eq!(snippet.stops[0].range, 5..7);
-        let outcome = completion(json!([{"label":"unsupported", "insertTextFormat":2,"insertText":"${TM_FILENAME}"},{"label":"plain"}]), Encoding::Utf16, &source, position, &Value::Null).unwrap();
+        let outcome = completion(json!([{"label":"unsupported", "insertTextFormat":2,"insertText":"${1/a/b/x}"},{"label":"plain"}]), Encoding::Utf16, &source, position, &Value::Null).unwrap();
         let Outcome::Completions { items, .. } = outcome else {
             panic!("missing candidates");
         };
@@ -891,5 +902,109 @@ mod signature_tests {
         assert_eq!(find("print").commit_characters, vec!['.']);
         assert!(find("private").commit_characters.is_empty());
         assert_eq!(find("process").commit_characters, vec!['(', '→']);
+    }
+}
+
+fn snippet_variables(
+    source: &DocumentSnapshot,
+    position: usize,
+) -> velk_plugin_sdk::commands::snippet::Variables {
+    let line = source.text.char_to_line(position);
+    let mut start = position;
+    let mut end = position;
+    while start > 0
+        && position - start <= 64 * 1024
+        && (source.text.char(start - 1).is_alphanumeric() || source.text.char(start - 1) == '_')
+    {
+        start -= 1;
+    }
+    while end < source.text.len_chars()
+        && end - start <= 64 * 1024
+        && (source.text.char(end).is_alphanumeric() || source.text.char(end) == '_')
+    {
+        end += 1;
+    }
+    let bounded = |slice: ropey::RopeSlice<'_>| {
+        if slice.len_bytes() <= 64 * 1024 {
+            slice.to_string()
+        } else {
+            String::new()
+        }
+    };
+    [
+        (
+            "TM_FILENAME",
+            source
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "TM_FILENAME_BASE",
+            source
+                .path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "TM_DIRECTORY",
+            source
+                .path
+                .parent()
+                .unwrap_or(std::path::Path::new(""))
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        ("TM_FILEPATH", source.path.to_string_lossy().into_owned()),
+        ("TM_LINE_INDEX", line.to_string()),
+        ("TM_LINE_NUMBER", (line + 1).to_string()),
+        (
+            "TM_CURRENT_LINE",
+            bounded(source.text.line(line))
+                .trim_end_matches(['\r', '\n'])
+                .into(),
+        ),
+        ("TM_CURRENT_WORD", bounded(source.text.slice(start..end))),
+        ("TM_SELECTED_TEXT", String::new()),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.into(), value))
+    .collect()
+}
+
+#[cfg(test)]
+mod snippet_variable_tests {
+    use super::*;
+    #[test]
+    fn oversized_line_and_word_values_are_unavailable_without_dropping_file_variables() {
+        let source = DocumentSnapshot {
+            path: "/project/large.rs".into(),
+            language: "rust".into(),
+            revision: 1,
+            text: ropey::Rope::from_str(&"x".repeat(65537)),
+        };
+        let variables = snippet_variables(&source, 65537);
+        assert_eq!(variables["TM_CURRENT_LINE"], "");
+        assert_eq!(variables["TM_CURRENT_WORD"], "");
+        assert_eq!(variables["TM_FILENAME"], "large.rs");
+    }
+    #[test]
+    fn file_and_document_variables_expand_without_ambient_access() {
+        let source = DocumentSnapshot {
+            path: "/project/some_file.rs".into(),
+            language: "rust".into(),
+            revision: 1,
+            text: ropey::Rope::from_str("first\nhello_world"),
+        };
+        let variables = snippet_variables(&source, 9);
+        let expansion = velk_plugin_sdk::commands::snippet::expand_with_variables(r"$TM_FILENAME ${TM_FILENAME_BASE/(.*)/${1:/pascalcase}/} $TM_LINE_NUMBER $TM_CURRENT_WORD ${TM_SELECTED_TEXT:fallback}", &variables).unwrap();
+        assert_eq!(
+            expansion.text,
+            "some_file.rs SomeFile 2 hello_world fallback"
+        );
     }
 }

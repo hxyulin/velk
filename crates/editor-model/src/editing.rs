@@ -52,6 +52,10 @@ impl Session {
             return false;
         };
         buffer.break_undo_group();
+        if snippet.apply_transforms(buffer).is_err() {
+            self.cancel_snippet();
+            return true;
+        }
         snippet.advance(backwards);
         if self.project_snippet(buffer).is_err() {
             self.cancel_snippet();
@@ -62,6 +66,36 @@ impl Session {
         self.snippet.is_some()
     }
 
+    pub fn snippet_choices(&self, buffer: &Buffer) -> Option<(Vec<String>, usize)> {
+        self.snippet.as_ref()?.choices(buffer)
+    }
+    pub fn close_snippet_choices(&mut self) {
+        if let Some(snippet) = &mut self.snippet {
+            snippet.close_choices();
+        }
+    }
+    pub fn choose_snippet(&mut self, buffer: &mut Buffer, index: usize) -> Result<(), String> {
+        self.synchronize(buffer);
+        let (choices, _) = self
+            .snippet_choices(buffer)
+            .ok_or("no active snippet choice")?;
+        let text = choices.get(index).ok_or("invalid snippet choice")?;
+        let selection = self.snippet.as_ref().unwrap().selections()[0];
+        if buffer.text().slice(selection.range()) == text.as_str() {
+            return self.project_snippet(buffer);
+        }
+        buffer.break_undo_group();
+        self.multiple
+            .as_mut()
+            .ok_or("missing snippet selections")?
+            .replace(buffer, text)?;
+        self.synchronize(buffer);
+        self.snippet
+            .as_mut()
+            .ok_or("snippet choice was invalidated")?
+            .reopen_choices();
+        self.project_snippet(buffer)
+    }
     /// A new view shares providers, with independent modes, pairs, and selections.
     pub fn new_view(&self) -> Self {
         Self {

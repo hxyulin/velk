@@ -74,7 +74,8 @@ impl Editor {
         false
     }
     pub(super) fn signature_popup(&self, cx: &mut ViewContext<'_, Self>) -> Option<Element> {
-        if self.completion_active()
+        if self.snippet_choices().is_some()
+            || self.completion_active()
             || self.has_hover()
             || self.has_composition()
             || self.signature_refresh()

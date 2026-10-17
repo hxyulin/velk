@@ -287,11 +287,9 @@ transaction path. Ranges must be valid, mirrors must have identical defaults, an
 the primary insertion must target the guarded source buffer.
 
 LSP advertises snippet support and expands numbered stops (`$1`, `${1}`), defaults
-(`${1:value}`), nested defaults, mirrors, escaped characters, and choice defaults
-(`${1|one,two|}`, initially selecting `one`). `commands::snippet::expand` is also
-available to other providers. Snippet variables and regular-expression transforms
-are not supported; these candidates are declined instead of inserting raw syntax.
-Expansion is bounded to 64 KiB, 256 stops, and 16 nesting levels.
+(`${1:value}`), nested defaults, mirrors, escaped characters, and interactive choices
+(`${1|one,two|}`, initially selecting `one`). Expansion is bounded to 64 KiB,
+256 stops, and 16 nesting levels.
 
 The host validates and commits the primary insertion and additional edits such as
 imports together. It adjusts tabstop positions for preceding edits and normalized
@@ -305,6 +303,63 @@ redo, programmatic edits, and edits from another view end navigation. Replacing 
 parent default removes its nested stops. Sessions belong to a view; new views and
 redo do not recreate them. Placeholder selection uses the existing selection and
 multi-caret renderer.
+
+### Variables
+
+`commands::snippet::expand_with_variables` takes an explicit `Variables` map.
+`$NAME` and `${NAME}` insert a supplied value; `${NAME:default}` uses its default
+when the value is absent or empty. An unknown variable without a default becomes
+an editable placeholder containing its name; repeated occurrences edit together.
+Known empty values insert nothing. Variable text is literal, with normalized LF
+line endings; it is never parsed as another snippet. `expand` uses an empty map.
+Neither entry point reads environment variables, files, network, or clipboard.
+
+The LSP contributor supplies `TM_FILENAME`, `TM_FILENAME_BASE`, `TM_DIRECTORY`,
+`TM_FILEPATH`, `TM_LINE_INDEX` (zero-based), `TM_LINE_NUMBER` (one-based),
+`TM_CURRENT_LINE`, and `TM_CURRENT_WORD` from its revisioned document snapshot.
+Line or word values larger than 64 KiB resolve empty rather than copying an
+unbounded line into every candidate; defaults still apply.
+`TM_SELECTED_TEXT` is empty because semantic position requests have no selection
+payload; its default can still be used. Other providers can supply additional
+variables explicitly. Date, clipboard, and workspace variables have no built-in
+resolver yet. Context is limited to 128 values, with 128-byte names and 64 KiB values.
+
+### Interactive choices
+
+Choice lists retain up to 32 values of at most 4 KiB each. The caret menu shares
+the editor's theme and accessibility roles. Up/Down cycles choices, Enter confirms
+without inserting a newline, and clicking a value selects it. Tab/Shift+Tab keeps
+normal snippet navigation. Choice replacement updates plain mirrors together and
+retains the selected placeholder. Typing a custom value closes the menu; returning
+to the tabstop reopens it. Escape ends the snippet session. Choice changes are
+ordinary undoable edits; undo ends navigation. The menu takes precedence over a
+completion popup, and pointer actions check revision, selection, and choice list.
+
+### Transforms
+
+Variable transforms such as `${TM_FILENAME_BASE/(.*)/${1:/pascalcase}/}` run during
+expansion. Placeholder transforms such as `${1/(.*)/${1:/upcase}/}` create derived
+occurrences. These stay out of the editable mirror selections and tab order;
+they update in one checked transaction when leaving their source placeholder,
+including when navigating backward. Returning to a source lets you edit it again.
+Derived changes map the remaining placeholder ranges through normal Core edits.
+Replacing a parent default removes its nested stops and derived occurrences.
+
+Transforms support `$0`/`$1`/`${1}` capture references, `upcase`, `downcase`,
+`capitalize`, `camelcase`, `pascalcase`, and conditional/default formats
+(`${1:+if}`, `${1:?if:else}`, `${1:-else}`, `${1:else}`). The supported flags are
+`g`, `i`, `m`, and `s`. Patterns use Rust `regex`, with its Unicode behavior;
+JavaScript lookarounds and backreferences are rejected. Patterns and replacement
+formats are limited to 4 KiB, format nesting to 16, matches to 4,096, and expanded
+output to 64 KiB. A transform that exceeds a runtime limit ends snippet navigation
+without applying a partial transform batch. Transform updates use a separate undo
+step from the placeholder text edit. This is a supported subset of snippet syntax,
+not a complete JavaScript-regex implementation.
+
+`Tabstop::choices` carries available values; `Tabstop::transform` marks a derived
+occurrence referencing `index`. Snippet validation checks their bounds, requires
+a plain source for each derived occurrence, and checks that plain mirrors have
+identical text and choices. Contract versions remain 1 during development.
 
 ## Replaceable frontends
 

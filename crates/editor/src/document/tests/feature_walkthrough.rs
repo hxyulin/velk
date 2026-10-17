@@ -756,6 +756,55 @@ fn render_feature_walkthrough() {
             );
         })
     });
+    capture.runtime().update(|cx| entity.update(cx, |doc, cx| {
+        let variables = velk_commands::snippet::Variables::from([("TM_FILENAME".into(), "snippet-demo.rs".into())]);
+        let snippet = velk_commands::snippet::expand_with_variables("// $TM_FILENAME\nstruct ${1|UserAccount,ProjectConfig,WorkspaceItem|} {\n    name: String,\n}\n\nimpl $1 {\n    const LABEL: &str = \"${1/(.*)/${1:/upcase}/}\";\n}\n$0", &variables).unwrap();
+        doc.buffer.editor.update(cx, |editor, _| {
+            editor.set_text(&snippet.text);
+            editor.start_snippet(snippet.stops).unwrap();
+        });
+    }));
+    shot(&mut capture, &output, "snippet-choices");
+    assert!(
+        capture
+            .element("snippet-choices")
+            .unwrap()
+            .unwrap()
+            .bounds
+            .height
+            > 20.
+    );
+    capture
+        .key(rxui::KeyEvent {
+            key: rxui::KeyboardKey::ArrowDown,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+    shot(&mut capture, &output, "snippet-choice-selected");
+    capture
+        .key(rxui::KeyEvent {
+            key: rxui::KeyboardKey::Tab,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+    capture.runtime().update(|cx| {
+        assert!(
+            entity
+                .read(cx)
+                .buffer
+                .editor
+                .read(cx)
+                .buffer()
+                .text()
+                .to_string()
+                .contains("PROJECTCONFIG")
+        )
+    });
+    shot(&mut capture, &output, "snippet-transform");
     std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; selected-item documentation rendered by Markdown plugin; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout; unload LSP; automatic completion after keyboard typing in untitled buffer; typo correction from pritn to print; undo completion.\n").unwrap();
     drop(capture);
     drop(plugins);

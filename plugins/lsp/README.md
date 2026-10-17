@@ -88,3 +88,9 @@ cycles overloads and Escape dismisses it. Initial automatic signature triggers
 are deferred. Completion commit characters use item overrides or server defaults
 and are replayed through host editing after checked acceptance. Snippet openers
 are consumed once. See [completion](../../docs/completion.md) for behavior and limits.
+
+Snippet completions resolve file/document variables from their revisioned snapshot,
+retain interactive choices, and carry placeholder transforms through native results.
+Selected text is unavailable to semantic position requests and resolves empty;
+clipboard, dates, and workspace variables have no implicit resolver. The supported
+regex syntax and editing behavior are documented in [completion](../../docs/completion.md).

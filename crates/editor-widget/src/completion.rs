@@ -292,6 +292,9 @@ impl Editor {
     }
     pub(super) fn completion_popup(&self, cx: &mut ViewContext<'_, Self>) -> Option<Element> {
         let session = self.completion.session.as_ref()?;
+        if self.snippet_choices().is_some() {
+            return None;
+        }
         if session.visible.is_empty() {
             return None;
         }
