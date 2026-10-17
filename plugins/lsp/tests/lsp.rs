@@ -496,7 +496,7 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
             unreachable!()
         };
         let result = match result.unwrap() {
-            Outcome::Completions { items } => {
+            Outcome::Completions { items, .. } => {
                 assert_eq!(items[0].filter_text, "call");
                 assert_eq!(items[0].sort_text, "001");
                 assert!(!items[0].id.is_empty());
@@ -576,6 +576,7 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
         .iter()
         .find(|m| m["method"] == "initialize")
         .unwrap()["params"]["capabilities"];
+    assert_eq!(init["textDocument"]["completion"]["contextSupport"], true);
     assert_eq!(
         init["textDocument"]["completion"]["completionItem"]["snippetSupport"],
         true
@@ -1019,6 +1020,12 @@ async fn completion_triggers_use_server_capabilities_and_forward_the_invocation_
             character: character.into(),
         })
         .unwrap();
+        let input = velk_plugin_sdk::commands::contributions::Input {
+            activation: Some(input),
+            ..Default::default()
+        }
+        .encode()
+        .unwrap();
         service
             .command(
                 PositionRequest {
@@ -1037,7 +1044,7 @@ async fn completion_triggers_use_server_capabilities_and_forward_the_invocation_
         else {
             panic!()
         };
-        let Outcome::Completions { items } = result.unwrap() else {
+        let Outcome::Completions { items, .. } = result.unwrap() else {
             panic!()
         };
         assert_eq!(!items.is_empty(), expected);
@@ -1093,7 +1100,11 @@ async fn selected_completion_documentation_resolves_without_returning_or_applyin
         )
         .unwrap();
     let Event::Command {
-        result: Ok(Outcome::Completions { mut items }),
+        result:
+            Ok(Outcome::Completions {
+                mut items,
+                continuation: None,
+            }),
         ..
     } = until(&service.events, |event| {
         matches!(event, Event::Command { .. })
@@ -1170,5 +1181,80 @@ async fn selected_completion_documentation_resolves_without_returning_or_applyin
     assert_eq!(
         capabilities["textDocument"]["completion"]["completionItem"]["documentationFormat"],
         serde_json::json!(["markdown", "plaintext"])
+    );
+}
+
+#[tokio::test]
+async fn incomplete_completion_lists_retrigger_until_complete_and_fresh_invocations_reset() {
+    use velk_plugin_sdk::Plugin;
+    use velk_plugin_sdk::commands::{Handler, Outcome, contributions};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.rs");
+    let logfile = directory.path().join("incomplete.jsonl");
+    let service = Service::start(backend(&logfile, "incomplete-completion")).unwrap();
+    service.update(document(&path, 1, "pr"));
+    until(&service.events, |event| {
+        matches!(event, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let Handler::Semantic { payload } = velk_plugin_lsp::Lsp::contributions()
+        .remove(0)
+        .command
+        .handler
+    else {
+        panic!()
+    };
+    let mut continuation = None;
+    for (index, text) in ["pr", "pri", "prin", "print", "print"]
+        .into_iter()
+        .enumerate()
+    {
+        let id = index as u64 + 1;
+        service.update(document(&path, id, text));
+        let input = contributions::Input {
+            activation: None,
+            continuation: continuation.clone(),
+            refresh: index > 0 && index < 4,
+        }
+        .encode()
+        .unwrap();
+        service
+            .command(
+                PositionRequest {
+                    id,
+                    revision: id,
+                    position: text.chars().count(),
+                },
+                payload.clone(),
+                Some(input),
+            )
+            .unwrap();
+        let Event::Command { result, .. } = until(&service.events, |event| {
+            matches!(event, Event::Command { .. })
+        })
+        .await
+        else {
+            panic!()
+        };
+        let Outcome::Completions {
+            items,
+            continuation: state,
+        } = result.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(items.is_empty(), index == 1);
+        assert_eq!(state.is_some(), index < 2);
+        continuation = state;
+    }
+    service.shutdown_and_join().unwrap();
+    let contexts: Vec<_> = log(&logfile)
+        .into_iter()
+        .filter(|message| message["method"] == "textDocument/completion")
+        .map(|message| message["params"]["context"].clone())
+        .collect();
+    assert_eq!(
+        contexts,
+        [1, 3, 3, 1, 1].map(|kind| serde_json::json!({"triggerKind": kind}))
     );
 }

@@ -1,17 +1,20 @@
 //! Default completion policy and an independent document-word contributor.
 pub mod matching;
+mod merge;
 use velk_completion_contracts::{Collection, Contribution, TOPIC};
 use velk_plugin_sdk::{Host, Plugin, Registrar, commands::*, hooks, host};
 
 pub struct Completion {
     automatic: bool,
     typing: bool,
+    merge: merge::Policy,
 }
 impl Default for Completion {
     fn default() -> Self {
         Self {
             automatic: true,
             typing: true,
+            merge: Default::default(),
         }
     }
 }
@@ -41,6 +44,8 @@ impl Plugin for Completion {
     fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
         use velk_plugin_sdk::settings::{Definition, Kind};
         vec![
+            Definition { key: "source_order".into(), title: "Completion source order".into(), description: "Comma-separated plugin IDs, highest priority first. Unlisted sources follow in declaration order. Priority breaks equal text-match scores.".into(), kind: Kind::Text { max_length: 4096 }, default: "velk.lsp, velk.completion.words".into() },
+            Definition { key: "deduplicate".into(), title: "Merge equivalent suggestions".into(), description: "Keep the highest-priority copy of concrete edits shared by different sources. Different edits, overload details, and unresolved actions stay separate.".into(), kind: Kind::Boolean, default: true.into() },
             Definition { key: "automatic".into(), title: "Automatic completion".into(), description: "Request suggestions after typing and provider trigger characters.".into(), kind: Kind::Boolean, default: true.into() },
             Definition { key: "typing".into(), title: "Complete while typing words".into(), description: "Start suggestions after two identifier characters; trigger characters still work when disabled.".into(), kind: Kind::Boolean, default: true.into() },
         ]
@@ -50,6 +55,14 @@ impl Plugin for Completion {
             .as_bool()
             .ok_or("invalid automatic setting")?;
         self.typing = values["typing"].as_bool().ok_or("invalid typing setting")?;
+        self.merge.source_order = merge::Policy::parse_order(
+            values["source_order"]
+                .as_str()
+                .ok_or("invalid source order")?,
+        )?;
+        self.merge.deduplicate = values["deduplicate"]
+            .as_bool()
+            .ok_or("invalid deduplication setting")?;
         Ok(())
     }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
@@ -69,9 +82,9 @@ impl Plugin for Completion {
         )?;
         reg.provide(
             hooks::Request(velk_completion_contracts::REDUCE),
-            |_: &mut Self, bytes: &[u8]| {
+            |this: &mut Self, bytes: &[u8]| {
                 let input: Collection = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-                serde_json::to_vec(&reduce(input)?).map_err(|e| e.to_string())
+                serde_json::to_vec(&this.merge.reduce(input)?).map_err(|e| e.to_string())
             },
         )
     }
@@ -116,36 +129,7 @@ impl Completion {
 }
 
 pub fn reduce(input: Collection) -> Result<Outcome, String> {
-    let mut items = Vec::new();
-    // Host supplies results in declaration order, independent of response timing.
-    for result in input.results {
-        if let Ok(Outcome::Completions { items: candidates }) = result.outcome {
-            for mut candidate in candidates {
-                candidate.choice.action = ChoiceAction::Contributed {
-                    plugin: result.plugin.clone(),
-                    generation: result.generation,
-                    action: Box::new(candidate.choice.action),
-                };
-                let source = &result.plugin;
-                candidate.choice.detail = Some(match candidate.choice.detail.take() {
-                    Some(detail) => format!("{source}: {detail}"),
-                    None => source.clone(),
-                });
-                candidate.id = format!("{}:{}", result.command, candidate.id);
-                items.push(candidate);
-                if items.len() == 1000 {
-                    break;
-                }
-            }
-        }
-        if items.len() == 1000 {
-            break;
-        }
-    }
-    items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
-    let outcome = Outcome::Completions { items };
-    outcome.validate()?;
-    Ok(outcome)
+    merge::Policy::default().reduce(input)
 }
 
 #[derive(Default)]
@@ -230,7 +214,10 @@ fn words(context: &Context, buffer: u64, text: &str) -> Result<Outcome, String> 
         velk_completion_contracts::Invocation::decode(context.input.as_deref())?,
         Some(velk_completion_contracts::Invocation::Character { .. })
     ) {
-        return Ok(Outcome::Completions { items: vec![] });
+        return Ok(Outcome::Completions {
+            items: vec![],
+            continuation: None,
+        });
     }
     let position = context.position.ok_or("missing completion position")?;
     let revision = context.revision.ok_or("missing completion revision")?;
@@ -293,20 +280,48 @@ fn words(context: &Context, buffer: u64, text: &str) -> Result<Outcome, String> 
             Choice {
                 title: word.into(),
                 detail: None,
-                action: ChoiceAction::BufferEdit {
-                    id: buffer,
-                    revision,
-                    edits: vec![TextEdit {
-                        start: begin,
-                        end,
-                        text: word.into(),
-                    }],
+                action: if let Some(path) = &context.path {
+                    let start = Position {
+                        line,
+                        column: before.rsplit('\n').next().unwrap_or_default().len() as u32,
+                        encoding: Encoding::Utf8,
+                    };
+                    let end = Position {
+                        column: start.column + prefix.len() as u32,
+                        ..start
+                    };
+                    ChoiceAction::Edit {
+                        edit: WorkspaceEdit {
+                            documents: vec![DocumentEdit {
+                                path: path.clone(),
+                                revision: Some(revision),
+                                edits: vec![TextEdit {
+                                    start,
+                                    end,
+                                    text: word.into(),
+                                }],
+                            }],
+                        },
+                    }
+                } else {
+                    ChoiceAction::BufferEdit {
+                        id: buffer,
+                        revision,
+                        edits: vec![TextEdit {
+                            start: begin,
+                            end,
+                            text: word.into(),
+                        }],
+                    }
                 },
             }
             .into(),
         );
     }
-    Ok(Outcome::Completions { items })
+    Ok(Outcome::Completions {
+        items,
+        continuation: None,
+    })
 }
 
 #[cfg(test)]
@@ -324,7 +339,7 @@ mod tests {
     #[test]
     fn words_support_untitled_unicode_and_replace_only_the_prefix() {
         let input = "界面 世界 世界\n世";
-        let Outcome::Completions { items } =
+        let Outcome::Completions { items, .. } =
             words(&context(input.chars().count()), 42, input).unwrap()
         else {
             panic!()
@@ -356,7 +371,11 @@ mod tests {
             outcome,
         };
         let candidates = words(&context(16), 42, "print process pr").unwrap();
-        let merged = reduce(Collection {
+        let merged = merge::Policy {
+            deduplicate: false,
+            ..Default::default()
+        }
+        .reduce(Collection {
             context: context(16),
             results: vec![
                 source("test.failed", 1, Err("not ready".into())),
@@ -365,7 +384,7 @@ mod tests {
             ],
         })
         .unwrap();
-        let Outcome::Completions { items } = merged else {
+        let Outcome::Completions { items, .. } = merged else {
             panic!()
         };
         assert!(!items.is_empty());
@@ -376,7 +395,7 @@ mod tests {
             matches!(&items.last().unwrap().action, ChoiceAction::Contributed { plugin, generation: 3, .. } if plugin == "test.other")
         );
         assert!(
-            matches!(reduce(Collection { context: context(0), results: vec![] }).unwrap(), Outcome::Completions { items } if items.is_empty())
+            matches!(reduce(Collection { context: context(0), results: vec![] }).unwrap(), Outcome::Completions { items, ..} if items.is_empty())
         );
     }
     #[test]
@@ -405,7 +424,7 @@ mod tests {
         });
         let mut words = Words::default();
         words.attach_host(mock.host());
-        let Outcome::Completions { items } = words.complete(context(16)).unwrap() else {
+        let Outcome::Completions { items, .. } = words.complete(context(16)).unwrap() else {
             panic!()
         };
         assert_eq!(
@@ -516,9 +535,17 @@ mod activation_tests {
         );
         let mut input = activation(":", "", dynamic());
         let reason = completion.activate(&input).unwrap();
-        input.context.input = Some(serde_json::to_string(&reason).unwrap());
+        input.context.input = Some(
+            contributions::Input {
+                activation: Some(serde_json::to_string(&reason).unwrap()),
+                ..Default::default()
+            }
+            .encode()
+            .unwrap(),
+        );
         input.context.position = Some(1);
-        let Outcome::Completions { items } = words(&input.context, 1, ": words").unwrap() else {
+        let Outcome::Completions { items, .. } = words(&input.context, 1, ": words").unwrap()
+        else {
             panic!()
         };
         assert!(items.is_empty());
@@ -544,9 +571,10 @@ mod activation_tests {
                         },
                     },
                 }],
+                continuation: None,
             }),
         };
-        let Outcome::Completions { items } = reduce(Collection {
+        let Outcome::Completions { items, .. } = reduce(Collection {
             context: activation("x", "xx", Triggers::default()).context,
             results: vec![
                 source("test.first", "same", "20"),
@@ -573,7 +601,7 @@ mod matching_tests {
             revision: Some(1),
             position: Some(text.chars().count()),
         };
-        let Outcome::Completions { items } = words(&context, 42, text).unwrap() else {
+        let Outcome::Completions { items, .. } = words(&context, 42, text).unwrap() else {
             panic!()
         };
         items

@@ -49,7 +49,10 @@ provider settings, and the bundled indentation and autopairs implementations.
 ## Completion matching and snippets
 
 Completion providers, merge/activation policy, and local matching are independently
-replaceable. A stateless `commands::completion::matching::Policy` registers through
+replaceable. Generic collection inputs carry activation and opaque per-source
+continuation state; completion results can return a continuation for the next
+refresh. The host scopes it to the collection and provider generation, without
+interpreting feature-specific protocol data. A stateless `commands::completion::matching::Policy` registers through
 `Registrar::matching`; its context-free C table uses borrowed text views and owned
 output storage. Calls run locally and must perform bounded CPU work without I/O or
 host calls. Retired leases fall back safely while pinning native code until dropped.

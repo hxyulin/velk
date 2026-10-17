@@ -96,7 +96,7 @@ impl Collection {
         let overhead = encode(&self)?.len();
         let budget = limit.saturating_sub(overhead + results.len() * 2) / results.len().max(1);
         for mut result in results {
-            if let Ok(Outcome::Completions { items }) = &mut result.outcome {
+            if let Ok(Outcome::Completions { items, .. }) = &mut result.outcome {
                 let candidates = std::mem::take(items);
                 let mut low = 0;
                 let mut high = candidates.len();
@@ -141,6 +141,7 @@ mod budget_tests {
             generation: 1,
             command: "test.complete".into(),
             outcome: Ok(Outcome::Completions {
+                continuation: Some(serde_json::json!("opaque")),
                 items: (0..100)
                     .map(|index| {
                         crate::Choice {
@@ -171,11 +172,16 @@ mod budget_tests {
         let collection: Collection = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(collection.results.len(), 2);
         for result in collection.results {
-            let Outcome::Completions { items } = result.outcome.unwrap() else {
+            let Outcome::Completions {
+                items,
+                continuation,
+            } = result.outcome.unwrap()
+            else {
                 panic!()
             };
             assert!(!items.is_empty());
             assert!(items.len() < 100);
+            assert_eq!(continuation, Some(serde_json::json!("opaque")));
         }
     }
 }
@@ -189,4 +195,24 @@ pub struct Activation {
     pub text: String,
     pub prefix: String,
     pub contributions: Vec<Contribution>,
+}
+
+/// Per-contributor invocation. The activation input is topic-owned; refresh state
+/// belongs to the same source generation and is discarded on collection dismissal.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Input {
+    pub activation: Option<String>,
+    pub continuation: Option<serde_json::Value>,
+    pub refresh: bool,
+}
+impl Input {
+    pub fn decode(input: Option<&str>) -> Result<Self, String> {
+        input
+            .map(|input| serde_json::from_str(input).map_err(|error| error.to_string()))
+            .unwrap_or_else(|| Ok(Self::default()))
+    }
+    pub fn encode(&self) -> Result<String, String> {
+        serde_json::to_string(self).map_err(|error| error.to_string())
+    }
 }

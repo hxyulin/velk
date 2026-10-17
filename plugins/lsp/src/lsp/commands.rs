@@ -96,11 +96,15 @@ impl Request {
                 params = json!({"textDocument":{"uri":document_uri},"range":{"start":position,"end":position},"context":{"diagnostics":diagnostics,"triggerKind":1}});
             }
             "textDocument/completion" => {
-                params["context"] = match velk_completion_contracts::Invocation::decode(input)? {
-                    Some(velk_completion_contracts::Invocation::Character { character }) => {
-                        json!({"triggerKind":2,"triggerCharacter":character})
+                params["context"] = if velk_completion_contracts::incomplete_refresh(input)? {
+                    json!({"triggerKind":3})
+                } else {
+                    match velk_completion_contracts::Invocation::decode(input)? {
+                        Some(velk_completion_contracts::Invocation::Character { character }) => {
+                            json!({"triggerKind":2,"triggerCharacter":character})
+                        }
+                        _ => json!({"triggerKind":1}),
                     }
-                    _ => json!({"triggerKind":1}),
                 };
             }
             _ => {}
@@ -118,6 +122,12 @@ impl Request {
     ) -> Result<Outcome, String> {
         let (source, version) = source;
         if value.is_null() {
+            if matches!(self.result, ResultKind::Completion) {
+                return Ok(Outcome::Completions {
+                    items: vec![],
+                    continuation: None,
+                });
+            }
             return Ok(Outcome::Message {
                 text: "No result at the caret".into(),
             });
@@ -329,9 +339,9 @@ fn completion(
     use velk_plugin_sdk::commands::{Choice, ChoiceAction};
     let response: lsp_types::CompletionResponse =
         serde_json::from_value(value).map_err(|e| e.to_string())?;
-    let mut completions = match response {
-        lsp_types::CompletionResponse::Array(items) => items,
-        lsp_types::CompletionResponse::List(list) => list.items,
+    let (mut completions, incomplete) = match response {
+        lsp_types::CompletionResponse::Array(items) => (items, false),
+        lsp_types::CompletionResponse::List(list) => (list.items, list.is_incomplete),
     };
     completions.sort_by(|a, b| {
         a.sort_text
@@ -397,7 +407,13 @@ fn completion(
             },
         });
     }
-    Ok(Outcome::Completions { items })
+    Ok(Outcome::Completions {
+        items,
+        continuation: incomplete.then(|| {
+            serde_json::to_value(velk_completion_contracts::Continuation::Incomplete)
+                .expect("completion marker is serializable")
+        }),
+    })
 }
 fn completion_documentation(
     documentation: Option<lsp_types::Documentation>,
@@ -496,6 +512,12 @@ mod completion_trigger_tests {
             character: ".".into(),
         })
         .unwrap();
+        let dot = velk_plugin_sdk::commands::contributions::Input {
+            activation: Some(dot),
+            ..Default::default()
+        }
+        .encode()
+        .unwrap();
         assert!(
             spec.completion_trigger_supported(Some(&dot), &capabilities)
                 .unwrap()
@@ -522,6 +544,12 @@ mod completion_trigger_tests {
                 character: "!".into(),
             })
             .unwrap();
+        let unsupported = velk_plugin_sdk::commands::contributions::Input {
+            activation: Some(unsupported),
+            ..Default::default()
+        }
+        .encode()
+        .unwrap();
         assert!(
             !spec
                 .completion_trigger_supported(Some(&unsupported), &capabilities)
@@ -611,10 +639,89 @@ mod snippet_tests {
         assert_eq!(snippet.edit.documents[0].edits[0].text, "call(世界)");
         assert_eq!(snippet.stops[0].range, 5..7);
         let outcome = completion(json!([{"label":"unsupported", "insertTextFormat":2,"insertText":"${TM_FILENAME}"},{"label":"plain"}]), Encoding::Utf16, &source, position, &Value::Null).unwrap();
-        let Outcome::Completions { items } = outcome else {
+        let Outcome::Completions { items, .. } = outcome else {
             panic!("missing candidates");
         };
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "plain");
+    }
+}
+
+#[cfg(test)]
+mod continuation_tests {
+    use super::*;
+    use velk_plugin_sdk::commands::contributions;
+    #[test]
+    fn continuation_only_affects_refresh_and_arrays_and_null_responses_are_complete() {
+        let request = Request {
+            method: "textDocument/completion".into(),
+            result: ResultKind::Completion,
+            capability: None,
+            parameters: None,
+        };
+        let input = |refresh| {
+            contributions::Input {
+                activation: None,
+                continuation: Some(json!("incomplete")),
+                refresh,
+            }
+            .encode()
+            .unwrap()
+        };
+        assert_eq!(
+            request
+                .params(
+                    "file:///test.rs",
+                    lsp_types::Position::new(0, 0),
+                    Some(&input(true)),
+                    &[]
+                )
+                .unwrap()["context"],
+            json!({"triggerKind":3})
+        );
+        assert_eq!(
+            request
+                .params(
+                    "file:///test.rs",
+                    lsp_types::Position::new(0, 0),
+                    Some(&input(false)),
+                    &[]
+                )
+                .unwrap()["context"],
+            json!({"triggerKind":1})
+        );
+        let source = DocumentSnapshot {
+            path: "/test.rs".into(),
+            language: "rust".into(),
+            revision: 1,
+            text: ropey::Rope::new(),
+        };
+        for value in [
+            json!([]),
+            Value::Null,
+            json!({"isIncomplete":false,"items":[]}),
+        ] {
+            let outcome = request
+                .outcome(
+                    value,
+                    Encoding::Utf8,
+                    (&source, 0),
+                    PositionRequest {
+                        id: 1,
+                        revision: 1,
+                        position: 0,
+                    },
+                    &Value::Null,
+                    &[],
+                )
+                .unwrap();
+            assert!(matches!(
+                outcome,
+                Outcome::Completions {
+                    continuation: None,
+                    ..
+                }
+            ));
+        }
     }
 }

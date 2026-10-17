@@ -5,6 +5,7 @@ import sys
 import time
 
 log_path, mode = sys.argv[1:]
+completion_requests = 0
 if mode == "runtime-stop":
     print("fixture server started", file=sys.stderr, flush=True)
 
@@ -135,6 +136,12 @@ while (message := read()) is not None:
         action["edit"] = {"changes": {uri: [{"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}, "newText": "resolved"}]}}
         send({"id": message["id"], "result": action})
     elif method == "textDocument/completion":
+        completion_requests += 1
+        if mode == "incomplete-completion":
+            items = [] if completion_requests == 2 else [{"label": "print"}]
+            result = items if completion_requests >= 4 else {"isIncomplete": completion_requests < 3, "items": items}
+            send({"id": message["id"], "result": result})
+            continue
         send({"id": message["id"], "result": {"isIncomplete": False, "items": [
             {"label": "complete_call", "filterText": "call", "sortText": "001", "detail": "with an import", "textEdit": {"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}, "newText": "complete_call()"}, "data": {"imports": True}},
             {"label": "snippet", "insertTextFormat": 2, "insertText": "call(${1:value})"}

@@ -276,6 +276,8 @@ pub enum Outcome {
     /// Caret-anchored suggestions; typing refreshes this session without moving focus.
     Completions {
         items: Vec<completion::Item>,
+        /// Opaque contributor-owned state carried only into refreshes of this collection.
+        continuation: Option<serde_json::Value>,
     },
     Choices {
         title: String,
@@ -303,7 +305,15 @@ impl Outcome {
             }
             Self::Edit { edit } => edit.validate()?,
             Self::Snippet { snippet } => snippet.validate()?,
-            Self::Completions { items } => {
+            Self::Completions {
+                items,
+                continuation,
+            } => {
+                if continuation.as_ref().is_some_and(|state| {
+                    serde_json::to_vec(state).map_or(true, |bytes| bytes.len() > 16 * 1024)
+                }) {
+                    return Err("completion continuation exceeds 16 KiB".into());
+                }
                 if items.len() > 1000 {
                     return Err("too many completions".into());
                 }

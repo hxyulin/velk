@@ -53,7 +53,7 @@ with topic `velk_completion_contracts::TOPIC`. Its command uses either:
 - `Handler::Request { hook }`, receiving the ordinary serialized command `Context`;
 - `Handler::Semantic { payload }`, routed to the active document's semantic service.
 
-Return `Outcome::Completions { items }`. Candidates contain a title, optional
+Return `Outcome::Completions { items, continuation }`; use `None` when no refresh state is needed. Candidates contain a title, optional
 detail, and an edit or deferred semantic action. Buffer edits carry a buffer ID and
 revision and work for untitled documents. Semantic actions can lazily resolve
 additional edits, such as imports, before applying a transaction. Contributor
@@ -75,13 +75,14 @@ The host coalesces reducer updates while a previous reducer call is running.
 Oversized batches share the native 1 MiB request budget; candidate tails are
 trimmed before transport so one large source does not block the others.
 
-The default reducer uses each candidate's `sort_text` for ascending lexical order,
-keeps declaration order for ties, adds source details, and caps the combined list
-at 1,000 items. It wraps candidate actions in `Contributed` so a
-subsequent resolve or edit checks the actual source generation. Results from a
-retired source cannot be accepted. Equal labels remain separate. Explicit selection follows the source generation, command, and candidate ID across
-incremental updates, even when display labels change. Automatic selection follows
-the best similarity score; equal-quality arrivals preserve the current choice.
+The default reducer groups sources by configured priority, then uses each source's
+`sort_text` for ascending lexical order, keeping declaration order for ties. It adds
+source details and caps the combined list at 1,000 items after priority and duplicate
+handling. It wraps actions in `Contributed` so subsequent resolves and edits check
+the actual source generation. Results from retired sources cannot be accepted.
+Explicit selection follows the source generation, command, and candidate ID across
+incremental updates. Automatic selection follows the best similarity score, using
+the reducer's source order to break ties even when a preferred source arrives late.
 
 Typing inside the identifier prefix starts a fresh collection against the new
 revision. Old choices can remain visible while refreshing but cannot be accepted.
@@ -89,6 +90,60 @@ Moving away, dismissing, switching documents/views, or closing the document
 cancels the collection. Terminal semantic events release the command slot even
 when their collection has already been replaced. Results are guarded by the
 originating buffer, view, path, revision, caret, and reducer generation.
+
+## Incomplete lists and continuation
+
+The host wraps contributor input in `commands::contributions::Input`, serialized
+inside `Context::input` for request hooks or passed as the semantic command input.
+It contains the optional topic-owned `activation` string, a `refresh` flag, and an
+optional opaque `continuation` value. `Invocation::decode` unwraps the activation
+for completion sources. Direct explicit requests may omit input.
+
+A source returns its continuation with `Outcome::Completions`. The host stores it
+by plugin ID, generation, and command, then returns it only to that source when
+refreshing the same collection, document, and view. Empty result sets can still
+carry a continuation. Complete responses and errors clear it; dismissing the
+collection discards it. Superseded requests retain the last valid state, and late
+responses cannot replace it. Tokens are bounded to 16 KiB and survive bounded
+collection transport when candidate tails are trimmed. The host never interprets
+the token as LSP or other feature data.
+
+LSP preserves `CompletionList.isIncomplete` as the completion protocol's
+`Continuation::Incomplete` marker. Refreshes with that marker send trigger kind 3
+(`TriggerForIncompleteCompletions`), as described by the
+[LSP completion specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_completion).
+Arrays, null responses, and complete lists clear the marker. A fresh explicit or
+automatic session starts without it. The editor continues requesting fresh edits
+for complete lists too, since stale revision-specific edits cannot be accepted.
+
+## Source priority and duplicates
+
+The completion plugin exposes two user-wide settings:
+
+- `source_order`: comma-separated plugin IDs, highest priority first. The default
+  is `velk.lsp, velk.completion.words`; unlisted sources follow in declaration order.
+  An empty value uses declaration order throughout. Up to 32 distinct IDs are allowed.
+- `deduplicate`: enabled by default. Keep the highest-priority copy of equivalent
+  concrete actions from different sources. Disable it to keep every source's result.
+
+These settings apply after restarting the completion plugin, like its other
+settings. Similarity still ranks exact/prefix/typo/fuzzy quality first; source order
+breaks equal-quality ties. Higher-priority sources receive the combined item budget
+first. Server `sort_text` values are compared within their source, rather than
+assuming ranking keys from unrelated servers share a scale.
+
+Equivalence requires the same title, filter text, overload detail, and concrete
+action, including target, revision, ranges, replacement text, additional edits, and
+snippet stops. Workspace edit document/replacement order is normalized for the
+comparison. File-backed document words use UTF-8 workspace edits, allowing exact
+matches with concrete LSP edits without comparing different target representations.
+Untitled buffers retain buffer-ID edits.
+
+Repeated entries within a single source remain available for overloads. Different
+imports, edits, details, or snippet stops remain distinct. Deferred semantic actions
+also stay separate: resolve tokens can hide additional edits, and comparing labels
+or opaque payloads cannot prove equivalence. The reducer does not resolve every
+candidate just to deduplicate it. Documentation comes from the retained candidate.
 
 ## Candidate metadata
 
@@ -182,11 +237,11 @@ to decline. The host does not interpret completion trigger metadata or policy in
 Activation checks the originating view, buffer, revision, caret, dismissal epoch,
 provider generation, and modal/busy state before starting a collection.
 
-The completion contract encodes automatic input as `Invocation::Typing` or
-`Invocation::Character`. Providers receive it in `Context::input`. Explicit requests
-and active-session refreshes have no automatic input. LSP maps character invocation
-to trigger kind 2 with `triggerCharacter`; explicit, typing and refresh requests use
-kind 1. The word source declines character invocations. Active sessions retain the
+The completion contract encodes automatic activation as `Invocation::Typing` or
+`Invocation::Character` inside the contributor input envelope. Explicit requests
+and active-session refreshes have no automatic activation. LSP maps character
+invocation to trigger kind 2 with `triggerCharacter`; incomplete-list refreshes use
+kind 3, and other invocations use kind 1. The word source declines character invocations. Active sessions retain the
 existing immediate refresh and stale-edit rejection behavior.
 
 ## Selected-item documentation
@@ -253,9 +308,8 @@ multi-caret renderer.
 
 ## Current limits
 
-There is no cross-provider deduplication or configurable source priority yet.
-LSP still skips command-based items. Automatic IME completion and retriggering incomplete LSP lists with trigger
-kind 3 are deferred. Plugin lifecycle operations dismiss the collection; provider
+LSP still skips command-based items. Automatic IME completion is deferred.
+Deduplication is conservative for deferred actions and differing position encodings. Plugin lifecycle operations dismiss the collection; provider
 generation checks also reject results from retired sources.
 
 The first extraction retains shared popup/session mechanics in the platform. A

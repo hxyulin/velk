@@ -1025,6 +1025,7 @@ mod tests {
                         }
                         .into(),
                     ],
+                    continuation: None,
                 }),
             });
             pollster::block_on(service.events.recv()).unwrap()

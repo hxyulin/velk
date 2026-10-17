@@ -106,7 +106,6 @@ pub struct Session {
     pub ready: bool,
     selection_explicit: bool,
     policy: std::sync::Arc<dyn matching::Policy>,
-    scores: Vec<Option<matching::Score>>,
 }
 impl Session {
     pub fn new(target: Target, prefix: String, items: Vec<Item>) -> Self {
@@ -129,7 +128,6 @@ impl Session {
             ready: true,
             selection_explicit: false,
             policy,
-            scores: Vec::new(),
         };
         session.filter();
         session
@@ -162,10 +160,7 @@ impl Session {
                 .visible
                 .iter()
                 .position(|i| identity(&self.items[*i]) == selected)
-                .filter(|index| {
-                    self.selection_explicit
-                        || self.scores[self.visible[*index]] == self.scores[self.visible[0]]
-                })
+                .filter(|index| self.selection_explicit || *index == 0)
                 .unwrap_or_else(|| {
                     self.selection_explicit = false;
                     0
@@ -179,7 +174,7 @@ impl Session {
             .iter()
             .map(|item| item.filter_text.as_str())
             .collect();
-        self.scores = self
+        let scores = self
             .policy
             .scores(&self.prefix, &candidates)
             .ok()
@@ -188,8 +183,7 @@ impl Session {
                 matching::Policy::scores(&matching::Prefix, &self.prefix, &candidates)
                     .expect("prefix policy")
             });
-        let mut ranked: Vec<_> = self
-            .scores
+        let mut ranked: Vec<_> = scores
             .iter()
             .enumerate()
             .filter_map(|(index, score)| score.map(|score| (score, index)))
@@ -318,6 +312,7 @@ mod contribution_tests {
             position: 1,
         };
         let mut session = Session::new(target, "p".into(), vec![item("test.lsp")]);
+        session.next(false);
         session.resolve(target, vec![item("test.words"), item("test.lsp")]);
         assert_eq!(session.selected, 1);
         assert_eq!(session.accept().unwrap(), item("test.lsp"));
@@ -462,5 +457,34 @@ mod policy_tests {
             std::sync::Arc::new(Broken),
         );
         assert_eq!(session.visible, vec![1]);
+    }
+}
+
+#[cfg(test)]
+mod arrival_order_tests {
+    use super::*;
+    #[test]
+    fn late_preferred_equal_matches_replace_automatic_but_not_explicit_selection() {
+        let item = |id: &str| Item {
+            id: id.into(),
+            ..crate::Choice {
+                title: "print".into(),
+                detail: None,
+                action: crate::ChoiceAction::Semantic {
+                    payload: Default::default(),
+                },
+            }
+            .into()
+        };
+        let target = Target {
+            revision: 1,
+            position: 2,
+        };
+        let mut session = Session::new(target, "pr".into(), vec![item("fallback")]);
+        session.resolve(target, vec![item("preferred"), item("fallback")]);
+        assert_eq!(session.choice().unwrap().id, "preferred");
+        session.next(false);
+        session.resolve(target, vec![item("preferred"), item("fallback")]);
+        assert_eq!(session.choice().unwrap().id, "fallback");
     }
 }

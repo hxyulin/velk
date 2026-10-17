@@ -16,6 +16,27 @@ pub(super) struct State {
     reducer: Option<Task>,
     version: u64,
     semantic: std::collections::VecDeque<usize>,
+    refresh: bool,
+    continuations: std::collections::BTreeMap<(String, u64, String), serde_json::Value>,
+}
+impl State {
+    fn source_input(&self, index: usize) -> String {
+        let provider = &self.providers[index];
+        contributions::Input {
+            activation: self.context.input.clone(),
+            continuation: self
+                .continuations
+                .get(&(
+                    provider.plugin.clone(),
+                    provider.generation,
+                    provider.command.id.clone(),
+                ))
+                .cloned(),
+            refresh: self.refresh,
+        }
+        .encode()
+        .expect("collection input is serializable")
+    }
 }
 #[cfg(test)]
 impl State {
@@ -23,10 +44,10 @@ impl State {
         self.reducer.is_none() && self.results.iter().all(Option::is_some)
     }
     pub(super) fn has_candidate_from(&self, plugin: &str, filter_text: &str) -> bool {
-        self.results.iter().flatten().any(|result| result.plugin == plugin && matches!(&result.outcome, Ok(Outcome::Completions { items }) if items.iter().any(|item| item.filter_text == filter_text)))
+        self.results.iter().flatten().any(|result| result.plugin == plugin && matches!(&result.outcome, Ok(Outcome::Completions { items, ..}) if items.iter().any(|item| item.filter_text == filter_text)))
     }
     pub(super) fn has_results_from(&self, plugin: &str) -> bool {
-        self.results.iter().flatten().any(|result| result.plugin == plugin && matches!(&result.outcome, Ok(Outcome::Completions { items }) if !items.is_empty()))
+        self.results.iter().flatten().any(|result| result.plugin == plugin && matches!(&result.outcome, Ok(Outcome::Completions { items, ..}) if !items.is_empty()))
     }
 }
 
@@ -195,6 +216,21 @@ impl Document {
         cx: &mut Context<'_, Self>,
     ) {
         self.automatic_completion = None;
+        let continuations = if refresh {
+            self.collection
+                .as_ref()
+                .filter(|state| {
+                    state.invocation.plugin == invocation.plugin
+                        && state.invocation.generation == invocation.generation
+                        && state.invocation.command.id == invocation.command.id
+                        && state.guard.source == self.buffer.as_ref().map(|buffer| buffer.id)
+                        && state.view == self.views.layout.active
+                })
+                .map(|state| state.continuations.clone())
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
         self.cancel_collection(false, cx);
         let Handler::Collect { topic, .. } = &invocation.command.handler else {
             return;
@@ -259,6 +295,8 @@ impl Document {
             reducer: None,
             version: 0,
             semantic: Default::default(),
+            refresh,
+            continuations,
         });
         for (index, provider) in providers.into_iter().enumerate() {
             match provider.command.handler.clone() {
@@ -267,7 +305,9 @@ impl Document {
                 }
                 Handler::Request { hook } => {
                     let client = self.plugins.as_ref().unwrap().client.clone();
-                    let context = self.collection.as_ref().unwrap().context.clone();
+                    let state = self.collection.as_ref().unwrap();
+                    let mut context = state.context.clone();
+                    context.input = Some(state.source_input(index));
                     let task = cx.try_spawn(
                         async move {
                             let handle = client
@@ -336,7 +376,7 @@ impl Document {
         let provider = state.providers[index].clone();
         let mut guard = state.guard.clone();
         guard.owner = Some((provider.plugin.clone(), provider.generation));
-        let input = state.context.input.clone();
+        let input = Some(state.source_input(index));
         self.execute_plugin_command(provider, input, guard, cx);
         if let Some(pending) = self
             .buffer
@@ -370,6 +410,20 @@ impl Document {
             outcome.validate()?;
             Ok(outcome)
         });
+        let key = (
+            provider.plugin.clone(),
+            provider.generation,
+            provider.command.id.clone(),
+        );
+        if let Ok(Outcome::Completions {
+            continuation: Some(token),
+            ..
+        }) = &outcome
+        {
+            state.continuations.insert(key, token.clone());
+        } else {
+            state.continuations.remove(&key);
+        }
         state.results[index] = Some(contributions::ContributionResult {
             plugin: provider.plugin.clone(),
             generation: provider.generation,
@@ -429,7 +483,7 @@ impl Document {
                     && this.buffer.editor.read(cx).completion_active()
                 {
                     match result {
-                        Ok(Ok(Outcome::Completions { items })) => {
+                        Ok(Ok(Outcome::Completions { items, .. })) => {
                             this.buffer
                                 .editor
                                 .update(cx, |editor, _| editor.show_completions(items, true));
@@ -751,7 +805,7 @@ mod tests {
             assert_ne!(current, old);
             let pending = doc.buffer.semantic.as_ref().unwrap().command.as_ref().unwrap();
             assert_eq!(pending.collection, Some((second, 0)));
-            doc.semantic_event(Event::Command { request: old, result: Ok(Outcome::Completions { items: vec![] }) }, cx);
+            doc.semantic_event(Event::Command { request: old, result: Ok(Outcome::Completions { items: vec![], continuation: None}) }, cx);
             assert_eq!(doc.buffer.semantic.as_ref().unwrap().command.as_ref().unwrap().request, current);
             let guard = doc.edit_guard(cx);
             doc.cancel_collection(false, cx);
@@ -768,6 +822,75 @@ mod tests {
             let pending = doc.buffer.semantic.as_ref().unwrap().command.as_ref().unwrap();
             assert_eq!(pending.invocation.plugin, "test.lsp");
             assert!(pending.collection.is_none());
+        }));
+    }
+    #[test]
+    #[allow(unsafe_code)]
+    fn continuations_survive_superseded_refreshes_but_not_completion_dismissal_or_generation_changes()
+     {
+        use velk_semantic::{Event, Input, Service, Status};
+        let directory = tempfile::tempdir().unwrap();
+        // SAFETY: the test directory contains no native code.
+        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let mut harness = Harness::new();
+        let path = harness.write_file("continuation.rs", "pr");
+        harness
+            .request(velk_plugin_contracts::host::Request::OpenBuffer { path })
+            .unwrap();
+        harness.drain();
+        let (service, session) = Service::external(|| {});
+        harness.runtime.update(|cx| harness.document.update(cx, |doc, cx| {
+            let mut plugins = super::super::plugins::State::new(host.client(), "test.markdown".into());
+            let mut source = info("test.lsp", 2);
+            source.metadata.contributions.push(contributions::Contribution {
+                metadata: serde_json::Value::Null, topic: "test.completion".into(),
+                command: Declaration { handler: Handler::Semantic { payload: serde_json::Value::Null }, ..invocation().command },
+            });
+            plugins.loaded = vec![info("test.reducer", 1), source];
+            doc.plugins = Some(plugins);
+            doc.buffer.semantic = Some(super::super::semantic::State {
+                service: service.clone(), revision: 0, status: Status::Ready(Default::default()), count: 0,
+                diagnostics: vec![], hover: None, command: None, completion: None, target: None,
+                hover_view: None, next_request: 1, task: None, render_task: None,
+                renderer: std::sync::Arc::new(velk_markup::PlainText), notice: None,
+            });
+            let command = || {
+                let Input::Command { request, input, .. } = session.try_next().unwrap() else { panic!() };
+                (request, contributions::Input::decode(input.as_deref()).unwrap())
+            };
+            let complete = |doc: &mut Document, request, continuation, cx: &mut Context<'_, Document>| {
+                session.events().publish(Event::Command { request, result: Ok(Outcome::Completions { items: vec![], continuation }) });
+                doc.semantic_event(pollster::block_on(service.events.recv()).unwrap(), cx);
+            };
+            doc.begin_collection(invocation(), false, cx);
+            let (first, input) = command();
+            assert!(!input.refresh);
+            assert!(input.continuation.is_none());
+            complete(doc, first, Some(serde_json::json!("opaque")), cx);
+            doc.begin_collection(invocation(), true, cx);
+            let (second, input) = command();
+            assert!(input.refresh);
+            assert_eq!(input.continuation, Some(serde_json::json!("opaque")));
+            doc.begin_collection(invocation(), true, cx);
+            assert!(matches!(session.try_next(), Some(Input::CancelCommand(request)) if request == second));
+            complete(doc, second, Some(serde_json::json!("stale")), cx);
+            let (third, input) = command();
+            assert_eq!(input.continuation, Some(serde_json::json!("opaque")));
+            complete(doc, third, None, cx);
+            doc.begin_collection(invocation(), true, cx);
+            let (fourth, input) = command();
+            assert!(input.continuation.is_none());
+            complete(doc, fourth, Some(serde_json::json!("new")), cx);
+            doc.plugins.as_mut().unwrap().loaded[1].generation = 3;
+            doc.begin_collection(invocation(), true, cx);
+            let (fifth, input) = command();
+            assert!(input.continuation.is_none());
+            complete(doc, fifth, Some(serde_json::json!("generation-three")), cx);
+            doc.cancel_collection(true, cx);
+            doc.begin_collection(invocation(), false, cx);
+            let (_, input) = command();
+            assert!(!input.refresh);
+            assert!(input.continuation.is_none());
         }));
     }
 }

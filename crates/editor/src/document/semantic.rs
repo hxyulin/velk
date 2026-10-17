@@ -310,7 +310,7 @@ impl Document {
                         outcome.validate()?;
                         Ok(outcome)
                     }) {
-                        Ok(velk_commands::Outcome::Completions { items }) => {
+                        Ok(velk_commands::Outcome::Completions { items, .. }) => {
                             if completion_view.read(cx).completion_epoch()
                                 == pending.completion_epoch
                                 && (!pending.completion_refresh

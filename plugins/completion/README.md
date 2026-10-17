@@ -42,3 +42,13 @@ LSP function completions can insert snippets. Tab and Shift+Tab navigate numbere
 placeholders, repeated placeholders edit together, and the final stop returns to
 normal editing. Escape or undo ends the session. Imports and snippet insertion
 remain one checked undoable transaction. Variables and transforms are deferred.
+
+`source_order` selects provider priority using comma-separated plugin IDs; the
+default prefers LSP over document words. `deduplicate` keeps the preferred copy
+of equivalent concrete edits across sources. Different imports, overload details,
+and unresolved actions stay separate. Restart the completion plugin after changing
+these settings. Similarity remains the primary ranking criterion.
+
+Incomplete LSP lists retain a source-local continuation so further typing uses
+trigger kind 3 until the server returns a complete list. Dismissal, source retirement,
+and a fresh completion session do not reuse the old continuation.

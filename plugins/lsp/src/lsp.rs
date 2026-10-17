@@ -104,7 +104,7 @@ async fn drive(
                 "hover":{"dynamicRegistration":false,"contentFormat":["markdown","plaintext"]},
                 "formatting":{"dynamicRegistration":false}, "rename":{"dynamicRegistration":false},
                 "codeAction":{"dynamicRegistration":false,"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix","refactor","source"]}},"resolveSupport":{"properties":["edit"]}},
-                "completion":{"dynamicRegistration":false,"completionItem":{"snippetSupport":true,"insertReplaceSupport":true,"documentationFormat":["markdown","plaintext"],"resolveSupport":{"properties":["documentation","additionalTextEdits"]}}},
+                "completion":{"dynamicRegistration":false,"contextSupport":true,"completionItem":{"snippetSupport":true,"insertReplaceSupport":true,"documentationFormat":["markdown","plaintext"],"resolveSupport":{"properties":["documentation","additionalTextEdits"]}}},
                 "diagnostic":{"dynamicRegistration":false,"relatedDocumentSupport":false},
                 "publishDiagnostics":{"versionSupport":true,"relatedInformation":false}
             }
@@ -219,7 +219,7 @@ async fn drive(
                     };
                     match spec.completion_trigger_supported(input.as_deref(), &server_capabilities) {
                         Ok(true) => {},
-                        Ok(false) => { session.events().publish(Event::Command { request, result: Ok(velk_plugin_sdk::commands::Outcome::Completions { items: vec![] }) }); continue; },
+                        Ok(false) => { session.events().publish(Event::Command { request, result: Ok(velk_plugin_sdk::commands::Outcome::Completions { items: vec![], continuation: None}) }); continue; },
                         Err(error) => { session.events().publish(Event::Command { request, result: Err(error) }); continue; }
                     }
                     if command.is_some() { session.events().publish(Event::Command { request, result:Err("another command is running".into()) }); continue; }
