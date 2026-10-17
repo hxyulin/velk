@@ -260,8 +260,9 @@ impl Document {
                     this.notice(Some(format!("Panels: {error}")));
                 } else if this
                     .buffer
-                    .status
-                    .as_deref()
+                    .as_ref()
+                    .and_then(|buffer| buffer.status.as_deref())
+                    .or(this.window_status.as_deref())
                     .is_some_and(|s| s.starts_with("Panels:"))
                 {
                     this.notice(Some(format!(
@@ -1301,6 +1302,94 @@ mod tests {
             action: None,
         }
     }
+    #[test]
+    #[allow(unsafe_code)]
+    fn panel_discovery_can_finish_after_the_last_buffer_closes_or_in_an_empty_window() {
+        use rxui::{BackgroundFuture, BlockingJob, SpawnError, TaskExecutor};
+        use std::sync::{Arc, Mutex};
+        #[derive(Default)]
+        struct Executor {
+            futures: Mutex<Vec<BackgroundFuture>>,
+            jobs: Mutex<Vec<BlockingJob>>,
+        }
+        impl TaskExecutor for Executor {
+            fn spawn(&self, future: BackgroundFuture) -> Result<(), SpawnError> {
+                self.futures.lock().unwrap().push(future);
+                Ok(())
+            }
+            fn spawn_blocking(&self, job: BlockingJob) -> Result<(), SpawnError> {
+                self.jobs.lock().unwrap().push(job);
+                Ok(())
+            }
+        }
+        for (close_last, notice) in [
+            (true, None),
+            (false, Some("Panels: refreshing")),
+            (false, Some("Unrelated notice")),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            // SAFETY: this test-owned directory contains no native libraries.
+            let host =
+                unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+            let executor = Arc::new(Executor::default());
+            let mut runtime = Runtime::new();
+            runtime.configure_tasks(executor.clone(), || {}).unwrap();
+            let document = runtime.update(|cx| cx.new(|_| Document::empty(1)));
+            runtime.update(|cx| {
+                document.update(cx, |this, cx| {
+                    if close_last {
+                        this.new_buffer(cx);
+                    }
+                    this.plugins = Some(super::super::plugins::State::new(
+                        host.client(),
+                        String::new(),
+                    ));
+                    this.refresh_panels(cx);
+                    assert!(this.panels.task.is_some());
+                    if close_last {
+                        this.intent(super::super::Intent::Buffer, cx);
+                    }
+                    assert!(!this.has_buffers());
+                    this.notice(notice.map(str::to_owned));
+                })
+            });
+            let futures = std::mem::take(&mut *executor.futures.lock().unwrap());
+            let jobs = std::mem::take(&mut *executor.jobs.lock().unwrap());
+            std::thread::spawn(move || {
+                for future in futures {
+                    pollster::block_on(future);
+                }
+                for job in jobs {
+                    job();
+                }
+            })
+            .join()
+            .unwrap();
+            runtime.poll_tasks();
+            runtime.flush().unwrap();
+            runtime.update(|cx| {
+                let document = document.read(cx);
+                assert!(!document.has_buffers());
+                assert!(document.panels.task.is_none());
+                assert!(document.panels.error.is_none());
+                assert_eq!(
+                    document.window_status.as_deref(),
+                    match notice {
+                        Some("Panels: refreshing") => Some("Panels: 0 available"),
+                        other => other,
+                    }
+                );
+            });
+            let mut ui = Ui::new(&mut runtime, document).unwrap();
+            ui.prepare(&mut runtime, [800., 500.], &mut Measure)
+                .unwrap();
+            assert!(
+                ui.elements()
+                    .any(|e| e.key == Some(&Key::from("empty-workspace")))
+            );
+        }
+    }
+
     fn entry(slot: Slot, content: Content) -> Entry {
         let key = format!("test:{slot:?}");
         Entry {
