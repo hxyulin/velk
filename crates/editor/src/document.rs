@@ -1,6 +1,7 @@
 mod buffer_events;
 mod buffers;
 mod closing;
+mod collections;
 mod diagnostics;
 mod file_operations;
 mod grid;
@@ -67,6 +68,9 @@ pub struct Document {
     pending_opens: std::collections::VecDeque<buffers::OpenRequest>,
     command_task: Option<Task>,
     next_picker: u64,
+    collection: Option<collections::State>,
+    next_collection: u64,
+    deferred_choice: Option<(velk_commands::ChoiceAction, workspace_edits::Guard)>,
     host_requests: Option<Task>,
     buffer_events: buffer_events::Delivery,
     workspace_edit: Option<Task>,
@@ -203,6 +207,9 @@ impl Document {
             pending_opens: Default::default(),
             command_task: None,
             next_picker: 1,
+            collection: None,
+            next_collection: 1,
+            deferred_choice: None,
             host_requests: None,
             buffer_events: Default::default(),
             workspace_edit: None,

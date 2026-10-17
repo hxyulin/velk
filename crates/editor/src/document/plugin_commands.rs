@@ -16,6 +16,7 @@ pub(super) struct Pending {
     pub completion_refresh: bool,
     pub completion_epoch: u64,
     pub cancelled: bool,
+    pub collection: Option<(u64, usize)>,
 }
 pub(super) enum ResultView {
     Picker(super::picker::State),
@@ -129,6 +130,7 @@ impl Document {
                     .map(|command| {
                         let ready = match &command.handler {
                             Handler::Request { .. } | Handler::Picker { .. } => true,
+                            Handler::Collect { .. } => self.has_buffers(),
                             Handler::Semantic { .. } => self
                                 .buffer
                                 .as_ref()
@@ -179,6 +181,7 @@ impl Document {
                     && self.command_task.is_none()
                     && match &command.handler {
                         Handler::Request { .. } | Handler::Picker { .. } => true,
+                        Handler::Collect { .. } => self.has_buffers(),
                         Handler::Semantic { .. } => self
                             .buffer
                             .as_ref()
@@ -226,6 +229,8 @@ impl Document {
         {
             return;
         }
+        self.deferred_choice = None;
+        self.cancel_collection(true, cx);
         let mut guard = self.edit_guard(cx);
         guard.owner = Some((invocation.plugin.clone(), invocation.generation));
         if matches!(invocation.command.handler, Handler::Picker { .. }) {
@@ -270,8 +275,13 @@ impl Document {
             return;
         }
         let continuation = invocation.clone();
-        let completion_epoch = self.buffer.editor.read(cx).completion_epoch();
+        let completion_epoch = self
+            .buffer
+            .as_ref()
+            .map(|buffer| buffer.editor.read(cx).completion_epoch())
+            .unwrap_or(0);
         match invocation.command.handler {
+            Handler::Collect { .. } => self.begin_collection(continuation, false, cx),
             Handler::Picker { .. } => unreachable!("pickers use their own live query flow"),
             Handler::Semantic { payload } => {
                 let Some(state) = self.buffer.as_mut().and_then(|b| b.semantic.as_mut()) else {
@@ -297,6 +307,7 @@ impl Document {
                             completion_refresh: false,
                             completion_epoch,
                             cancelled: false,
+                            collection: None,
                         })
                     }
                     Err(error) => self.notice(Some(error)),
@@ -437,36 +448,7 @@ impl Document {
                     self.notice(Some("Result source changed".into()));
                     return;
                 }
-                match items[index].action.clone() {
-                    velk_commands::ChoiceAction::Location { location } => {
-                        self.open_location(location, cx)
-                    }
-                    velk_commands::ChoiceAction::Edit { edit } => {
-                        self.apply_workspace_edit(edit, guard, cx)
-                    }
-                    velk_commands::ChoiceAction::Semantic { payload } => {
-                        let Some((plugin, generation)) = guard.owner.clone() else {
-                            return;
-                        };
-                        self.execute_plugin_command(
-                            Invoke {
-                                plugin,
-                                generation,
-                                command: Declaration {
-                                    id: "velk.result.resolve".into(),
-                                    title: "Resolve result".into(),
-                                    language: None,
-                                    input: None,
-                                    shortcut: None,
-                                    handler: Handler::Semantic { payload },
-                                },
-                            },
-                            None,
-                            guard,
-                            cx,
-                        );
-                    }
-                }
+                self.apply_choice_action(items[index].action.clone(), guard, cx);
             }
             _ => {}
         }

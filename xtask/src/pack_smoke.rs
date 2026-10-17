@@ -95,6 +95,15 @@ pub(super) fn run(root: &Path, output: &Path, release: bool) -> Result<(), Strin
         let markdown = manager.plugins().find(|p| p.id == ID).unwrap();
         assert_eq!(markdown.loaded_path, image);
         assert!(markdown.generation > old);
+        // Contribution integrations do not create required dependency edges.
+        manager.unload_with_dependents("velk.completion");
+        assert!(manager.plugins().any(|p| p.id == "velk.lsp"));
+        assert!(manager.plugins().any(|p| p.id == "velk.completion.words"));
+        assert_eq!(manager.load()?.len(), 1);
+        manager.unload_with_dependents("velk.lsp");
+        assert!(manager.plugins().any(|p| p.id == "velk.completion"));
+        assert!(manager.plugins().any(|p| p.id == "velk.completion.words"));
+        assert_eq!(manager.load()?.len(), 2);
         assert_eq!(manager.unload_all().len(), specs.len());
         assert!(image.exists(), "LSP's image lease applies to all members");
         assert!(manager.call_hook(&search, b"{}").is_err());

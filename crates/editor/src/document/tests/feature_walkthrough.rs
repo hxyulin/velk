@@ -165,6 +165,8 @@ fn render_feature_walkthrough() {
                     Some(vec![
                         "velk.tree-sitter".into(),
                         "velk.lsp".into(),
+                        "velk.completion".into(),
+                        "velk.completion.words".into(),
                         "velk.language-server.rust-analyzer".into(),
                         "velk.files.backend".into(),
                         "velk.files".into(),
@@ -268,10 +270,13 @@ fn render_feature_walkthrough() {
                 .as_ref()
                 .is_some_and(|s| s.command.is_none())
         });
-        if capture
-            .runtime()
-            .update(|cx| entity.read(cx).buffer.editor.read(cx).completion_active())
-        {
+        if capture.runtime().update(|cx| {
+            entity
+                .read(cx)
+                .collection
+                .as_ref()
+                .is_some_and(|s| s.has_results_from("velk.lsp"))
+        }) {
             break;
         }
         for _ in 0..50 {
@@ -280,7 +285,7 @@ fn render_feature_walkthrough() {
             std::thread::sleep(Duration::from_millis(10));
         }
         eprintln!("retry completion while rust-analyzer indexes: {attempt}");
-        invoke(&mut capture, "velk.lsp.complete", None);
+        invoke(&mut capture, "velk.completion.complete", None);
     }
     wait(&mut capture, "real completion response", |doc, cx| {
         doc.buffer.editor.read(cx).completion_active()
@@ -299,16 +304,33 @@ fn render_feature_walkthrough() {
                 .as_ref()
                 .is_some_and(|s| s.command.is_none())
     });
-    for key in [rxui::KeyboardKey::ArrowDown, rxui::KeyboardKey::ArrowUp] {
+    wait(&mut capture, "both completion sources merged", |doc, _| {
+        doc.collection.as_ref().is_some_and(|state| {
+            state.settled()
+                && state.has_results_from("velk.lsp")
+                && state.has_results_from("velk.completion.words")
+        })
+    });
+    let lsp_selected = |capture: &mut TestUi<Document>| {
+        capture.runtime().update(|cx| {
+        matches!(entity.read(cx).buffer.editor.read(cx).completion_choice().map(|choice| &choice.action),
+            Some(velk_commands::ChoiceAction::Contributed { plugin, .. }) if plugin == "velk.lsp")
+    })
+    };
+    for _ in 0..2 {
+        if lsp_selected(&mut capture) {
+            break;
+        }
         capture
             .key(rxui::KeyEvent {
-                key,
+                key: rxui::KeyboardKey::ArrowDown,
                 pressed: true,
                 repeat: false,
                 modifiers: Default::default(),
             })
             .unwrap();
     }
+    assert!(lsp_selected(&mut capture));
     shot(&mut capture, &output, "completion-popup");
     assert!(
         capture.element("editor-completions").unwrap().is_some(),
@@ -464,7 +486,92 @@ fn render_feature_walkthrough() {
     });
     wait_tree_text(&mut capture, "notes", false);
     shot(&mut capture, &output, "empty-workspace");
-    std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout.\n").unwrap();
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            doc.plugin_operation(crate::document::plugins::Operation::UnloadAll, cx);
+        })
+    });
+    wait(&mut capture, "all plugins unloaded", |doc, _| {
+        doc.plugins
+            .as_ref()
+            .is_some_and(|p| p.task.is_none() && p.loaded.is_empty())
+    });
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            doc.enable_selected_plugins(
+                plugins.client(),
+                Some(vec![
+                    "velk.completion".into(),
+                    "velk.completion.words".into(),
+                ]),
+                vec![],
+                cx,
+            );
+        })
+    });
+    wait(&mut capture, "completion without LSP loaded", |doc, _| {
+        doc.plugins
+            .as_ref()
+            .is_some_and(|p| p.task.is_none() && p.loaded.len() == 2)
+    });
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            doc.host_request(
+                velk_plugin_contracts::host::Request::NewBuffer {
+                    text: "print process\npr".into(),
+                },
+                None,
+                cx,
+            )
+            .unwrap();
+            doc.buffer
+                .editor
+                .update(cx, |editor, _| editor.select_range(16..16));
+        })
+    });
+    capture.prepare().unwrap();
+    let surface = capture.element("editor-surface").unwrap().unwrap().id;
+    {
+        let (_, ui, _) = capture.parts();
+        ui.focus(surface);
+    }
+    invoke(&mut capture, "velk.completion.complete", None);
+    wait(
+        &mut capture,
+        "word completion without semantic service",
+        |doc, cx| {
+            doc.buffer.semantic.is_none()
+                && doc
+                    .collection
+                    .as_ref()
+                    .is_some_and(|s| s.has_results_from("velk.completion.words"))
+                && doc.buffer.editor.read(cx).completion_refresh().is_none()
+        },
+    );
+    shot(&mut capture, &output, "completion-without-lsp");
+    capture
+        .key(rxui::KeyEvent {
+            key: rxui::KeyboardKey::Enter,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+    wait(&mut capture, "untitled completion accepted", |doc, cx| {
+        doc.buffer.editor.read(cx).buffer().text() == "print process\nprint"
+    });
+    capture.runtime().update(|cx| {
+        entity.update(cx, |doc, cx| {
+            doc.buffer.editor.update(cx, |editor, _| {
+                editor.execute(velk_editor_model::EditCommand::Undo);
+            });
+            assert_eq!(
+                doc.buffer.editor.read(cx).buffer().text().to_string(),
+                "print process\npr"
+            );
+        })
+    });
+    std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout; unload LSP; complete words in untitled buffer; undo completion.\n").unwrap();
     drop(capture);
     drop(plugins);
 }

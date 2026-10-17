@@ -101,6 +101,9 @@ impl Document {
         {
             return;
         }
+        if self.sync_collection_completion(source.clone(), cx) {
+            return;
+        }
         let accepted = source.update(cx, |editor, cx| {
             let accepted = editor.take_completion();
             if accepted.is_none() {
@@ -124,17 +127,7 @@ impl Document {
             }
             let mut guard = self.edit_guard(cx);
             guard.owner = Some((invocation.plugin.clone(), invocation.generation));
-            match choice.action {
-                velk_commands::ChoiceAction::Edit { edit } => {
-                    self.apply_guarded_outcome(velk_commands::Outcome::Edit { edit }, guard, cx)
-                }
-                velk_commands::ChoiceAction::Semantic { payload } => {
-                    let mut invocation = invocation;
-                    invocation.command.handler = velk_commands::Handler::Semantic { payload };
-                    self.execute_plugin_command(invocation, None, guard, cx);
-                }
-                velk_commands::ChoiceAction::Location { .. } => {}
-            }
+            self.apply_choice_action(choice.action, guard, cx);
             return;
         }
         let epoch = source.read(cx).completion_epoch();
@@ -278,6 +271,11 @@ impl Document {
                     state.command = Some(pending);
                     return;
                 }
+                if let Some((id, index)) = pending.collection {
+                    self.receive_contribution(id, index, result, cx);
+                    self.drain_deferred_choice(cx);
+                    return;
+                }
                 let editor = active.editor.read(cx);
                 let valid = !self.background_buffer
                     && editor.buffer().revision() == request.revision
@@ -314,12 +312,22 @@ impl Document {
 
             Event::Status(status) => {
                 tracing::debug!(?status, "semantic status");
+                let interrupted = if !matches!(status, Status::Ready(_)) {
+                    state
+                        .command
+                        .as_ref()
+                        .and_then(|pending| pending.collection)
+                } else {
+                    None
+                };
                 if !matches!(status, Status::Ready(_)) {
                     state.command = None;
                     state.completion = None;
-                    active
-                        .editor
-                        .update(cx, |editor, _| editor.dismiss_completions());
+                    if self.collection.is_none() {
+                        active
+                            .editor
+                            .update(cx, |editor, _| editor.dismiss_completions());
+                    }
                 }
                 if matches!(status, Status::Failed(_) | Status::Stopped) {
                     state.count = 0;
@@ -335,6 +343,14 @@ impl Document {
                     .editor
                     .update(cx, |editor, _| editor.set_semantic_hover(enabled));
                 state.status = status;
+                if let Some((id, index)) = interrupted {
+                    self.receive_contribution(
+                        id,
+                        index,
+                        Err("semantic contributor stopped".into()),
+                        cx,
+                    );
+                }
             }
             Event::Diagnostics {
                 revision,

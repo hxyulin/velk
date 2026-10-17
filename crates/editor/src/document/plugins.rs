@@ -248,6 +248,8 @@ impl Document {
             cx.unchanged();
             return;
         }
+        self.cancel_collection(true, cx);
+        self.deferred_choice = None;
         self.suspend_panels();
         let disabled = self.shell.store.preferences.disabled_plugins.clone();
         let state = self.plugins.as_mut().expect("plugin state");

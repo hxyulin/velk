@@ -247,6 +247,9 @@ impl Document {
         {
             return;
         }
+        if self.inactive.contains_key(&id) {
+            self.cancel_collection(true, cx);
+        }
         if let Some(mut buffer) = self.inactive.remove(&id) {
             self.documents.select(id);
             self.buffer
@@ -713,6 +716,7 @@ impl Document {
         }
     }
     pub(super) fn remove_current_buffer(&mut self, cx: &mut Context<'_, Self>) {
+        self.cancel_collection(true, cx);
         if let Some(buffer) = self.buffer.as_ref() {
             let id = buffer.id;
             self.remove_document_views(id);

@@ -165,6 +165,7 @@ impl Document {
                 editor.cancel_composition();
             });
         }
+        self.cancel_collection(true, cx);
         self.cancel_key_chord();
         self.views.layout.active = id;
         self.select_buffer(document, cx);

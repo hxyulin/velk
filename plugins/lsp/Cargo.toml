@@ -12,6 +12,7 @@ path = "examples/standalone.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+velk-completion-contracts.workspace = true
 serde = { version = "1", features = ["derive"] }
 ropey.workspace = true
 velk-plugin-sdk.workspace = true

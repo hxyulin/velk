@@ -110,7 +110,10 @@ The bundled LSP plugin declares:
 - Format document.
 - Rename symbol.
 - Code actions and quick fixes.
-- Complete at caret.
+
+Completion is an optional [contribution](completion.md), rather than an LSP-owned
+command. The bundled completion plugin owns Ctrl+Space and combines LSP with
+other sources.
 
 The Rust Analyzer definition plugin declares:
 

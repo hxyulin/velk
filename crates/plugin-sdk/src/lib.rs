@@ -38,6 +38,9 @@ pub trait Plugin: Default + 'static {
     fn commands() -> Vec<commands::Declaration> {
         Vec::new()
     }
+    fn contributions() -> Vec<commands::contributions::Contribution> {
+        Vec::new()
+    }
     fn settings() -> Vec<settings::Definition> {
         Vec::new()
     }

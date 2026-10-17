@@ -49,15 +49,15 @@ impl Session {
         if self.target != target {
             return false;
         }
-        let selected = self.choice().map(|c| c.title.clone());
+        let selected = self.choice().map(identity);
         self.items = items;
         self.ready = true;
         self.filter();
-        if let Some(title) = selected {
+        if let Some(selected) = selected {
             self.selected = self
                 .visible
                 .iter()
-                .position(|i| self.items[*i].title == title)
+                .position(|i| identity(&self.items[*i]) == selected)
                 .unwrap_or(0);
         }
         true
@@ -91,6 +91,16 @@ impl Session {
     pub fn accept(&self) -> Option<Choice> {
         self.ready.then(|| self.choice().cloned()).flatten()
     }
+}
+
+fn identity(choice: &Choice) -> (String, Option<(String, u64)>) {
+    let source = match &choice.action {
+        crate::ChoiceAction::Contributed {
+            plugin, generation, ..
+        } => Some((plugin.clone(), *generation)),
+        _ => None,
+    };
+    (choice.title.clone(), source)
 }
 
 #[cfg(test)]
@@ -153,5 +163,34 @@ mod tests {
         session.resolve(session.target, vec![]);
         session.next(true);
         assert!(session.accept().is_none());
+    }
+}
+
+#[cfg(test)]
+mod contribution_tests {
+    use super::*;
+    fn item(plugin: &str) -> Choice {
+        Choice {
+            title: "print".into(),
+            detail: None,
+            action: crate::ChoiceAction::Contributed {
+                plugin: plugin.into(),
+                generation: 1,
+                action: Box::new(crate::ChoiceAction::Semantic {
+                    payload: serde_json::Value::Null,
+                }),
+            },
+        }
+    }
+    #[test]
+    fn partial_results_preserve_selection_between_equal_labels_from_different_sources() {
+        let target = Target {
+            revision: 1,
+            position: 1,
+        };
+        let mut session = Session::new(target, "p".into(), vec![item("test.lsp")]);
+        session.resolve(target, vec![item("test.words"), item("test.lsp")]);
+        assert_eq!(session.selected, 1);
+        assert_eq!(session.accept().unwrap(), item("test.lsp"));
     }
 }

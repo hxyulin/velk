@@ -42,6 +42,10 @@ impl Editor {
         }
         self.hide_hover();
     }
+    /// Currently highlighted proposal, which may still await a refreshed revision.
+    pub fn completion_choice(&self) -> Option<&Choice> {
+        self.completion.session.as_ref()?.choice()
+    }
     pub fn completion_active(&self) -> bool {
         self.completion.session.is_some()
     }
@@ -103,7 +107,13 @@ impl Editor {
             KeyboardKey::ArrowDown => session.next(false),
             KeyboardKey::ArrowUp => session.next(true),
             KeyboardKey::Escape => self.dismiss_completions(),
-            KeyboardKey::Enter | KeyboardKey::Tab if !modifiers.shift => self.accept_completion(),
+            KeyboardKey::Enter | KeyboardKey::Tab if !modifiers.shift => {
+                if session.choice().is_none() {
+                    self.dismiss_completions();
+                    return false;
+                }
+                self.accept_completion();
+            }
             _ => return false,
         }
         event.prevent_default();
@@ -227,5 +237,32 @@ mod tests {
         editor.show_completions(vec![item("print")], true);
         assert!(!editor.completion_active());
         assert_ne!(epoch, editor.completion_epoch());
+    }
+}
+
+#[cfg(test)]
+mod empty_result_tests {
+    use super::*;
+    #[test]
+    fn empty_completion_results_do_not_swallow_enter() {
+        let graphics = pollster::block_on(rxui::astrelis::GraphicsContext::headless()).unwrap();
+        let mut editor = Editor::new("prefix");
+        editor.select_range(6..6);
+        editor.show_completions(vec![], false);
+        let mut test = rxui::TestUi::new(&graphics, [640, 240], editor).unwrap();
+        test.painter_mut().fonts_mut().load_system_fonts();
+        let surface = test.element("editor-surface").unwrap().unwrap().id;
+        test.parts().1.focus(surface);
+        test.key(rxui::KeyEvent {
+            key: KeyboardKey::Enter,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+        test.read(|editor| {
+            assert!(!editor.completion_active());
+            assert_eq!(editor.buffer().text().to_string(), "prefix\n");
+        });
     }
 }

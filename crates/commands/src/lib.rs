@@ -1,5 +1,6 @@
 //! Command data shared by providers, semantic services, and presentation adapters.
 pub mod completion;
+pub mod contributions;
 pub mod keybindings;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -31,6 +32,11 @@ pub struct Shortcut {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Handler {
     Request {
+        hook: String,
+    },
+    /// Collect matching optional contributors, then call this reducer hook.
+    Collect {
+        topic: String,
         hook: String,
     },
     Picker {
@@ -74,8 +80,15 @@ impl Declaration {
             return Err("invalid command shortcut".into());
         }
         match &self.handler {
-            Handler::Request { hook } | Handler::Picker { hook, .. } if !valid_id(hook) => {
+            Handler::Request { hook }
+            | Handler::Picker { hook, .. }
+            | Handler::Collect { hook, .. }
+                if !valid_id(hook) =>
+            {
                 return Err("invalid command hook".into());
+            }
+            Handler::Collect { topic, .. } if !valid_id(topic) => {
+                return Err("invalid contribution topic".into());
             }
             Handler::Semantic { payload }
                 if serde_json::to_vec(payload)
@@ -174,9 +187,26 @@ impl WorkspaceEdit {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChoiceAction {
-    Location { location: Location },
-    Edit { edit: WorkspaceEdit },
-    Semantic { payload: serde_json::Value },
+    BufferEdit {
+        id: u64,
+        revision: u64,
+        edits: Vec<TextEdit>,
+    },
+    Location {
+        location: Location,
+    },
+    Edit {
+        edit: WorkspaceEdit,
+    },
+    Semantic {
+        payload: serde_json::Value,
+    },
+    /// Retain the provider generation when a reducer combines choices.
+    Contributed {
+        plugin: String,
+        generation: u64,
+        action: Box<ChoiceAction>,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -269,9 +299,23 @@ impl Outcome {
                     {
                         return Err("invalid choice title".into());
                     }
-                    match &item.action {
+                    let action = match &item.action {
+                        ChoiceAction::Contributed { plugin, action, .. } => {
+                            if !valid_id(plugin)
+                                || matches!(**action, ChoiceAction::Contributed { .. })
+                            {
+                                return Err("invalid contributed choice source".into());
+                            }
+                            action.as_ref()
+                        }
+                        action => action,
+                    };
+                    match action {
                         ChoiceAction::Location { location } if !location.path.is_absolute() => {
                             return Err("choice location must be absolute".into());
+                        }
+                        ChoiceAction::BufferEdit { edits, .. } if edits.len() > 10_000 => {
+                            return Err("too many buffer replacements".into());
                         }
                         ChoiceAction::Edit { edit } => edit.validate()?,
                         ChoiceAction::Semantic { payload }

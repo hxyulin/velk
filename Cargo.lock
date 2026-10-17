@@ -4047,6 +4047,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "velk-completion-contracts"
+version = "0.0.0-dev"
+dependencies = [
+ "velk-commands",
+]
+
+[[package]]
 name = "velk-core"
 version = "0.0.0-dev"
 dependencies = [
@@ -4215,6 +4222,7 @@ version = "0.0.0-dev"
 dependencies = [
  "velk-plugin-autopairs",
  "velk-plugin-autosave",
+ "velk-plugin-completion",
  "velk-plugin-files",
  "velk-plugin-indentation",
  "velk-plugin-lsp",
@@ -4228,6 +4236,15 @@ dependencies = [
  "velk-plugin-tree-sitter",
  "velk-plugin-undo",
  "velk-plugin-vim",
+]
+
+[[package]]
+name = "velk-plugin-completion"
+version = "0.0.0-dev"
+dependencies = [
+ "serde_json",
+ "velk-completion-contracts",
+ "velk-plugin-sdk",
 ]
 
 [[package]]
@@ -4296,6 +4313,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "velk-completion-contracts",
  "velk-plugin-rust-analyzer",
  "velk-plugin-sdk",
  "velk-semantic",

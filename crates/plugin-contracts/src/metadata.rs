@@ -39,6 +39,8 @@ pub struct Capability {
 #[serde(deny_unknown_fields)]
 pub struct PluginMetadata {
     pub commands: Vec<velk_commands::Declaration>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributions: Vec<velk_commands::contributions::Contribution>,
     pub name: String,
     pub readme: String,
     pub capabilities: Vec<Capability>,
@@ -50,6 +52,16 @@ impl PluginMetadata {
         crate::settings::validate_schema(&self.settings)?;
         if self.commands.len() > 128 {
             return Err("too many plugin commands".into());
+        }
+        if self.contributions.len() > 32 {
+            return Err("too many plugin contributions".into());
+        }
+        let mut contributions = std::collections::BTreeSet::new();
+        for contribution in &self.contributions {
+            contribution.validate()?;
+            if !contributions.insert((&contribution.topic, &contribution.command.id)) {
+                return Err("duplicate plugin contribution".into());
+            }
         }
         let mut commands = std::collections::BTreeSet::new();
         for command in &self.commands {

@@ -86,19 +86,6 @@ impl Plugin for Lsp {
                     ..Default::default()
                 }),
             ),
-            (
-                "complete",
-                "Complete at caret",
-                "textDocument/completion",
-                "completion",
-                "/completionProvider",
-                None,
-                Some(velk_plugin_sdk::commands::Shortcut {
-                    key: "Space".into(),
-                    control: true,
-                    ..Default::default()
-                }),
-            ),
         ] {
             declarations.push(Declaration {id:format!("velk.lsp.{id}"),title:title.into(),language:None,input:input.map(Into::into),shortcut,handler:Handler::Semantic {payload:serde_json::json!({"method":method,"result":result,"capability":capability})}});
         }
@@ -107,6 +94,24 @@ impl Plugin for Lsp {
             ..Default::default()
         });
         declarations
+    }
+    fn contributions() -> Vec<velk_plugin_sdk::commands::contributions::Contribution> {
+        use velk_plugin_sdk::commands::{Declaration, Handler, contributions::Contribution};
+        vec![Contribution {
+            topic: velk_completion_contracts::TOPIC.into(),
+            command: Declaration {
+                id: "velk.lsp.complete".into(),
+                title: "Language server completions".into(),
+                language: None,
+                input: None,
+                shortcut: None,
+                handler: Handler::Semantic {
+                    payload: serde_json::json!({
+                        "method":"textDocument/completion", "result":"completion", "capability":"/completionProvider"
+                    }),
+                },
+            },
+        }]
     }
     fn describe(&mut self) -> String {
         "Generic LSP transport".into()

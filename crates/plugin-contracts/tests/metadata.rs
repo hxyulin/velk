@@ -55,3 +55,30 @@ fn command_ids_are_unique_within_plugin_metadata() {
     metadata.commands.push(metadata.commands[0].clone());
     assert!(metadata.validate().is_err());
 }
+
+#[test]
+fn optional_contributions_are_validated_independently_of_commands() {
+    use velk_plugin_contracts::commands::{Declaration, Handler, contributions::Contribution};
+    let mut metadata = PluginMetadata {
+        name: "Source".into(),
+        contributions: vec![Contribution {
+            topic: "test.completion".into(),
+            command: Declaration {
+                id: "test.words".into(),
+                title: "Words".into(),
+                input: None,
+                shortcut: None,
+                language: None,
+                handler: Handler::Request {
+                    hook: "test.words".into(),
+                },
+            },
+        }],
+        ..Default::default()
+    };
+    metadata.validate().unwrap();
+    metadata
+        .contributions
+        .push(metadata.contributions[0].clone());
+    assert!(metadata.validate().is_err());
+}

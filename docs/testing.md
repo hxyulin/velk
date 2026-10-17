@@ -70,7 +70,9 @@ An opt-in GPU walkthrough exercises the real bundled plugins and installed
 `rust-analyzer`. It uses an isolated temporary Rust project, never the user's
 files. It checks Ctrl+Space, typing and refreshing completion, keyboard selection
 and acceptance, shared views, rename with unsaved text, saving/undo/redo, file and
-directory creation, deletion guards, and closing the final document.
+directory creation, deletion guards, and closing the final document. It then
+unloads LSP and checks document-word completion, acceptance, and undo in an
+untitled buffer.
 
 ```sh
 cargo xtask build --release

@@ -64,8 +64,9 @@ with resolvable data use `codeAction/resolve`. Disabled actions and actions requ
 server command execution are excluded. This first version does not execute
 server tasks or apply resource operations.
 
-**Complete at caret** explicitly requests completions. The searchable picker
-shows the returned candidate set; filtering it does not send another LSP request.
+**Complete at caret** explicitly requests [completion contributors](completion.md).
+A caret popup combines available sources and refreshes requests as the identifier
+prefix changes.
 Completion can resolve additional text edits lazily. Primary replacement and
 additional edits, including imports, apply as one transaction and undo step.
 Insert/replace items use their replacement range. Without a supplied range, the
@@ -74,7 +75,7 @@ host proposal replaces the identifier prefix preceding the caret.
 Completion is plain-text only. The client advertises no snippet support, and
 snippet or command-based items are excluded. Automatic suggestions, snippet tab
 stops, completion documentation, and parameter hints are future work. Invoke
-completion again after editing to obtain a fresh candidate set.
+completion again after dismissing the popup to start another session.
 
 See [plugin commands](plugin-commands.md) for shortcuts, prompts, result handling,
 and the native contract version.

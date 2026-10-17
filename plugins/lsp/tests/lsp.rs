@@ -467,6 +467,11 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
     for name in ["format", "rename", "code-actions", "complete"] {
         let declaration = velk_plugin_lsp::Lsp::commands()
             .into_iter()
+            .chain(
+                velk_plugin_lsp::Lsp::contributions()
+                    .into_iter()
+                    .map(|c| c.command),
+            )
             .find(|d| d.id == format!("velk.lsp.{name}"))
             .unwrap();
         let Handler::Semantic { payload } = declaration.handler else {
