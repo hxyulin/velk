@@ -132,6 +132,11 @@ fn main() {
                 test.runtime().update(|cx| {
                     entity.update(cx, |editor, _| {
                         editor
+                            .set_syntax_provider(Some(Arc::new(
+                                velk_plugin_tree_sitter::TreeSitter,
+                            )))
+                            .unwrap();
+                        editor
                             .set_language(Some(velk_editor_widget::Language::Rust))
                             .unwrap()
                     })

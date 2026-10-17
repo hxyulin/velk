@@ -98,3 +98,5 @@ macro_rules! export_plugin_pack {
         }
     };
 }
+
+pub use velk_syntax as syntax;

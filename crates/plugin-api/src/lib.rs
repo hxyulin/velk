@@ -134,3 +134,6 @@ pub struct HostApi {
     pub context: *mut c_void,
     pub attach: unsafe extern "C" fn(*mut c_void, *const HostServices) -> i32,
 }
+
+mod syntax;
+pub use syntax::*;

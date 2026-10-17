@@ -4104,6 +4104,7 @@ dependencies = [
  "velk-plugin-host",
  "velk-search",
  "velk-semantic",
+ "velk-syntax",
 ]
 
 [[package]]
@@ -4135,6 +4136,7 @@ dependencies = [
  "velk-plugin-autopairs",
  "velk-plugin-indentation",
  "velk-plugin-sdk",
+ "velk-plugin-tree-sitter",
  "velk-plugin-vim",
  "velk-syntax",
 ]
@@ -4162,6 +4164,7 @@ dependencies = [
  "velk-editing",
  "velk-plugin-contracts",
  "velk-semantic",
+ "velk-syntax",
 ]
 
 [[package]]
@@ -4195,6 +4198,7 @@ dependencies = [
  "velk-plugin-sdk",
  "velk-plugin-search",
  "velk-plugin-terminal",
+ "velk-plugin-tree-sitter",
  "velk-plugin-vim",
 ]
 
@@ -4205,6 +4209,7 @@ dependencies = [
  "serde",
  "serde_json",
  "velk-commands",
+ "velk-syntax",
 ]
 
 [[package]]
@@ -4225,6 +4230,7 @@ dependencies = [
  "async-channel",
  "blake3",
  "libloading 0.9.0",
+ "ropey",
  "serde",
  "serde_json",
  "tempfile",
@@ -4235,6 +4241,7 @@ dependencies = [
  "velk-plugin-api",
  "velk-plugin-contracts",
  "velk-semantic",
+ "velk-syntax",
 ]
 
 [[package]]
@@ -4303,6 +4310,7 @@ dependencies = [
 name = "velk-plugin-sdk"
 version = "0.0.0-dev"
 dependencies = [
+ "ropey",
  "serde_json",
  "velk-diagnostics",
  "velk-editing",
@@ -4310,6 +4318,7 @@ dependencies = [
  "velk-plugin-api",
  "velk-plugin-contracts",
  "velk-semantic",
+ "velk-syntax",
 ]
 
 [[package]]
@@ -4334,6 +4343,18 @@ dependencies = [
  "tempfile",
  "velk-panels",
  "velk-plugin-sdk",
+]
+
+[[package]]
+name = "velk-plugin-tree-sitter"
+version = "0.0.0-dev"
+dependencies = [
+ "ropey",
+ "tree-sitter",
+ "tree-sitter-rust",
+ "velk-core",
+ "velk-plugin-sdk",
+ "velk-syntax",
 ]
 
 [[package]]
@@ -4374,8 +4395,6 @@ dependencies = [
  "async-channel",
  "ropey",
  "tracing",
- "tree-sitter",
- "tree-sitter-rust",
  "velk-core",
 ]
 
@@ -5250,6 +5269,7 @@ dependencies = [
  "velk-editor-model",
  "velk-markup",
  "velk-panels",
+ "velk-plugin-contracts",
  "velk-plugin-host",
  "velk-search",
  "velk-semantic",

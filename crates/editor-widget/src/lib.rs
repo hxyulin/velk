@@ -41,6 +41,8 @@ pub struct Editor {
     editing: velk_editor_model::editing::Session,
     reserved_shortcuts: Vec<Shortcut>,
     syntax_worker: Option<Arc<velk_syntax::Worker>>,
+    language: Option<Language>,
+    syntax_provider: Option<Arc<dyn velk_syntax::Provider>>,
     syntax_revision: u64,
     syntax_demand: Option<syntax::Demand>,
     syntax_snapshot: Option<Arc<velk_syntax::HighlightSnapshot>>,
@@ -242,13 +244,41 @@ impl Editor {
     pub fn scroll_offset(&self) -> [f32; 2] {
         self.geometry.borrow().offset
     }
-    /// Enable an in-process language parser. Parsing runs off the UI thread.
+    /// Set the document language. A selected syntax service parses off the UI thread.
     pub fn set_language(
         &mut self,
         language: Option<Language>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.syntax_worker = language
-            .map(velk_syntax::Worker::new)
+        if self.language == language {
+            return Ok(());
+        }
+        self.language = language;
+        self.restart_syntax()
+    }
+    pub fn set_syntax_provider(
+        &mut self,
+        provider: Option<Arc<dyn velk_syntax::Provider>>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let unchanged = match (&self.syntax_provider, &provider) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return Ok(());
+        }
+        self.syntax_provider = provider;
+        self.restart_syntax()
+    }
+    fn restart_syntax(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.syntax_worker = None;
+        self.syntax_snapshot = None;
+        self.syntax_demand = None;
+        self.epoch += 1;
+        self.syntax_worker = self
+            .language
+            .zip(self.syntax_provider.clone())
+            .map(|(language, provider)| velk_syntax::Worker::new(provider, language))
             .transpose()?
             .map(Arc::new);
         self.syntax_revision = self.buffer.revision();
@@ -264,7 +294,6 @@ impl Editor {
                 Vec::new(),
             );
         }
-        self.epoch += 1;
         Ok(())
     }
 
@@ -1309,5 +1338,72 @@ mod interactive_tests {
         let mut plain = Editor::new("");
         plain.committed_text("(", rxui::TextInsertSource::Keyboard);
         assert_eq!(plain.buffer().text().to_string(), "(");
+    }
+}
+
+#[cfg(test)]
+mod syntax_service_tests {
+    use super::*;
+    use velk_syntax::{Edit, Highlight, Provider, Session};
+    #[derive(Debug)]
+    struct SyntaxProvider;
+    impl Provider for SyntaxProvider {
+        fn open(&self, _: Language) -> Result<Box<dyn Session>, String> {
+            Ok(Box::new(SyntaxSession))
+        }
+    }
+    struct SyntaxSession;
+    impl Session for SyntaxSession {
+        fn update(
+            &mut self,
+            _: u64,
+            _: ropey::Rope,
+            _: &[Edit],
+            _: &dyn Fn() -> bool,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn highlights(
+            &mut self,
+            _: std::ops::Range<usize>,
+            _: &dyn Fn() -> bool,
+        ) -> Result<Option<Vec<Highlight>>, String> {
+            Ok(Some(vec![]))
+        }
+    }
+    #[test]
+    fn language_without_a_provider_stays_plain_and_provider_replacement_clears_cached_results() {
+        let mut editor = Editor::new("fn main() {}");
+        editor.set_language(Some(Language::Rust)).unwrap();
+        assert!(editor.syntax_worker.is_none());
+        let provider = Arc::new(SyntaxProvider) as Arc<dyn Provider>;
+        editor.set_syntax_provider(Some(provider.clone())).unwrap();
+        let worker = editor.syntax_worker.as_ref().unwrap().clone();
+        worker.request_viewport(0, std::iter::once(0..12).collect());
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let snapshot = loop {
+            if let Ok(result) = worker.updates.try_recv() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        editor.syntax_snapshot = Some(snapshot.clone());
+        editor.set_syntax_provider(Some(provider)).unwrap();
+        assert_eq!(editor.syntax_worker.as_ref().unwrap().id, worker.id);
+        assert!(Arc::ptr_eq(
+            editor.syntax_snapshot.as_ref().unwrap(),
+            &snapshot
+        ));
+        editor
+            .set_syntax_provider(Some(Arc::new(SyntaxProvider)))
+            .unwrap();
+        assert_ne!(editor.syntax_worker.as_ref().unwrap().id, worker.id);
+        assert!(editor.syntax_snapshot.is_none());
+        editor.set_syntax_provider(None).unwrap();
+        assert!(editor.syntax_worker.is_none());
+        assert!(editor.syntax_demand.is_none());
+        assert!(editor.syntax_snapshot.is_none());
+        assert!(!editor.buffer().is_dirty());
     }
 }

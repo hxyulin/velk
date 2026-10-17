@@ -5,6 +5,7 @@ pub mod host;
 pub mod language_server;
 pub mod registry;
 pub mod semantic;
+pub mod syntax;
 pub(super) struct Instance<P: Plugin> {
     registry: registry::Registrar<P>,
     plugin: Box<P>,

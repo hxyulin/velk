@@ -1281,6 +1281,9 @@ mod tests {
         let entity = ui.entity().clone();
         ui.runtime().update(|cx| {
             entity.update(cx, |editor, _| {
+                editor
+                    .set_syntax_provider(Some(Arc::new(velk_plugin_tree_sitter::TreeSitter)))
+                    .unwrap();
                 editor.set_language(Some(crate::Language::Rust)).unwrap()
             })
         });
@@ -1333,12 +1336,12 @@ mod tests {
             return;
         };
         let buffer = crate::Buffer::new(include_str!("../../editor/src/main.rs"));
-        let snapshot = velk_syntax::Engine::new(crate::Language::Rust)
+        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
             .update(0, buffer.text().clone(), &[], || false)
             .unwrap();
         let syntax = crate::syntax::SyntaxView::new(
-            velk_syntax::HighlightSnapshot::prepare(
+            velk_plugin_tree_sitter::prepare(
                 &snapshot,
                 0,
                 std::iter::once(0..buffer.text().len_chars()).collect::<Vec<_>>(),
@@ -1382,13 +1385,13 @@ mod tests {
         };
         let text = format!("fn main() {{ {} }}", "let value = 42; ".repeat(10_000));
         let buffer = crate::Buffer::new(&text);
-        let snapshot = velk_syntax::Engine::new(crate::Language::Rust)
+        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
             .update(0, buffer.text().clone(), &[], || false)
             .unwrap();
         let mut full = surface(&text);
         full.syntax = crate::syntax::SyntaxView::new(
-            velk_syntax::HighlightSnapshot::prepare(
+            velk_plugin_tree_sitter::prepare(
                 &snapshot,
                 0,
                 std::iter::once(0..buffer.text().len_chars()).collect::<Vec<_>>(),
@@ -1420,12 +1423,12 @@ mod tests {
         };
         let buffer = crate::Buffer::new("fn main() { let value = 42; }\n");
         let mut full = surface(&buffer.text().to_string());
-        let snapshot = velk_syntax::Engine::new(crate::Language::Rust)
+        let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
             .update(0, buffer.text().clone(), &[], || false)
             .unwrap();
         full.syntax = crate::syntax::SyntaxView::new(
-            velk_syntax::HighlightSnapshot::prepare(
+            velk_plugin_tree_sitter::prepare(
                 &snapshot,
                 0,
                 std::iter::once(0..buffer.text().len_chars()).collect::<Vec<_>>(),

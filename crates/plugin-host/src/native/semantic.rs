@@ -379,10 +379,11 @@ mod tests {
                 host: Some(endpoint.clone()),
                 hooks: vec![],
                 markdown: None,
+                syntax: None,
                 language: None,
                 semantic: None,
                 editing: Default::default(),
-                editing_active: Arc::new(std::sync::RwLock::new(true)),
+                services_active: Arc::new(std::sync::RwLock::new(true)),
                 library: None,
             },
         );
@@ -400,10 +401,11 @@ mod tests {
             host: None,
             hooks: vec![],
             markdown: None,
+            syntax: None,
             language: None,
             semantic: None,
             editing: Default::default(),
-            editing_active: Arc::new(std::sync::RwLock::new(true)),
+            services_active: Arc::new(std::sync::RwLock::new(true)),
             library: None,
         };
         manager.plugins.insert("test.profile".into(), profile);

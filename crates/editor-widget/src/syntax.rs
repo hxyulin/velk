@@ -248,14 +248,15 @@ pub(crate) fn merge(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use velk_syntax::{Engine, Language};
+    use velk_plugin_tree_sitter::Engine;
+    use velk_syntax::Language;
     fn view(buffer: &Buffer) -> SyntaxView {
         let snapshot = Engine::new(Language::Rust)
             .unwrap()
             .update(buffer.revision(), buffer.text().clone(), &[], || false)
             .unwrap();
         SyntaxView::new(
-            velk_syntax::HighlightSnapshot::prepare(
+            velk_plugin_tree_sitter::prepare(
                 &snapshot,
                 0,
                 std::iter::once(0..buffer.text().len_chars()).collect::<Vec<_>>(),
@@ -268,7 +269,13 @@ mod tests {
     }
     #[test]
     fn ime_viewport_requests_exclude_replaced_source_and_uncommitted_text() {
-        let demand = Demand::new(Arc::new(Worker::new(Language::Rust).unwrap()));
+        let demand = Demand::new(Arc::new(
+            Worker::new(
+                Arc::new(velk_plugin_tree_sitter::TreeSitter),
+                Language::Rust,
+            )
+            .unwrap(),
+        ));
         let projected = demand.at_revision(7).project(3..100_000, 10);
         projected.request(std::iter::once(5..9).collect());
         assert_eq!(

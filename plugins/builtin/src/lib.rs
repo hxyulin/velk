@@ -1,6 +1,7 @@
 //! Built-ins share one link; each retains its own identity and lifecycle.
 velk_plugin_sdk::export_plugin_pack!(
     velk_plugin_markdown::CommonMark,
+    velk_plugin_tree_sitter::TreeSitter,
     velk_plugin_problems::Problems,
     velk_plugin_lsp::Lsp,
     velk_plugin_rust_analyzer::RustAnalyzer,

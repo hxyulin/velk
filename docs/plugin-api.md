@@ -242,3 +242,9 @@ receive resolved snapshots through `Plugin::configure`. The editor owns storage,
 validation, standard controls, reset behavior, and explicit restart-to-apply.
 See [plugin settings](plugin-settings.md) for the user workflow, storage format,
 bundled integrations, SDK example, and contract limits.
+
+## Syntax service
+
+The [syntax service](syntax-services.md) uses a dedicated version-1 C table for
+worker-owned document sessions. Register a factory with `Registrar::syntax`; the
+bundled `velk.tree-sitter` plugin supplies the default Rust implementation.

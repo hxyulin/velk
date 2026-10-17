@@ -86,6 +86,7 @@ pub enum Event {
 }
 #[derive(Debug)]
 pub struct Report {
+    pub syntax: std::collections::BTreeMap<String, std::sync::Arc<dyn velk_syntax::Provider>>,
     pub editing: velk_editing::Providers,
     pub loaded: usize,
     /// Owned snapshot after this operation, including unchanged active plugins.
@@ -523,6 +524,7 @@ impl Runtime {
                     manager.drive_semantics();
                     let result = events.map(|events| Report {
                         editing: manager.editing_providers(),
+                        syntax: manager.syntax_providers(),
                         loaded: manager.plugins().count(),
                         plugins: manager.plugins().cloned().collect(),
                         events,

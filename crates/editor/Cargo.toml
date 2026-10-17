@@ -19,6 +19,7 @@ path = "examples/widget-preview.rs"
 required-features = ["performance"]
 
 [dependencies]
+velk-syntax.workspace = true
 velk-editing.workspace = true
 velk-commands.workspace = true
 velk-plugin-contracts.workspace = true

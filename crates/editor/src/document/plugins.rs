@@ -13,6 +13,7 @@ pub(super) struct State {
     pub(super) client: Client,
     markdown_provider: String,
     pub(super) editing: velk_editing::Providers,
+    syntax: std::collections::BTreeMap<String, std::sync::Arc<dyn velk_syntax::Provider>>,
     pub(super) task: Option<Task>,
     pub status: String,
     pub(super) loaded: Vec<velk_plugin_host::PluginInfo>,
@@ -31,6 +32,7 @@ impl State {
             client,
             markdown_provider,
             editing: Default::default(),
+            syntax: Default::default(),
             task: None,
             status: String::new(),
             loaded: Vec::new(),
@@ -120,6 +122,24 @@ impl Document {
             });
         }
     }
+    pub(super) fn refresh_syntax(&mut self, cx: &mut Context<'_, Self>) {
+        let provider = self
+            .plugins
+            .as_ref()
+            .and_then(|state| {
+                state
+                    .syntax
+                    .get(&self.shell.store.preferences.syntax_provider)
+            })
+            .cloned();
+        for buffer in self.buffer.iter().chain(self.inactive.values()) {
+            buffer.editor.update(cx, |editor, _| {
+                if let Err(error) = editor.set_syntax_provider(provider.clone()) {
+                    tracing::warn!(%error, "Cannot start syntax service");
+                }
+            });
+        }
+    }
     fn apply_plugin_report(
         &mut self,
         report: velk_plugin_host::Report,
@@ -139,6 +159,25 @@ impl Document {
                 }
                 state.known.insert(plugin.id.clone(), plugin.clone());
             }
+            state.syntax = report
+                .syntax
+                .into_iter()
+                .map(|(id, provider)| {
+                    let unchanged = state.loaded.iter().any(|old| {
+                        old.id == id
+                            && report
+                                .plugins
+                                .iter()
+                                .any(|new| new.id == id && new.generation == old.generation)
+                    });
+                    let provider = if unchanged {
+                        state.syntax.get(&id).cloned().unwrap_or(provider)
+                    } else {
+                        provider
+                    };
+                    (id, provider)
+                })
+                .collect();
             state.editing = retain_editing_generations(
                 &state.editing,
                 report.editing,
@@ -162,6 +201,7 @@ impl Document {
             }
         };
         self.refresh_editing(cx);
+        self.refresh_syntax(cx);
         status
     }
     pub(super) fn markup_renderer(&self) -> std::sync::Arc<dyn velk_markup::Renderer> {
@@ -369,6 +409,7 @@ mod tests {
                 assert_eq!(initial.read(cx).input_mode_id(), "insert");
                 this.apply_plugin_report(
                     velk_plugin_host::Report {
+                        syntax: Default::default(),
                         editing: BTreeMap::from([(
                             ("test.keymap".into(), Role::Keymap),
                             Arc::new(Keymap) as Arc<dyn velk_editing::Provider>,
@@ -386,6 +427,7 @@ mod tests {
                 }
                 this.apply_plugin_report(
                     velk_plugin_host::Report {
+                        syntax: Default::default(),
                         editing: BTreeMap::new(),
                         loaded: 0,
                         plugins: vec![],

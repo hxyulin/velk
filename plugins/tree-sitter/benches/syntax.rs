@@ -1,7 +1,8 @@
 //! Parser/query CPU timings; excludes scheduling, shaping, GPU and presentation.
 use ropey::Rope;
 use std::{hint::black_box, time::Instant};
-use velk_syntax::{Edit, Engine, HighlightSnapshot, Language};
+use velk_plugin_tree_sitter::{Engine, prepare};
+use velk_syntax::{Edit, Language};
 fn stats(mut samples: Vec<f64>) -> (f64, f64) {
     samples.sort_by(f64::total_cmp);
     (
@@ -39,7 +40,7 @@ fn run(name: &str, source: &str) {
         black_box(snapshot.highlights(position..end));
         query.push(start.elapsed().as_secs_f64() * 1000.);
         let start = Instant::now();
-        let highlights = HighlightSnapshot::prepare(
+        let highlights = prepare(
             &snapshot,
             revision,
             std::iter::once(position..end).collect::<Vec<_>>(),
@@ -66,7 +67,10 @@ fn run(name: &str, source: &str) {
 }
 fn main() {
     println!("case,operation,bytes,median_ms,p95_ms");
-    run("real_main", include_str!("../../editor/src/main.rs"));
+    run(
+        "real_main",
+        include_str!("../../../crates/editor/src/main.rs"),
+    );
     run(
         "10k_lines",
         &"fn example() { let value = Some(42); } // comment\n".repeat(10_000),

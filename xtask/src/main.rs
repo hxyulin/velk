@@ -11,6 +11,7 @@ mod lsp_smoke;
 mod pack_smoke;
 mod project_smoke;
 mod search_smoke;
+mod syntax_smoke;
 mod terminal_tools;
 mod trace_summary;
 const PLUGIN: &str = "velk-plugin-markdown";
@@ -87,6 +88,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
     let artifact = stage_plugin(output, directory, ID, "velk_plugin_builtin")?;
     Ok([
         ID,
+        "velk.tree-sitter",
         "velk.lsp",
         "velk.language-server.rust-analyzer",
         velk_search::DEFAULT_BACKEND,
@@ -128,6 +130,8 @@ fn build_standalone(root: &Path, release: bool) -> Result<(), String> {
         "velk-plugin-indentation",
         "-p",
         "velk-plugin-autopairs",
+        "-p",
+        "velk-plugin-tree-sitter",
     ]);
     if release {
         command.arg("--release");
@@ -284,6 +288,8 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     build_standalone(root, release)?;
     editing_smoke::run(output, false)?;
     editing_smoke::run(output, true)?;
+    syntax_smoke::run(output, false)?;
+    syntax_smoke::run(output, true)?;
     let profile_output = output;
     let standalone = output.join("examples");
     let output = standalone.as_path();

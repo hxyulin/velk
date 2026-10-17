@@ -32,8 +32,9 @@ It still owns open document entities and path deduplication. This is not a
 loadable Core module or a complete platform-independent workspace implementation.
 
 Core emits parser-independent changes with document revisions, Unicode scalar
-ranges, and UTF-8 byte/line coordinates. `velk-syntax` translates these changes to
-Tree-sitter input edits. Rust crates intentionally retain direct Ropey access for
+ranges, and UTF-8 byte/line coordinates. `velk-syntax` supplies the neutral syntax
+service and background worker. The `velk.tree-sitter` plugin translates changes
+to Tree-sitter input edits; the editor does not depend on its parser or grammar. Rust crates intentionally retain direct Ropey access for
 cheap snapshots, borrowed chunks, and coordinate conversion. An abstract storage
 interface is deferred until a concrete replacement or binary boundary requires it.
 

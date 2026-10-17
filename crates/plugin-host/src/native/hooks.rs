@@ -115,6 +115,9 @@ impl Generation {
                         }
                     }
                 }
+                velk_syntax::CONTRACT if name == velk_syntax::HOOK => {
+                    self.syntax = Some(typed!(SyntaxApi, SERVICE));
+                }
                 MARKUP_CONTRACT if name == MARKUP_HOOK => {
                     self.markdown = Some(typed!(MarkupApi, REQUEST))
                 }

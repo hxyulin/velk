@@ -367,6 +367,7 @@ impl Document {
         }
     }
     pub(super) fn start_buffer_semantics(&mut self, cx: &mut Context<'_, Self>) {
+        self.refresh_syntax(cx);
         let providers = self.selected_editing();
         self.buffer
             .editor

@@ -170,13 +170,14 @@ mod tests {
             host: None,
             hooks: vec![],
             markdown: None,
+            syntax: None,
             language: Some(LanguageApi {
                 context: NonNull::<c_void>::dangling().as_ptr(),
                 query,
             }),
             semantic: None,
             editing: Default::default(),
-            editing_active: Arc::new(std::sync::RwLock::new(true)),
+            services_active: Arc::new(std::sync::RwLock::new(true)),
             library: None,
         }
     }

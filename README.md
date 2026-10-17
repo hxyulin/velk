@@ -67,7 +67,7 @@ the terminal plugin is disabled in this example workspace.
   New and Open actions.
 - **A shared editor shell:** command palette, settings, docked panels, layout
   presets, and a plugin manager with enable, disable, and restart controls.
-- **Rust support:** Tree-sitter highlighting and, with `rust-analyzer` installed,
+- **Rust support:** highlighting through the Tree-sitter plugin and, with `rust-analyzer` installed,
   hover documentation and diagnostics through the language-service plugins.
 - **Bundled tools:** a watched file tree, literal search in the current buffer,
   CommonMark rendering, and a terminal backed by Ghostty's terminal library.
@@ -148,6 +148,7 @@ The bundled pack contains:
 - `velk.problems`: a live [Problems panel and diagnostic navigation](plugins/problems/README.md) across workspace files.
 - `velk.search.literal`: Unicode-aware literal search in the active buffer.
 - `velk.terminal`: a terminal session with an owned PTY and Ghostty VT processing.
+- `velk.tree-sitter`: replaceable [Rust syntax-highlighting service](docs/syntax-services.md).
 - `velk.markdown`: bundled, replaceable CommonMark provider for documentation surfaces.
 - `velk.lsp`: generic language-server transport and session management.
 - `velk.language-server.rust-analyzer`: the Rust language-server definition.
@@ -235,6 +236,7 @@ Current limitations include:
 - [Buffer events and autosave](docs/buffer-events.md), [Quick Open and workspace search](docs/project-tools.md)
 - [Plugin commands](docs/plugin-commands.md), [workspace edits](docs/workspace-edits.md),
   and [semantic services and Rust LSP](docs/semantic-services.md)
+- [Syntax services](docs/syntax-services.md)
 - [Core and component boundaries](docs/core.md)
 - [Files](docs/files.md), [search](docs/search.md), and [terminal](docs/terminal.md)
 - [Profiling and performance tooling](docs/profiling.md)

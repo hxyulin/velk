@@ -107,6 +107,9 @@ impl Document {
                 ) {
                     self.refresh_editing(cx);
                 }
+                if key == "syntax_provider" {
+                    self.refresh_syntax(cx);
+                }
                 self.persist_shell(cx);
             }
             Err(error) => self.shell.store.error = Some(format!("Cannot set {key}: {error}")),

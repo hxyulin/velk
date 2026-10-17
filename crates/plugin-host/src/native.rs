@@ -3,6 +3,7 @@ use crate::{Event, PluginSpec, read_manifest};
 mod code;
 mod editing;
 mod hooks;
+mod syntax;
 use code::Code;
 mod language_server;
 mod semantic;
@@ -44,10 +45,11 @@ struct Generation {
     host: Option<Arc<services::Endpoint>>,
     hooks: Vec<hooks::Hook>,
     markdown: Option<MarkupApi>,
+    syntax: Option<SyntaxApi>,
     language: Option<LanguageApi>,
     semantic: Option<SemanticApi>,
     editing: BTreeMap<velk_editing::Role, EditingApi>,
-    editing_active: Arc<std::sync::RwLock<bool>>,
+    services_active: Arc<std::sync::RwLock<bool>>,
     // Explicit drop order: instance, library, then its on-disk copy.
     library: Option<Arc<Code>>,
 }
@@ -95,10 +97,11 @@ impl Generation {
             host: None,
             hooks: vec![],
             markdown: None,
+            syntax: None,
             language: None,
             semantic: None,
             editing: Default::default(),
-            editing_active: Arc::new(std::sync::RwLock::new(true)),
+            services_active: Arc::new(std::sync::RwLock::new(true)),
             library: Some(code),
         };
         loaded.discover_hooks()?;
@@ -267,7 +270,7 @@ impl Generation {
 }
 impl Generation {
     fn deactivate(&self) {
-        if let Ok(mut active) = self.editing_active.write() {
+        if let Ok(mut active) = self.services_active.write() {
             *active = false;
         }
         if let Some(host) = &self.host {
@@ -646,10 +649,11 @@ mod tests {
                 host: None,
                 hooks: vec![],
                 markdown: None,
+                syntax: None,
                 language: None,
                 semantic: None,
                 editing: Default::default(),
-                editing_active: Arc::new(std::sync::RwLock::new(true)),
+                services_active: Arc::new(std::sync::RwLock::new(true)),
                 library: None,
             },
         );
@@ -804,10 +808,11 @@ pub(super) mod test_provider {
                 host: None,
                 hooks: vec![],
                 markdown: None,
+                syntax: None,
                 language: None,
                 semantic: None,
                 editing: Default::default(),
-                editing_active: Arc::new(std::sync::RwLock::new(true)),
+                services_active: Arc::new(std::sync::RwLock::new(true)),
                 library: None,
             },
         );

@@ -69,7 +69,7 @@ impl Manager {
                 .editing
                 .get(&role)
                 .ok_or("editing role unavailable")?,
-            active: generation.editing_active.clone(),
+            active: generation.services_active.clone(),
             _code: generation
                 .library
                 .clone()

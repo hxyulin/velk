@@ -55,7 +55,7 @@ there is no active editor UI to block. A loading-window flow is a separate task.
 ## Measurements
 
 ```sh
-cargo bench -p velk-syntax --bench syntax --locked
+cargo bench -p velk-plugin-tree-sitter --bench syntax --locked
 VELK_BENCH_CASE=rust_plain_typing VELK_BENCH_WARMUP=10 VELK_BENCH_SAMPLES=101 \
   cargo bench -p velk-editor-widget --bench responsiveness --features performance --locked
 VELK_BENCH_CASE=rust_syntax_typing VELK_BENCH_WARMUP=10 VELK_BENCH_SAMPLES=101 \

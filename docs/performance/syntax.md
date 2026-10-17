@@ -6,7 +6,7 @@ application; parsing does not launch a process. RXUI/Astrelis revisions remain
 unchanged from the application's dependency pin.
 
 ```sh
-cargo bench -p velk-syntax --bench syntax --locked
+cargo bench -p velk-plugin-tree-sitter --bench syntax --locked
 ```
 
 The final run was made after the test suites completed. Each incremental sample

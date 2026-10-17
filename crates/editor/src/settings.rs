@@ -19,6 +19,7 @@ pub struct Preferences {
     pub activity_bar: Option<bool>,
     pub search_backend: String,
     pub markdown_provider: String,
+    pub syntax_provider: String,
     pub indentation_provider: String,
     pub pairing_provider: String,
     pub keymap_provider: String,
@@ -39,6 +40,7 @@ impl Default for Preferences {
             activity_bar: None,
             search_backend: velk_search::DEFAULT_BACKEND.into(),
             markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
+            syntax_provider: velk_syntax::DEFAULT_PROVIDER.into(),
             indentation_provider: "velk.indentation".into(),
             pairing_provider: "velk.autopairs".into(),
             keymap_provider: String::new(),
@@ -206,7 +208,11 @@ impl Preferences {
     pub fn set(&mut self, key: &str, value: Option<Value>) -> Result<(), String> {
         if matches!(
             key,
-            "markdown_provider" | "indentation_provider" | "pairing_provider" | "keymap_provider"
+            "markdown_provider"
+                | "syntax_provider"
+                | "indentation_provider"
+                | "pairing_provider"
+                | "keymap_provider"
         ) && value.as_ref().is_some_and(|v| {
             v.as_str().is_none_or(|id| {
                 !(key == "keymap_provider" && id.is_empty())
@@ -361,6 +367,20 @@ fn search_backends(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, Str
     }
     ids.into_iter().map(|id| (id.clone(), id)).collect()
 }
+fn syntax_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    let mut choices = vec![(
+        velk_syntax::DEFAULT_PROVIDER.into(),
+        "Tree-sitter (bundled default)".into(),
+    )];
+    for plugin in plugins {
+        if plugin.hooks.iter().any(|h| h == velk_syntax::HOOK)
+            && !choices.iter().any(|(id, _)| id == &plugin.id)
+        {
+            choices.push((plugin.id.clone(), plugin.metadata.name.clone()));
+        }
+    }
+    choices
+}
 fn markdown_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
     let mut choices = vec![(
         velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
@@ -450,6 +470,16 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         description: "Plugin that finds matches in the current buffer.".into(),
         category: Category::Search,
         control: Control::Choice(search_backends),
+    },
+    Setting {
+        plugin: None,
+        keywords: "syntax highlighting parser tree-sitter".into(),
+        default: Value::Null,
+        key: "syntax_provider".into(),
+        title: "Syntax provider".into(),
+        description: "Service for viewport syntax highlighting. Plain text is used when unavailable.".into(),
+        category: Category::Plugins,
+        control: Control::Choice(syntax_providers),
     },
     Setting {
         plugin: None,
@@ -583,6 +613,26 @@ pub fn plugin_rows(plugins: &BTreeMap<String, velk_plugin_host::PluginInfo>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn syntax_provider_validates_roundtrips_and_resets() {
+        let mut preferences = Preferences::default();
+        assert_eq!(preferences.syntax_provider, velk_syntax::DEFAULT_PROVIDER);
+        preferences
+            .set("syntax_provider", Some("community.syntax".into()))
+            .unwrap();
+        let restored: Preferences =
+            serde_json::from_value(serde_json::to_value(&preferences).unwrap()).unwrap();
+        assert_eq!(restored.syntax_provider, "community.syntax");
+        assert!(
+            preferences
+                .set("syntax_provider", Some("invalid id".into()))
+                .is_err()
+        );
+        assert_eq!(preferences.syntax_provider, "community.syntax");
+        preferences.set("syntax_provider", None).unwrap();
+        assert_eq!(preferences.syntax_provider, velk_syntax::DEFAULT_PROVIDER);
+        assert_eq!(syntax_providers(&[])[0].0, velk_syntax::DEFAULT_PROVIDER);
+    }
     #[test]
     fn preferences_default_merge_roundtrip_and_preserve_unknown_settings() {
         let dir = tempfile::tempdir().unwrap();

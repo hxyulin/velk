@@ -15,7 +15,18 @@ fn run_with_format(root: &Path, output: &Path, pack: bool) -> Result<(), String>
     let directory = temp.path().join("plugins");
     let (markdown, lsp, rust) = if pack {
         let specs = stage_builtins(output, &directory)?;
-        (specs[0].clone(), specs[1].clone(), specs[2].clone())
+        let find = |id: &str| {
+            specs
+                .iter()
+                .find(|s| s.id == id)
+                .cloned()
+                .ok_or_else(|| format!("missing bundled plugin: {id}"))
+        };
+        (
+            find(ID)?,
+            find("velk.lsp")?,
+            find("velk.language-server.rust-analyzer")?,
+        )
     } else {
         (
             stage(output, &directory)?,

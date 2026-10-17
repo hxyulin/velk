@@ -5,14 +5,14 @@ required and optional capabilities, and Markdown READMEs. Each pack member has
 its own metadata through the ordinary named request contract.
 
 The default built-in artifact is now `velk_plugin_builtin`, a single native
-library containing Diagnostics, Markdown, generic LSP, the Rust-analyzer definition, buffer
+library containing Diagnostics, Markdown, Tree-sitter, generic LSP, the Rust-analyzer definition, buffer
 search, Files, Terminal, Indentation, Autopairs, Vim, Autosave, Quick Open, and Find in
 Workspace. Each keeps its own plugin ID, named registrations, instance state,
 generation, dependency resolution, and load/unload controls.
 
 Run `cargo xtask setup-terminal` once to cache the pinned terminal build inputs.
 `cargo xtask build [--release]`, `plugins`, and `run` build/stage this pack.
-The manifest has twelve entries selecting IDs from one content-addressed artifact:
+The manifest has fourteen entries selecting IDs from one content-addressed artifact:
 
 ```json
 {
@@ -23,7 +23,7 @@ The manifest has twelve entries selecting IDs from one content-addressed artifac
 }
 ```
 
-The other entries select `velk.lsp`, `velk.language-server.rust-analyzer`, and
+The other entries select `velk.tree-sitter`, `velk.problems`, `velk.lsp`, `velk.language-server.rust-analyzer`, and
 `velk.search.literal`, `velk.files`, `velk.terminal`, `velk.indentation`,
 `velk.autopairs`, `velk.vim`, `velk.autosave`, `velk.quick-open`, and `velk.workspace-find` using
 the same library and digest. A manifest selects which
@@ -39,6 +39,7 @@ The built-in pack depends on those crates and calls:
 ```rust
 velk_plugin_sdk::export_plugin_pack!(
     velk_plugin_markdown::CommonMark,
+    velk_plugin_tree_sitter::TreeSitter,
     velk_plugin_lsp::Lsp,
     velk_plugin_rust_analyzer::RustAnalyzer,
     velk_plugin_search::Search,
