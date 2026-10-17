@@ -196,7 +196,12 @@ input. Incoming frames also have a bounded queue. It supports:
   close/shutdown/exit, and waits on the worker, with bounded forced termination
   and child reaping if needed. Dropping a service never joins its worker on the
   UI thread. Process kill-on-drop covers unwinding; backend panics become failure
-  status. No automatic restart loop is introduced.
+  status. On Unix the server owns a separate process group; cleanup also terminates
+  remaining group members after graceful shutdown, on timeout, and on transport
+  drop, so compiler children cannot keep build locks after their server exits.
+  Children that explicitly detach from the group are outside that cleanup;
+  Windows currently terminates only the direct server process. No automatic
+  restart loop is introduced.
 
 Every effective synchronization gets a separate LSP version mapped to the current
 buffer revision. The adapter does not cast buffer revisions to LSP integers or

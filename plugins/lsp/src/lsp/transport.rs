@@ -9,10 +9,12 @@ use tokio::{
 
 pub(super) struct Connection {
     child: Child,
+    #[cfg(unix)]
+    process_group: Option<ProcessGroup>,
     stdin: ChildStdin,
     messages: mpsc::Receiver<Result<Value, String>>,
     reader: JoinHandle<()>,
-    stderr: JoinHandle<()>,
+    stderr: Option<JoinHandle<()>>,
     pub root_uri: String,
     configuration: Value,
 }
@@ -24,15 +26,27 @@ impl Connection {
         configuration: Value,
     ) -> Result<Self, String> {
         let _trace = velk_plugin_sdk::diagnostics::scope!("lsp.spawn_server");
-        let mut child = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .args(arguments)
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
             .spawn()
             .map_err(|e| format!("Cannot start {}: {e}", executable.to_string_lossy()))?;
+        #[cfg(unix)]
+        let process_group = ProcessGroup(
+            child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .and_then(rustix::process::Pid::from_raw)
+                .ok_or("language server process group is unavailable")?,
+        );
         let stdin = child
             .stdin
             .take()
@@ -77,10 +91,12 @@ impl Connection {
         });
         Ok(Self {
             child,
+            #[cfg(unix)]
+            process_group: Some(process_group),
             stdin,
             messages,
             reader,
-            stderr,
+            stderr: Some(stderr),
             root_uri: String::new(),
             configuration,
         })
@@ -150,26 +166,52 @@ impl Connection {
             self.notify("exit", Value::Null).await
         })
         .await;
-        if !matches!(
+        let exited = matches!(
             tokio::time::timeout(Duration::from_secs(1), self.child.wait()).await,
             Ok(Ok(_))
-        ) {
+        );
+        // A server can exit while its compiler children still own build locks.
+        #[cfg(unix)]
+        drop(self.process_group.take());
+        if !exited {
             let _ = self.child.kill().await;
         }
         self.reader.abort();
-        if tokio::time::timeout(Duration::from_secs(1), &mut self.stderr)
-            .await
-            .is_err()
+        if let Some(mut stderr) = self.stderr.take()
+            && tokio::time::timeout(Duration::from_secs(1), &mut stderr)
+                .await
+                .is_err()
         {
-            self.stderr.abort();
-            let _ = (&mut self.stderr).await;
+            stderr.abort();
+            let _ = stderr.await;
         }
     }
 }
 impl Drop for Connection {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        drop(self.process_group.take());
         self.reader.abort();
-        self.stderr.abort();
+        if let Some(stderr) = &self.stderr {
+            stderr.abort();
+        }
+    }
+}
+
+#[cfg(unix)]
+struct ProcessGroup(rustix::process::Pid);
+#[cfg(unix)]
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        use rustix::process::{Signal, kill_process_group};
+        if let Err(error) = kill_process_group(self.0, Signal::KILL)
+            && error != rustix::io::Errno::SRCH
+        {
+            velk_plugin_sdk::diagnostics::log!(
+                velk_plugin_sdk::diagnostics::Level::Warn,
+                "Cannot terminate language server process group: {error}"
+            );
+        }
     }
 }
 
@@ -304,3 +346,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+mod process_tests;

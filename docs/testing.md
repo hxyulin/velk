@@ -90,3 +90,21 @@ The test is ignored in the default suite because it depends on an external serve
 and GPU. Frames and its verification report stay under `target/feature-demo/`.
 These checks do not replace native testing of IME, clipboard integration,
 operating-system shortcuts, window scaling, or multiple monitors.
+
+## Language-server process cleanup
+
+`cargo test -p velk-plugin-lsp` includes Unix regression fixtures whose server
+spawns a child holding a real filesystem lock. These check graceful shutdown,
+forced termination, transport drop, and isolation from a second live server.
+The timeout fixture deliberately ignores the LSP shutdown request.
+
+With `rust-analyzer` and `rust-src` installed, run the real Cargo-lock tests:
+
+```sh
+cargo test -p velk-plugin-lsp rust_analyzer_shutdown_releases_an_active_cargo_build_lock -- --ignored --nocapture
+```
+
+These use temporary Cargo projects with a sleeping build script. They wait until
+Cargo holds its build-directory lock, then check that server shutdown releases
+it. One case suspends the server to force the shutdown timeout path. They do not
+use the workspace's build directory or modify user configuration.

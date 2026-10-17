@@ -28,3 +28,9 @@ tempfile = "3.27.0"
 unsafe_code = "deny"
 [lints.clippy]
 all = "warn"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.5", features = ["process"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1.1.5", features = ["fs", "process"] }

@@ -34,6 +34,13 @@ versions, requests and cancellation. Closing a buffer sends didClose; closing th
 last buffer keeps the client available for reuse. Provider unload/restart and
 application shutdown stop and reap its clients, including idle ones.
 
+On Unix, each server starts in its own process group. Shutdown first attempts the
+LSP shutdown/exit exchange, then terminates any remaining group members, including
+Cargo or compiler children that could retain build-directory locks. The same
+cleanup runs when the transport is dropped unexpectedly. Children that detach
+into another process group are outside this cleanup. Windows currently retains
+direct server-process termination without process-group cleanup.
+
 Cargo workspace members share their workspace root, while nested independent
 Cargo projects remain separate. Compilation databases, compile flags and repository
 markers support other project roots; an explicitly configured root takes

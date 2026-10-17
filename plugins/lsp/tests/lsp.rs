@@ -871,3 +871,105 @@ async fn edits_cancel_pull_requests_and_ignore_late_reports() {
             .any(|v| v["method"] == "$/cancelRequest")
     );
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires rust-analyzer and rust-src; runs a real Cargo build script"]
+async fn real_rust_analyzer_shutdown_releases_an_active_cargo_build_lock() {
+    real_cargo_shutdown(false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires rust-analyzer and rust-src; suspends a server during a real Cargo check"]
+async fn stopped_rust_analyzer_shutdown_releases_an_active_cargo_build_lock() {
+    real_cargo_shutdown(true).await;
+}
+
+#[cfg(unix)]
+async fn real_cargo_shutdown(stop_server: bool) {
+    use rustix::fs::{FlockOperation, flock};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"shutdown-lock-fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[workspace]\n").unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn example() {}\n").unwrap();
+    std::fs::write(
+        root.join("build.rs"),
+        r#"fn main() {
+        std::fs::write("build-running", std::process::id().to_string()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }"#,
+    )
+    .unwrap();
+    let service = Service::start(LspBackend {
+        executable: "python3".into(),
+        arguments: vec!["-c".into(), "import os,pathlib; pathlib.Path('server-pid').write_text(str(os.getpid())); os.execvp('rust-analyzer',['rust-analyzer'])".into()],
+        root: Some(root.clone()),
+        initialization_options: serde_json::json!({"checkOnSave":true}),
+        configuration: serde_json::json!({"rust-analyzer":{"checkOnSave":true}}),
+    })
+    .unwrap();
+    service.update(document(
+        &root.join("src/lib.rs"),
+        0,
+        "pub fn example() {}\n",
+    ));
+    until(&service.events, |event| {
+        matches!(event, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let lock = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if root.join("build-running").exists()
+                && let Ok(lock) = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(root.join("target/debug/.cargo-lock"))
+            {
+                match flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+                    Err(rustix::io::Errno::WOULDBLOCK) => break lock,
+                    Ok(()) => flock(&lock, FlockOperation::Unlock).unwrap(),
+                    Err(error) => panic!("cannot inspect Cargo lock: {error}"),
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("rust-analyzer did not start the build-script fixture");
+    if stop_server {
+        let pid = std::fs::read_to_string(root.join("server-pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(pid).unwrap(),
+            rustix::process::Signal::STOP,
+        )
+        .unwrap();
+    }
+    service.shutdown_and_join().unwrap();
+    let released = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if flock(&lock, FlockOperation::NonBlockingLockExclusive).is_ok() {
+                flock(&lock, FlockOperation::Unlock).unwrap();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .is_ok();
+    if !released
+        && let Ok(pid) = std::fs::read_to_string(root.join("build-running"))
+        && let Ok(pid) = pid.parse::<i32>()
+        && let Some(pid) = rustix::process::Pid::from_raw(pid)
+    {
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+    }
+    assert!(
+        released,
+        "Cargo retained its build lock after rust-analyzer shutdown"
+    );
+}
