@@ -233,7 +233,8 @@ mod tests {
     }
     #[test]
     fn consecutive_multi_caret_typing_can_share_an_undo_group() {
-        let mut buffer = Buffer::new("\n");
+        let mut buffer =
+            velk_core::Buffer::with_history("\n", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut set = SelectionSet::new(&buffer, vec![caret(0), caret(1)], 0).unwrap();
         set.project(&mut buffer);
         for text in ["a", "b"] {
@@ -247,7 +248,8 @@ mod tests {
     }
     #[test]
     fn peer_edits_rebase_secondary_carets_and_expired_changes_invalidate_them() {
-        let mut buffer = Buffer::new("a\nb");
+        let mut buffer =
+            velk_core::Buffer::with_history("a\nb", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut set = SelectionSet::new(&buffer, vec![caret(0), caret(2)], 0).unwrap();
         set.project(&mut buffer);
         let mut peer = buffer.new_view();
@@ -265,7 +267,8 @@ mod tests {
     }
     #[test]
     fn overlapping_selections_after_peer_deletion_are_invalidated() {
-        let mut buffer = Buffer::new("a\nb");
+        let mut buffer =
+            velk_core::Buffer::with_history("a\nb", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut set = SelectionSet::new(&buffer, vec![caret(0), caret(2)], 0).unwrap();
         set.project(&mut buffer);
         let mut peer = buffer.new_view();
@@ -275,7 +278,10 @@ mod tests {
     }
     #[test]
     fn multi_selection_edits_snap_each_caret_after_grapheme_joining() {
-        let mut buffer = Buffer::new("e\u{301}\nx\u{301}");
+        let mut buffer = velk_core::Buffer::with_history(
+            "e\u{301}\nx\u{301}",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut set = SelectionSet::new(&buffer, vec![caret(0), caret(3)], 0).unwrap();
         set.project(&mut buffer);
         set.replace(&mut buffer, "\u{600}").unwrap();
@@ -292,7 +298,8 @@ mod tests {
     }
     #[test]
     fn invalid_and_oversized_selection_operations_leave_text_and_selection_unchanged() {
-        let mut buffer = Buffer::new("a\nb");
+        let mut buffer =
+            velk_core::Buffer::with_history("a\nb", std::sync::Arc::new(velk_undo_tree::Tree));
         assert!(SelectionSet::new(&buffer, vec![caret(2), caret(0)], 0).is_err());
         assert!(SelectionSet::new(&buffer, vec![caret(0)], 1).is_err());
         let mut set = SelectionSet::new(&buffer, vec![caret(0), caret(2)], 0).unwrap();

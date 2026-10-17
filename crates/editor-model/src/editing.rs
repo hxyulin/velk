@@ -327,7 +327,8 @@ mod tests {
     }
     #[test]
     fn tracking_keeps_the_newest_pairs_when_the_limit_is_reached() {
-        let mut buffer = Buffer::new("");
+        let mut buffer =
+            velk_core::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut session = Session::default();
         session.set_providers(BTreeMap::from([(
             Role::Pairing,
@@ -343,7 +344,8 @@ mod tests {
     }
     #[test]
     fn proposals_are_atomic_and_pair_anchors_follow_text_changes_and_deletions() {
-        let mut buffer = Buffer::new("界");
+        let mut buffer =
+            velk_core::Buffer::with_history("界", std::sync::Arc::new(velk_undo_tree::Tree));
         buffer.set_caret(1, false);
         let mut session = Session::default();
         session.set_providers(BTreeMap::from([(

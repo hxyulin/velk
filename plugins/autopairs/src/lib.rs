@@ -178,7 +178,8 @@ mod tests {
             Selection { anchor: 0, head: 1 },
             Selection { anchor: 1, head: 0 },
         ] {
-            let mut buffer = velk_core::Buffer::new("界");
+            let mut buffer =
+                velk_core::Buffer::with_history("界", std::sync::Arc::new(velk_undo_tree::Tree));
             buffer.set_caret(selection.anchor, false);
             buffer.set_caret(selection.head, true);
             let Decision::Apply(proposal) =

@@ -4,6 +4,7 @@ mod code;
 mod editing;
 mod hooks;
 mod syntax;
+mod undo;
 use code::Code;
 mod language_server;
 mod semantic;
@@ -47,6 +48,7 @@ struct Generation {
     hooks: Vec<hooks::Hook>,
     markdown: Option<MarkupApi>,
     syntax: Option<SyntaxApi>,
+    undo: Option<UndoApi>,
     language: Option<LanguageApi>,
     semantic: Option<SemanticApi>,
     editing: BTreeMap<velk_editing::Role, EditingApi>,
@@ -100,6 +102,7 @@ impl Generation {
             hooks: vec![],
             markdown: None,
             syntax: None,
+            undo: None,
             language: None,
             semantic: None,
             editing: Default::default(),
@@ -808,6 +811,7 @@ mod tests {
                 hooks: vec![],
                 markdown: None,
                 syntax: None,
+                undo: None,
                 language: None,
                 semantic: None,
                 editing: Default::default(),
@@ -972,6 +976,7 @@ pub(super) mod test_provider {
                 hooks: vec![],
                 markdown: None,
                 syntax: None,
+                undo: None,
                 language: None,
                 semantic: None,
                 editing: Default::default(),

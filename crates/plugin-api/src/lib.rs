@@ -1,6 +1,8 @@
 //! Experimental native ABI. No Rust containers or trait objects cross it.
 //! Common models live in velk-plugin-contracts; wire adapters copy native views.
 use std::ffi::c_void;
+pub mod undo;
+pub use undo::{MAX_UNDO_BYTES, UndoApi};
 pub mod contracts;
 pub use contracts::*;
 #[repr(C)]

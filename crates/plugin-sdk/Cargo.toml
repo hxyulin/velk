@@ -23,6 +23,7 @@ crate-type = ["cdylib"]
 markup = ["dep:velk-markup"]
 
 [dependencies]
+velk-core-contracts.workspace = true
 ropey.workspace = true
 velk-syntax.workspace = true
 velk-editing.workspace = true

@@ -115,6 +115,11 @@ impl Generation {
                         }
                     }
                 }
+                velk_core_contracts::history::CONTRACT
+                    if name == velk_core_contracts::history::HOOK =>
+                {
+                    self.undo = Some(typed!(UndoApi, SERVICE));
+                }
                 velk_syntax::CONTRACT if name == velk_syntax::HOOK => {
                     self.syntax = Some(typed!(SyntaxApi, SERVICE));
                 }

@@ -60,6 +60,16 @@ fn open(path: &Path) -> Result<(file::FileState, Editor), Error> {
 
 fn run() -> Result<(), Error> {
     let argument = file_argument(std::env::args_os().skip(1))?;
+    let settings = settings::Store::load();
+    undo::configure(&settings.preferences, None);
+    let plugins = plugins::start();
+    let plugin_client = plugins.as_ref().map(velk_plugin_host::Runtime::client);
+    if let Some(client) = &plugin_client
+        && let Err(error) = client.set_settings(settings.preferences.plugins.clone())
+    {
+        tracing::warn!(%error, "cannot configure plugin bootstrap");
+    }
+    undo::set_client(plugin_client.clone());
     let mut path = argument
         .clone()
         .unwrap_or_else(|| PathBuf::from("Untitled 1"));
@@ -74,7 +84,7 @@ fn run() -> Result<(), Error> {
         (
             session.file.clone(),
             if session.is_empty() {
-                Editor::new("")
+                undo::editor("")
             } else {
                 session.editor().map_err(|message| Error::Open {
                     path: path.clone(),
@@ -87,7 +97,7 @@ fn run() -> Result<(), Error> {
             let (file, editor) = open(&path)?;
             (Some(file), editor)
         } else {
-            (None, Editor::new(""))
+            (None, undo::editor(""))
         }
     };
     if restored.is_some() {
@@ -261,13 +271,11 @@ fn run() -> Result<(), Error> {
             source: io::Error::other("replacement cannot establish durable recovery"),
         });
     }
+    undo::finish_bootstrap();
     let size = restored
         .as_ref()
         .map_or([1280., 800.], |session| session.size);
     let title = format!("Velk — {}", path.display());
-    let plugins = plugins::start();
-    let settings = settings::Store::load();
-    let plugin_client = plugins.as_ref().map(velk_plugin_host::Runtime::client);
     let document: Rc<RefCell<Option<WeakEntity<document::Document>>>> = Rc::default();
     let created = document.clone();
     let closing = document.clone();

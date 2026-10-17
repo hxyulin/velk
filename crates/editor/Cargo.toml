@@ -19,6 +19,7 @@ path = "examples/widget-preview.rs"
 required-features = ["performance"]
 
 [dependencies]
+velk-undo-tree.workspace = true
 velk-syntax.workspace = true
 velk-editing.workspace = true
 velk-commands.workspace = true

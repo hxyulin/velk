@@ -1,0 +1,13 @@
+[package]
+name = "velk-core-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[dependencies]
+ropey.workspace = true
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+unicode-segmentation.workspace = true
+[lints]
+workspace = true

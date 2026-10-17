@@ -151,6 +151,7 @@ impl Document {
         report: velk_plugin_host::Report,
         cx: &mut Context<'_, Self>,
     ) -> String {
+        crate::undo::configure(&self.shell.store.preferences, Some(report.undo));
         let state = self.plugins.as_mut().expect("plugin state");
         let status = {
             for event in &report.events {
@@ -418,6 +419,7 @@ mod tests {
                     velk_plugin_host::Report {
                         inventory: Vec::new(),
                         syntax: Default::default(),
+                        undo: Default::default(),
                         editing: BTreeMap::from([(
                             ("test.keymap".into(), Role::Keymap),
                             Arc::new(Keymap) as Arc<dyn velk_editing::Provider>,
@@ -437,6 +439,7 @@ mod tests {
                     velk_plugin_host::Report {
                         inventory: Vec::new(),
                         syntax: Default::default(),
+                        undo: Default::default(),
                         editing: BTreeMap::new(),
                         loaded: 0,
                         plugins: vec![],

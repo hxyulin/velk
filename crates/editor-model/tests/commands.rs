@@ -1,4 +1,3 @@
-use velk_core::Buffer;
 use velk_editor_model::{
     EditCommand,
     commands::{Key, Modifiers, Platform, key_command},
@@ -28,7 +27,10 @@ fn platform_navigation_and_selection_do_not_edit_text_or_history() {
             13,
         ),
     ] {
-        let mut buffer = Buffer::new("one\nword\nlast");
+        let mut buffer = velk_core::Buffer::with_history(
+            "one\nword\nlast",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(5, false);
         key_command(key, modifiers, platform)
             .unwrap()
@@ -92,7 +94,8 @@ fn platform_navigation_and_selection_do_not_edit_text_or_history() {
 
 #[test]
 fn text_commands_preserve_unicode_history_and_normalization() {
-    let mut buffer = Buffer::new("e\u{301}λ");
+    let mut buffer =
+        velk_core::Buffer::with_history("e\u{301}λ", std::sync::Arc::new(velk_undo_tree::Tree));
     EditCommand::DocumentEdge {
         end: true,
         extend: false,
@@ -113,7 +116,8 @@ fn text_commands_preserve_unicode_history_and_normalization() {
 
 #[test]
 fn external_ranges_enclose_graphemes_and_reject_invalid_offsets_atomically() {
-    let mut buffer = Buffer::new("e\u{301}λ");
+    let mut buffer =
+        velk_core::Buffer::with_history("e\u{301}λ", std::sync::Arc::new(velk_undo_tree::Tree));
     assert!(EditCommand::SelectRange(0..1).apply(&mut buffer));
     assert_eq!(buffer.selection().range(), 0..2);
     let selection = buffer.selection();

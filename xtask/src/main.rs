@@ -14,6 +14,7 @@ mod search_smoke;
 mod syntax_smoke;
 mod terminal_tools;
 mod trace_summary;
+mod undo_smoke;
 const PLUGIN: &str = "velk-plugin-markdown";
 const ID: &str = "velk.markdown";
 fn main() -> ExitCode {
@@ -89,6 +90,7 @@ fn stage_builtins(output: &Path, directory: &Path) -> Result<Vec<PluginSpec>, St
     Ok([
         ID,
         "velk.tree-sitter",
+        "velk.undo.tree",
         "velk.lsp",
         "velk.language-server.rust-analyzer",
         velk_search::DEFAULT_BACKEND,
@@ -148,6 +150,8 @@ fn build_standalone(root: &Path, release: bool) -> Result<(), String> {
         "velk-plugin-autopairs",
         "-p",
         "velk-plugin-tree-sitter",
+        "-p",
+        "velk-plugin-undo",
     ]);
     if release {
         command.arg("--release");
@@ -308,6 +312,8 @@ fn smoke(root: &Path, output: &Path, release: bool) -> Result<(), String> {
     editing_smoke::run(output, true)?;
     syntax_smoke::run(output, false)?;
     syntax_smoke::run(output, true)?;
+    undo_smoke::run(output, false)?;
+    undo_smoke::run(output, true)?;
     let profile_output = output;
     let standalone = output.join("examples");
     let output = standalone.as_path();

@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [dependencies]
+velk-undo-tree.workspace = true
 velk-files-contracts.workspace = true
 velk-plugin-contracts.workspace = true
 velk-editor-model.workspace = true

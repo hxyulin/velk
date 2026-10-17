@@ -4056,6 +4056,18 @@ dependencies = [
  "tempfile",
  "tracing",
  "unicode-segmentation",
+ "velk-core-contracts",
+ "velk-undo-tree",
+]
+
+[[package]]
+name = "velk-core-contracts"
+version = "0.0.0-dev"
+dependencies = [
+ "ropey",
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -4106,6 +4118,7 @@ dependencies = [
  "velk-search",
  "velk-semantic",
  "velk-syntax",
+ "velk-undo-tree",
 ]
 
 [[package]]
@@ -4118,6 +4131,7 @@ dependencies = [
  "velk-commands",
  "velk-core",
  "velk-editing",
+ "velk-undo-tree",
 ]
 
 [[package]]
@@ -4141,6 +4155,7 @@ dependencies = [
  "velk-plugin-tree-sitter",
  "velk-plugin-vim",
  "velk-syntax",
+ "velk-undo-tree",
 ]
 
 [[package]]
@@ -4183,6 +4198,7 @@ version = "0.0.0-dev"
 dependencies = [
  "velk-core",
  "velk-plugin-sdk",
+ "velk-undo-tree",
 ]
 
 [[package]]
@@ -4209,6 +4225,7 @@ dependencies = [
  "velk-plugin-search",
  "velk-plugin-terminal",
  "velk-plugin-tree-sitter",
+ "velk-plugin-undo",
  "velk-plugin-vim",
 ]
 
@@ -4247,6 +4264,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "velk-core-contracts",
  "velk-diagnostics",
  "velk-editing",
  "velk-markup",
@@ -4262,6 +4280,7 @@ version = "0.0.0-dev"
 dependencies = [
  "velk-core",
  "velk-plugin-sdk",
+ "velk-undo-tree",
 ]
 
 [[package]]
@@ -4325,6 +4344,7 @@ version = "0.0.0-dev"
 dependencies = [
  "ropey",
  "serde_json",
+ "velk-core-contracts",
  "velk-diagnostics",
  "velk-editing",
  "velk-markup",
@@ -4371,6 +4391,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "velk-plugin-undo"
+version = "0.0.0-dev"
+dependencies = [
+ "velk-plugin-sdk",
+ "velk-undo-tree",
+]
+
+[[package]]
 name = "velk-plugin-vim"
 version = "0.0.0-dev"
 dependencies = [
@@ -4379,6 +4407,7 @@ dependencies = [
  "velk-core",
  "velk-editor-model",
  "velk-plugin-sdk",
+ "velk-undo-tree",
 ]
 
 [[package]]
@@ -4418,6 +4447,16 @@ dependencies = [
  "ropey",
  "tracing",
  "velk-core",
+]
+
+[[package]]
+name = "velk-undo-tree"
+version = "0.0.0-dev"
+dependencies = [
+ "ropey",
+ "serde",
+ "serde_json",
+ "velk-core-contracts",
 ]
 
 [[package]]
@@ -5296,6 +5335,7 @@ dependencies = [
  "velk-plugin-host",
  "velk-search",
  "velk-semantic",
+ "velk-undo-tree",
 ]
 
 [[package]]

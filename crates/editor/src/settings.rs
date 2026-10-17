@@ -20,6 +20,7 @@ pub struct Preferences {
     pub search_backend: String,
     pub markdown_provider: String,
     pub syntax_provider: String,
+    pub undo_provider: String,
     pub indentation_provider: String,
     pub pairing_provider: String,
     pub keymap_provider: String,
@@ -41,6 +42,7 @@ impl Default for Preferences {
             search_backend: velk_search::DEFAULT_BACKEND.into(),
             markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
             syntax_provider: velk_syntax::DEFAULT_PROVIDER.into(),
+            undo_provider: velk_core::history::DEFAULT_PROVIDER.into(),
             indentation_provider: "velk.indentation".into(),
             pairing_provider: "velk.autopairs".into(),
             keymap_provider: String::new(),
@@ -210,6 +212,7 @@ impl Preferences {
             key,
             "markdown_provider"
                 | "syntax_provider"
+                | "undo_provider"
                 | "indentation_provider"
                 | "pairing_provider"
                 | "keymap_provider"
@@ -367,6 +370,23 @@ fn search_backends(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, Str
     }
     ids.into_iter().map(|id| (id.clone(), id)).collect()
 }
+fn undo_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
+    let mut choices = vec![(
+        velk_core::history::DEFAULT_PROVIDER.into(),
+        "Undo tree (bundled default)".into(),
+    )];
+    for plugin in plugins {
+        if plugin
+            .hooks
+            .iter()
+            .any(|hook| hook == velk_core::history::HOOK)
+            && !choices.iter().any(|(id, _)| id == &plugin.id)
+        {
+            choices.push((plugin.id.clone(), plugin.metadata.name.clone()));
+        }
+    }
+    choices
+}
 fn syntax_providers(plugins: &[velk_plugin_host::PluginInfo]) -> Vec<(String, String)> {
     let mut choices = vec![(
         velk_syntax::DEFAULT_PROVIDER.into(),
@@ -470,6 +490,12 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         description: "Plugin that finds matches in the current buffer.".into(),
         category: Category::Search,
         control: Control::Choice(search_backends),
+    },
+    Setting {
+        plugin: None, keywords: "undo history redo branches".into(), default: Value::Null,
+        key: "undo_provider".into(), title: "Undo provider".into(),
+        description: "History engine for newly opened documents. Existing documents retain their provider and history. Bundled undo is the fallback.".into(),
+        category: Category::Plugins, control: Control::Choice(undo_providers),
     },
     Setting {
         plugin: None,

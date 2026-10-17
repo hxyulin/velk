@@ -255,3 +255,12 @@ See [feature backends](feature-backends.md) for Core/Backend/Frontend boundaries
 `Host::call_plugin`, authenticated consumer sessions, manifest dependencies,
 install intent, and the plugin manager dependency tree. Internal contract
 versions remain 1; rebuild the host, SDK, and bundled plugins together.
+
+## Undo service
+
+The platform undo contract lives in `velk-core-contracts::history`, re-exported
+by Core. The `velk.undo.tree` plugin implements it through the version-1
+`velk.undo.session` named service and `UndoApi` C table. Register providers with
+`Registrar::undo::<Provider>()`; see [history.md](history.md) for the ownership,
+retirement, archive, and document-validation rules. The root plugin ABI is
+unchanged. Required undo sessions pin their implementation after logical unload.

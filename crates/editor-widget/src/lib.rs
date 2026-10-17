@@ -35,7 +35,6 @@ pub use velk_syntax::Language;
 
 /// One view of a Core document. Use `new_view` for independent selection, input,
 /// scrolling, and rendering over shared text and undo history.
-#[derive(Default)]
 pub struct Editor {
     buffer: Buffer,
     document_revision: u64,
@@ -57,6 +56,33 @@ pub struct Editor {
     annotations: Option<Arc<Annotations>>,
     appearance: EditorAppearance,
     hover: hover::State,
+}
+
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            buffer: Buffer::with_history("", Arc::new(velk_undo_tree::Tree)),
+            document_revision: Default::default(),
+            editing: Default::default(),
+            reserved_shortcuts: Default::default(),
+            syntax_worker: Default::default(),
+            language: Default::default(),
+            syntax_provider: Default::default(),
+            syntax_revision: Default::default(),
+            syntax_demand: Default::default(),
+            syntax_snapshot: Default::default(),
+            composition: Default::default(),
+            geometry: Default::default(),
+            epoch: Default::default(),
+            caret_epoch: Default::default(),
+            #[cfg(any(test, feature = "performance"))]
+            input_started: Default::default(),
+            reveal_caret: Default::default(),
+            annotations: Default::default(),
+            appearance: Default::default(),
+            hover: Default::default(),
+        }
+    }
 }
 
 struct ReservedShortcut;
@@ -213,7 +239,10 @@ impl Editor {
         }
     }
     pub fn new(text: &str) -> Self {
-        Self::from_buffer(Buffer::new(text))
+        Self::from_buffer(velk_core::Buffer::with_history(
+            text,
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        ))
     }
 
     /// Attach independently loaded document state to a UI view without copying text.
@@ -295,7 +324,12 @@ impl Editor {
 
     /// Load a UTF-8 document without creating a full-document String.
     pub fn from_reader(reader: impl std::io::Read) -> std::io::Result<Self> {
-        Ok(Self::from_buffer(Buffer::from_reader(reader)?))
+        Ok(Self::from_buffer(
+            velk_core::Buffer::from_reader_with_history(
+                reader,
+                std::sync::Arc::new(velk_undo_tree::Tree),
+            )?,
+        ))
     }
 
     /// Recreate document state; rendering, syntax and semantic caches start fresh.
@@ -303,7 +337,10 @@ impl Editor {
         if scroll.iter().any(|v| !v.is_finite() || *v < 0.) {
             return Err("invalid scroll position".into());
         }
-        let editor = Self::from_buffer(Buffer::restore(bytes)?);
+        let editor = Self::from_buffer(velk_core::Buffer::restore_with_history(
+            bytes,
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        )?);
         editor.geometry.borrow_mut().offset = scroll;
         Ok(editor)
     }

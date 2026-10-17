@@ -46,13 +46,15 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
         Role::Indentation,
         provider,
     )]));
-    let mut buffer = velk_core::Buffer::new("ab");
+    let mut buffer =
+        velk_core::Buffer::with_history("ab", std::sync::Arc::new(velk_undo_tree::Tree));
     buffer.set_caret(2, false);
     assert!(session.evaluate(&mut buffer, Intent::Indent)?);
     assert_eq!(buffer.text().to_string(), "ab  ");
     buffer.undo();
     assert_eq!(buffer.text().to_string(), "ab");
-    let mut brackets = velk_core::Buffer::new("{}");
+    let mut brackets =
+        velk_core::Buffer::with_history("{}", std::sync::Arc::new(velk_undo_tree::Tree));
     brackets.set_caret(1, false);
     assert!(session.evaluate(&mut brackets, Intent::Newline)?);
     assert_eq!(brackets.text().to_string(), "{\n    \n}");
@@ -80,7 +82,8 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
         Role::Pairing,
         provider,
     )]));
-    let mut paired = velk_core::Buffer::new("界");
+    let mut paired =
+        velk_core::Buffer::with_history("界", std::sync::Arc::new(velk_undo_tree::Tree));
     paired.set_caret(1, false);
     assert!(pairs.evaluate(&mut paired, Intent::Type("(".into()))?);
     assert_eq!(paired.text().to_string(), "界()");
@@ -103,7 +106,8 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
         Role::Keymap,
         manager.editing_provider("velk.vim", Role::Keymap)?,
     )]));
-    let mut document = velk_core::Buffer::new("one two three");
+    let mut document =
+        velk_core::Buffer::with_history("one two three", std::sync::Arc::new(velk_undo_tree::Tree));
     let input = |key: &str| {
         Intent::Key(velk_editing::input::Key {
             key: key.into(),
@@ -144,7 +148,8 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
         Role::Keymap,
         manager.editing_provider("velk.vim", Role::Keymap)?,
     )]));
-    let mut rectangle = velk_core::Buffer::new("abcd\nefgh");
+    let mut rectangle =
+        velk_core::Buffer::with_history("abcd\nefgh", std::sync::Arc::new(velk_undo_tree::Tree));
     rectangle.set_caret(1, false);
     assert!(block.evaluate(&mut rectangle, input(""))?);
     let control = Intent::Key(velk_editing::input::Key {

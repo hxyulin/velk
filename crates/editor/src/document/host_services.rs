@@ -1,7 +1,6 @@
 //! Host service dispatch stays on the UI; filesystem reads stay on plugin workers.
 use super::{Document, buffers::BufferState};
 use rxui::prelude::*;
-use velk_editor_widget::Editor;
 use velk_plugin_contracts::host::{self, Request, Response};
 use velk_plugin_host::HostRequest;
 
@@ -352,7 +351,7 @@ impl Document {
                 }
                 // Populate through the same insertion transaction as a normal edit,
                 // so nonempty generated documents are dirty and undoable.
-                let mut editor = Editor::new("");
+                let mut editor = crate::undo::editor("");
                 editor
                     .apply_transaction(velk_core::Transaction {
                         revision: editor.buffer().revision(),

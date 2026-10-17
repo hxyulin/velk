@@ -150,7 +150,7 @@ mod tests {
                     std::fs::canonicalize(&destination).unwrap()
                 );
                 assert!(d.buffer.editor.read(cx).buffer().is_dirty());
-                let mut history = velk_core::Buffer::restore(
+                let mut history = velk_core::Buffer::restore_with_history(
                     &d.buffer
                         .editor
                         .read(cx)
@@ -158,6 +158,7 @@ mod tests {
                         .snapshot()
                         .encode()
                         .unwrap(),
+                    std::sync::Arc::new(velk_undo_tree::Tree),
                 )
                 .unwrap();
                 history.undo();

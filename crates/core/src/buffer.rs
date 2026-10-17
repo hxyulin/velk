@@ -19,22 +19,7 @@ use crate::{Change, graphemes};
 
 const CHANGE_LOG_LIMIT: usize = 128;
 
-/// A directed selection, in Unicode scalar (Ropey character) offsets.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Selection {
-    pub anchor: usize,
-    pub head: usize,
-}
-
-impl Selection {
-    pub fn range(self) -> Range<usize> {
-        self.anchor.min(self.head)..self.anchor.max(self.head)
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.anchor == self.head
-    }
-}
+pub use velk_core_contracts::Selection;
 
 /// A replacement in Unicode scalar offsets in the transaction's original document.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +70,7 @@ pub enum TransactionError {
     InvalidRange,
     OverlappingEdits,
     InvalidSelection,
+    HistoryUnavailable,
 }
 
 impl fmt::Display for TransactionError {
@@ -96,6 +82,7 @@ impl fmt::Display for TransactionError {
                 "transaction edits overlap or have ambiguous starting offsets"
             }
             Self::InvalidSelection => "transaction selection is outside the final document",
+            Self::HistoryUnavailable => "undo provider rejected the transaction",
         })
     }
 }
@@ -122,7 +109,7 @@ struct DocumentState {
     views: std::collections::BTreeMap<u64, views::State>,
     next_view: u64,
     current: Snapshot,
-    history: history::RamHistory,
+    history: Option<history::Owned>,
     group: Option<history::Group>,
     previous_group: Option<history::Group>,
     merge_group: bool,
@@ -187,7 +174,7 @@ impl DocumentState {
                 selection: Selection::default(),
                 state: 0,
             },
-            history: history::RamHistory::default(),
+            history: None,
             group: None,
             previous_group: None,
             merge_group: false,
@@ -256,11 +243,15 @@ impl DocumentState {
     }
 
     pub fn can_undo(&self) -> bool {
-        self.history.entries.contains_key(&self.current.state)
+        self.history
+            .as_ref()
+            .is_some_and(|history| history.session.status().can_undo)
     }
 
     pub fn can_redo(&self) -> bool {
-        self.history.preferred.contains_key(&self.current.state)
+        self.history
+            .as_ref()
+            .is_some_and(|history| !history.session.status().branches.is_empty())
     }
 
     /// Clamp and snap an external character offset to the preceding grapheme edge.
@@ -404,58 +395,71 @@ impl DocumentState {
     }
 
     pub fn undo(&mut self) {
-        let Some(entry) = self.history.entries.get(&self.current.state).cloned() else {
-            return;
-        };
-        self.history
-            .preferred
-            .insert(entry.parent, self.current.state);
-        for patch in entry.patches.iter().rev() {
-            let change = patch.change.inverse(self.revision + 1);
-            self.current.text.remove(change.replaced.clone());
-            self.current
-                .text
-                .insert(change.replaced.start, &patch.removed);
-            self.revision += 1;
-            self.record(change);
-        }
-        self.current.state = entry.parent;
-        self.current.selection = entry.before;
-        self.changed();
+        self.travel(history::Request::Undo(self.current.state));
     }
-
     pub fn redo(&mut self) {
-        let Some(&state) = self.history.preferred.get(&self.current.state) else {
-            return;
-        };
-        self.redo_branch(state);
+        self.travel(history::Request::Redo {
+            current: self.current.state,
+            branch: None,
+        });
     }
-
     fn redo_branch(&mut self, state: u64) -> bool {
-        let Some(entry) = self
-            .history
-            .entries
-            .get(&state)
-            .filter(|entry| entry.parent == self.current.state)
-            .cloned()
-        else {
-            return false;
-        };
-        self.history.preferred.insert(self.current.state, state);
-        for patch in &entry.patches {
-            let mut change = patch.change.clone();
-            change.revision = self.revision + 1;
-            self.current.text.remove(change.replaced.clone());
-            self.current
-                .text
-                .insert(change.replaced.start, &patch.inserted);
-            self.revision += 1;
-            self.record(change);
+        self.travel(history::Request::Redo {
+            current: self.current.state,
+            branch: Some(state),
+        })
+    }
+    fn travel(&mut self, request: history::Request) -> bool {
+        let result = (|| {
+            let Some(history) = self.history.as_mut() else {
+                return Ok(false);
+            };
+            let Some(step) = history.session.request(request)?.step else {
+                return Ok(false);
+            };
+            if step.source != self.current.state
+                || step.target >= self.next_state
+                || step.target == step.source
+                || step.patches.is_empty()
+            {
+                return Err("invalid undo target".into());
+            }
+            let mut text = self.current.text.clone();
+            self.revision
+                .checked_add(step.patches.len() as u64)
+                .ok_or("undo revision overflow")?;
+            for patch in &step.patches {
+                crate::history::apply_patch(&mut text, patch)?;
+            }
+            if [step.selection.anchor, step.selection.head]
+                .iter()
+                .any(|&p| p > text.len_chars() || !graphemes::is_boundary(&text, p))
+            {
+                return Err("invalid undo selection".into());
+            }
+            history.session.request(history::Request::Checkout {
+                current: step.source,
+                target: step.target,
+            })?;
+            self.current.text = text;
+            for patch in step.patches {
+                self.revision += 1;
+                let mut change = patch.change;
+                change.revision = self.revision;
+                self.record(change);
+            }
+            self.current.state = step.target;
+            self.current.selection = step.selection;
+            self.changed();
+            Ok::<_, String>(true)
+        })();
+        match result {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::error!(%error, "undo provider failed");
+                false
+            }
         }
-        self.current.state = state;
-        self.current.selection = entry.after;
-        self.changed();
-        true
     }
 
     fn record(&mut self, edit: Change) {
@@ -545,20 +549,30 @@ impl DocumentState {
             .get_mut()
             .retain(|(line, _)| *line < first_line);
         next.state = self.next_state;
+        if let Some(history) = &mut self.history {
+            history
+                .session
+                .request(history::Request::Record(history::Commit {
+                    state: next.state,
+                    parent: self.current.state,
+                    before: self.current.selection,
+                    after: next.selection,
+                    patches,
+                    merge: self.group.is_some()
+                        && self.merge_group
+                        && self.current.state != self.saved.state,
+                }))
+                .map_err(|error| {
+                    tracing::error!(%error, "undo provider rejected edit");
+                    TransactionError::HistoryUnavailable
+                })?;
+        }
         self.next_state += 1;
-        let previous = std::mem::replace(&mut self.current, next);
+        self.current = next;
         for edit in &edits {
             self.record(edit.clone());
         }
         self.revision += edits.len() as u64;
-        self.history.commit(
-            self.current.state,
-            previous.state,
-            previous.selection,
-            self.current.selection,
-            patches,
-            self.group.is_some() && self.merge_group && previous.state != self.saved.state,
-        );
         if self.group.is_some() {
             self.merge_group = true;
         }
@@ -576,7 +590,10 @@ impl DocumentState {
             }],
             selection: Some(Selection { anchor: head, head }),
         })
-        .expect("internal editing range is valid");
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "text replacement rejected");
+            false
+        });
     }
 
     fn changed(&mut self) {
@@ -640,7 +657,10 @@ mod tests {
 
     #[test]
     fn edits_keep_prefix_column_cache_and_invalidate_shifted_lines_and_history() {
-        let mut buffer = Buffer::new("éabc\n👩‍💻xy\nlast");
+        let mut buffer = crate::Buffer::with_history(
+            "éabc\n👩‍💻xy\nlast",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let prefix = buffer.line_boundaries(0);
         let edited = buffer.line_boundaries(1);
         let suffix = buffer.line_boundaries(2);

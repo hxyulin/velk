@@ -1,6 +1,7 @@
 # Undo history
 
-Velk keeps one undo tree per document, shared by its views. Undo/redo acts on
+Velk assigns one undo provider session to each document, shared by its views.
+The bundled `velk.undo.tree` plugin supplies the default tree implementation. Undo/redo acts on
 that history from the focused pane; other panes' selections follow each edit.
 Typing and repeated deletion group until a caret move, another command, a view
 switch, a save, or one second of inactivity. Paste and IME commits are separate
@@ -11,7 +12,41 @@ follows the most recently edited or visited branch. Alternative branches are
 available through Core's linked Rust `redo_branches` and `redo_branch` APIs;
 a branch picker is not implemented in the shell.
 
-## RAM and recovery
+## Provider boundary
+
+`velk-core-contracts::history` defines providers, document-owned sessions,
+immutable snapshots, reversible patches, travel proposals, and merge hints.
+Core re-exports this contract as `velk_core::history`. The default tree engine
+lives in `plugins/undo/engine`; the native plugin is `plugins/undo`. The engine
+has no dependency on Core's document implementation, RXUI, or the plugin SDK.
+
+The named native service is `velk.undo.session`, contract
+`velk.contract.undo-session`, version 1. The SDK registers it with
+`registrar.undo::<Provider>()`. Only byte views and opaque allocations cross
+its C ABI. The host has no SDK lifecycle dependency. Commits send changed text
+only, not a flattened document. Snapshot capture is cheap; encoding runs on a
+worker against independently owned immutable data.
+
+Settings exposes **Undo provider** (`undo_provider`). A change applies to newly
+opened documents; live documents retain their history session. The application
+resolves required factories before file/recovery loading. If the default native
+service is missing or disabled, it uses the same bundled engine as a linked
+fallback. Core itself has no built-in undo engine.
+
+Unloading removes a provider from discovery and from future document selection.
+Existing sessions, snapshots, and explicitly retained factory leases pin their
+code and remain usable. This allows undo and recovery after logical unload.
+They do not reference the destroyed plugin instance. The image can be released
+when its final lease/session/snapshot drops.
+
+Archives identify their provider and contain its opaque serialized state. The
+application resolves the original provider for restore, rather than interpreting
+its bytes with whichever provider is currently selected. If a required custom
+provider is unavailable or disabled, recovery reports the failure and preserves
+its on-disk snapshot. Incompatible native code is never replaced with another
+provider's history decoder.
+
+## RAM and recovery## RAM and recovery
 
 History uses reversible text patches, separate from the live Rope. By default,
 a document retains at most 128 history entries and 64 MiB of patch data and

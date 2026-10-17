@@ -16,3 +16,6 @@ velk-core.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+velk-undo-tree.workspace = true

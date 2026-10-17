@@ -645,7 +645,8 @@ mod tests {
     }
     #[test]
     fn diagnostics_align_graphemes_and_preserve_message_cards_and_eof_overlays() {
-        let buffer = Buffer::new("é\n世界");
+        let buffer =
+            velk_core::Buffer::with_history("é\n世界", std::sync::Arc::new(velk_undo_tree::Tree));
         let diagnostic = |range, message: &str| velk_semantic::Diagnostic {
             range,
             severity: Severity::Error,

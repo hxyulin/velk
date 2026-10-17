@@ -20,7 +20,10 @@ and any checks that could not run.
 
 ## Structure and boundaries
 
-- `crates/core` owns text, history, snapshots, and UI-independent close/save policy.
+- `crates/core` owns authoritative text, revisions, validated undo application,
+  snapshots, and UI-independent close/save policy. `crates/core-contracts` owns
+  shared document coordinates and undo contracts; `plugins/undo` owns the default
+  history engine and native provider.
 - `crates/editor-model` owns editing commands, key mapping, annotations, and text
   projections without renderer dependencies.
 - `crates/editor` adapts document lifecycle, saves, recovery, workspace state,

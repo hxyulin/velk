@@ -1,4 +1,3 @@
-use velk_core::Buffer;
 use velk_editor_model::{
     AnnotationError, Annotations, Color, EditorAppearance, LinePattern, SpanStyle, StyledRange,
     Underline,
@@ -16,7 +15,8 @@ fn span(range: std::ops::Range<usize>) -> StyledRange {
 
 #[test]
 fn ranges_use_rope_char_offsets_and_require_grapheme_boundaries() {
-    let document = Buffer::new("aé👩‍💻é");
+    let document =
+        velk_core::Buffer::with_history("aé👩‍💻é", std::sync::Arc::new(velk_undo_tree::Tree));
     let mut annotations = Annotations {
         spans: vec![span(1..2), span(2..5), span(5..7)],
         ..Annotations::default()
@@ -33,7 +33,8 @@ fn ranges_use_rope_char_offsets_and_require_grapheme_boundaries() {
 
 #[test]
 fn invalid_colors_and_font_metrics_cannot_reach_painting() {
-    let document = Buffer::new("abc");
+    let document =
+        velk_core::Buffer::with_history("abc", std::sync::Arc::new(velk_undo_tree::Tree));
     for invalid in [f32::NAN, f32::INFINITY] {
         let annotations = Annotations {
             spans: vec![StyledRange::new(

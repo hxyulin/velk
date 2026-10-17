@@ -45,7 +45,7 @@ pub struct SessionBuffer {
 }
 impl SessionBuffer {
     pub fn editor(&self) -> Result<Editor, String> {
-        let mut editor = Editor::from_session(self.buffer.as_bytes(), self.scroll)?;
+        let mut editor = crate::undo::restore_editor(self.buffer.as_bytes(), self.scroll)?;
         editor
             .set_language(velk_editor_widget::Language::for_path(&self.path))
             .map_err(|e| e.to_string())?;
@@ -198,7 +198,7 @@ impl Session {
         self.buffer.is_none()
     }
     pub fn editor(&self) -> Result<Editor, String> {
-        Editor::from_session(
+        crate::undo::restore_editor(
             self.buffer
                 .as_ref()
                 .ok_or("workspace has no documents")?

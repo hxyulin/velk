@@ -291,7 +291,10 @@ mod tests {
 
     #[test]
     fn stale_highlights_map_through_edits_undo_redo_and_ime() {
-        let mut buffer = Buffer::new("fn café() { let value = \"世界\"; }\n");
+        let mut buffer = velk_core::Buffer::with_history(
+            "fn café() { let value = \"世界\"; }\n",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let old = view(&buffer).snapshot;
         buffer.insert("// 👩‍💻\n");
         let mapped = SyntaxView::new(old.clone(), &buffer).unwrap();
@@ -334,7 +337,10 @@ mod tests {
     }
     #[test]
     fn visible_window_is_local_and_explicit_annotations_override_syntax() {
-        let buffer = Buffer::new("fn main() { let name = \"é👩‍💻\"; }\n");
+        let buffer = velk_core::Buffer::with_history(
+            "fn main() { let name = \"é👩‍💻\"; }\n",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let syntax = view(&buffer);
         let spans = syntax.spans(&buffer.text(), 11..buffer.text().len_chars());
         assert!(
@@ -363,7 +369,10 @@ mod tests {
     }
     #[test]
     fn buffer_history_provides_incremental_coordinates_for_every_revision() {
-        let mut buffer = Buffer::new("fn café() { let text = \"世界\"; }\n");
+        let mut buffer = velk_core::Buffer::with_history(
+            "fn café() { let text = \"世界\"; }\n",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut engine = Engine::new(Language::Rust).unwrap();
         engine.update(0, buffer.text(), &[], || false).unwrap();
         for operation in 0..8 {
@@ -400,7 +409,10 @@ mod tests {
     #[test]
     fn grouped_transaction_undo_and_redo_keep_sequential_syntax_coordinates() {
         use crate::{TextEdit, Transaction};
-        let mut buffer = Buffer::new("fn café() { let text = \"世界\"; }\n");
+        let mut buffer = velk_core::Buffer::with_history(
+            "fn café() { let text = \"世界\"; }\n",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut engine = Engine::new(Language::Rust).unwrap();
         engine.update(0, buffer.text(), &[], || false).unwrap();
         let length = buffer.text().len_chars();
@@ -458,7 +470,10 @@ mod tests {
                 text: " ".into(),
             })
             .collect();
-        let mut large = Buffer::new(&"x".repeat(130));
+        let mut large = velk_core::Buffer::with_history(
+            &"x".repeat(130),
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         large
             .apply_transaction(Transaction {
                 revision: 0,
@@ -475,7 +490,10 @@ mod tests {
 
     #[test]
     fn offscreen_cache_key_does_not_retain_obsolete_trees() {
-        let buffer = Buffer::new("fn main() {}");
+        let buffer = velk_core::Buffer::with_history(
+            "fn main() {}",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let view = view(&buffer);
         let key = view.key();
         assert!(key.matches(&view));
@@ -487,7 +505,10 @@ mod tests {
 
     #[test]
     fn old_snapshot_beyond_edit_log_is_rejected() {
-        let mut buffer = Buffer::new("fn main() {}");
+        let mut buffer = velk_core::Buffer::with_history(
+            "fn main() {}",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let snapshot = view(&buffer).snapshot;
         for _ in 0..129 {
             buffer.insert(" ");

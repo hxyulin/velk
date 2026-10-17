@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 velk-plugin-sdk.workspace = true
 [dev-dependencies]
+velk-undo-tree.workspace = true
 velk-core.workspace = true
 [lints.rust]
 unsafe_code = "deny"

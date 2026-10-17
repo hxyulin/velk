@@ -419,7 +419,7 @@ impl Document {
         }
         self.add_buffer(
             None,
-            Editor::new(""),
+            crate::undo::editor(""),
             PathBuf::from(format!("Untitled {}", self.next_buffer)),
             cx,
         );

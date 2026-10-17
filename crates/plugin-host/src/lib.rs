@@ -97,6 +97,10 @@ pub enum Event {
 }
 #[derive(Debug)]
 pub struct Report {
+    pub undo: std::collections::BTreeMap<
+        String,
+        std::sync::Arc<dyn velk_core_contracts::history::Provider>,
+    >,
     pub syntax: std::collections::BTreeMap<String, std::sync::Arc<dyn velk_syntax::Provider>>,
     pub editing: velk_editing::Providers,
     pub loaded: usize,
@@ -553,6 +557,7 @@ impl Runtime {
                     let result = events.map(|events| Report {
                         editing: manager.editing_providers(),
                         syntax: manager.syntax_providers(),
+                        undo: manager.undo_providers(),
                         loaded: manager.plugins().count(),
                         plugins: manager.plugins().cloned().collect(),
                         events,

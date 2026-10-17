@@ -506,7 +506,8 @@ mod tests {
     use super::*;
     #[test]
     fn visual_block_regions_follow_peer_edits_without_losing_the_mode() {
-        let mut buffer = Buffer::new("ab\ncd");
+        let mut buffer =
+            velk_core::Buffer::with_history("ab\ncd", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut visual = None;
         let mut multiple = None;
         apply_visual(

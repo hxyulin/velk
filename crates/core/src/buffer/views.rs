@@ -55,6 +55,8 @@ impl Drop for Buffer {
     }
 }
 impl Buffer {
+    /// Create a headless buffer without history. Use `with_history` to choose
+    /// an undo implementation explicitly.
     pub fn new(text: &str) -> Self {
         TextDocument::new(text).new_view()
     }
@@ -68,18 +70,31 @@ impl Buffer {
     pub fn from_reader(reader: impl Read) -> io::Result<Self> {
         DocumentState::from_reader(reader).map(Self::from_state)
     }
-    pub fn restore(bytes: &[u8]) -> Result<Self, String> {
-        DocumentState::restore(bytes).map(Self::from_state)
+    pub fn from_reader_with_history(
+        reader: impl Read,
+        provider: Arc<dyn crate::history::Provider>,
+    ) -> io::Result<Self> {
+        let mut buffer = Self::from_reader(reader)?;
+        buffer.attach_history(provider).map_err(io::Error::other)?;
+        Ok(buffer)
     }
-    /// Read an exact undo-tree archive on a blocking/startup thread.
-    /// If supplied, expected text must match before attaching its history.
-    pub fn read_archive(path: &std::path::Path, expected: Option<&Rope>) -> Result<Self, String> {
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        let buffer = Self::restore(&bytes)?;
+    /// Blocking archive restore with a provider and optional exact file baseline.
+    pub fn read_archive_with_history(
+        path: &std::path::Path,
+        expected: Option<&Rope>,
+        provider: Arc<dyn crate::history::Provider>,
+    ) -> Result<Self, String> {
+        let buffer =
+            Self::restore_with_history(&std::fs::read(path).map_err(|e| e.to_string())?, provider)?;
         if expected.is_some_and(|text| *text != buffer.text()) {
             return Err("undo archive does not match the current file".into());
         }
         Ok(buffer)
+    }
+    /// Restore provider-free state. Archives containing history require
+    /// `restore_with_history` and their declared provider.
+    pub fn restore(bytes: &[u8]) -> Result<Self, String> {
+        DocumentState::restore(bytes, None).map(Self::from_state)
     }
     /// Begin one input operation. Pair with `end_undo_group`; selection movement,
     /// saves, undo, and redo end a typing run. The inactivity limit is one second.
@@ -127,20 +142,82 @@ impl Buffer {
         document.previous_group = None;
         document.merge_group = false;
     }
+    pub fn with_history(text: &str, provider: Arc<dyn crate::history::Provider>) -> Self {
+        let buffer = Self::new(text);
+        buffer.document.0.lock().unwrap().history = Some(history::Owned {
+            session: provider.open(0),
+            provider,
+        });
+        buffer
+    }
+    /// Attach only to a document without a history session. Existing providers
+    /// remain document-owned until all views close; replacing one is explicit.
+    pub fn attach_history(
+        &mut self,
+        provider: Arc<dyn crate::history::Provider>,
+    ) -> Result<(), String> {
+        self.update(|document| {
+            if document.history.is_some() {
+                return Err("document already has an undo provider".into());
+            }
+            document.history = Some(history::Owned {
+                session: provider.open(document.current.state),
+                provider,
+            });
+            Ok(())
+        })
+    }
+    pub fn archive_history_provider(bytes: &[u8]) -> Result<Option<String>, String> {
+        #[derive(serde::Deserialize)]
+        struct Header {
+            history: Option<HistoryHeader>,
+        }
+        #[derive(serde::Deserialize)]
+        struct HistoryHeader {
+            provider: String,
+        }
+        serde_json::from_slice::<Header>(bytes)
+            .map(|header| header.history.map(|h| h.provider))
+            .map_err(|e| e.to_string())
+    }
+    pub fn restore_with_history(
+        bytes: &[u8],
+        provider: Arc<dyn crate::history::Provider>,
+    ) -> Result<Self, String> {
+        DocumentState::restore(bytes, Some(provider)).map(Self::from_state)
+    }
+    pub fn history_provider(&self) -> Option<String> {
+        self.read(|d| d.history.as_ref().map(|h| h.provider.id().to_owned()))
+    }
     pub fn history_limits(&self) -> HistoryLimits {
-        self.read(|d| d.history.limits)
+        self.read(|d| {
+            d.history
+                .as_ref()
+                .map(|h| h.session.status().limits)
+                .unwrap_or_default()
+        })
     }
     pub fn set_history_limits(&mut self, limits: HistoryLimits) {
         self.update(|d| {
-            d.history.limits = limits;
-            d.history.prune(d.current.state);
+            if let Some(history) = &mut d.history
+                && let Err(error) = history.session.request(history::Request::Limits {
+                    current: d.current.state,
+                    limits,
+                })
+            {
+                tracing::error!(%error, "cannot set undo limits");
+            }
         });
     }
     pub fn history_bytes(&self) -> usize {
-        self.read(|d| d.history.bytes())
+        self.read(|d| d.history.as_ref().map_or(0, |h| h.session.status().bytes))
     }
     pub fn redo_branches(&self) -> Vec<RedoBranch> {
-        self.read(|d| d.history.branches(d.current.state))
+        self.read(|d| {
+            d.history
+                .as_ref()
+                .map_or_else(Vec::new, |h| h.session.status().branches)
+        })
     }
     pub fn redo_branch(&mut self, state: u64) -> bool {
         self.break_undo_group();
@@ -313,7 +390,7 @@ mod tests {
     use super::*;
     #[test]
     fn idle_input_ends_a_typing_group_without_sleeping() {
-        let mut buffer = Buffer::new("");
+        let mut buffer = crate::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree));
         buffer.begin_undo_group(UndoGroup::Typing);
         buffer.insert("a");
         buffer.end_undo_group();
@@ -334,7 +411,7 @@ mod tests {
     }
     #[test]
     fn an_interleaved_view_cannot_join_another_views_open_group() {
-        let mut first = Buffer::new("");
+        let mut first = crate::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut second = first.new_view();
         first.begin_undo_group(UndoGroup::Typing);
         first.insert("a");
@@ -345,7 +422,10 @@ mod tests {
     }
     #[test]
     fn views_share_text_history_and_checkpoints_but_keep_independent_carets() {
-        let mut first = Buffer::new("first\nsecond\n");
+        let mut first = crate::Buffer::with_history(
+            "first\nsecond\n",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         first.set_caret(6, false);
         let mut second = first.new_view();
         second.set_caret(0, false);
@@ -365,11 +445,17 @@ mod tests {
         assert!(!second.is_dirty());
         first.insert("x");
         assert!(second.is_dirty());
-        assert!(!Buffer::new("").mark_saved(saved));
+        assert!(
+            !crate::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree))
+                .mark_saved(saved)
+        );
     }
     #[test]
     fn transaction_rebases_every_view_even_when_it_exceeds_the_change_log() {
-        let mut first = Buffer::new(&"x ".repeat(300));
+        let mut first = crate::Buffer::with_history(
+            &"x ".repeat(300),
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut second = first.new_view();
         second.set_caret(600, false);
         first
@@ -394,7 +480,8 @@ mod tests {
     }
     #[test]
     fn snapshots_and_lifetimes_are_independent_of_view_ownership() {
-        let mut first = Buffer::new("old");
+        let mut first =
+            crate::Buffer::with_history("old", std::sync::Arc::new(velk_undo_tree::Tree));
         let snapshot = first.text();
         first.set_caret(3, false);
         let second = first.new_view();
@@ -403,14 +490,17 @@ mod tests {
         drop(first);
         assert_eq!(snapshot.to_string(), "old");
         assert_eq!(second.text().to_string(), "old text");
-        let restored = Buffer::restore(&bytes).unwrap();
+        let restored =
+            crate::Buffer::restore_with_history(&bytes, std::sync::Arc::new(velk_undo_tree::Tree))
+                .unwrap();
         assert!(!restored.document().same_document(&second.document()));
         assert_eq!(restored.selection(), second.selection());
         assert_eq!(restored.text(), second.text());
     }
     #[test]
     fn preferred_columns_and_grapheme_anchors_are_view_local() {
-        let mut first = Buffer::new("abcd\nx\nabcd");
+        let mut first =
+            crate::Buffer::with_history("abcd\nx\nabcd", std::sync::Arc::new(velk_undo_tree::Tree));
         first.set_caret(3, false);
         first.vertical(true, false);
         let mut second = first.new_view();
@@ -419,7 +509,7 @@ mod tests {
         first.vertical(true, false);
         assert_eq!(first.selection().head, 10);
         assert_eq!(second.selection().head, 5);
-        let mut first = Buffer::new("e");
+        let mut first = crate::Buffer::with_history("e", std::sync::Arc::new(velk_undo_tree::Tree));
         first.set_caret(1, false);
         let mut second = first.new_view();
         second.insert("\u{301}");

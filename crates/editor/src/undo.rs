@@ -1,6 +1,124 @@
-//! Optional persistent undo archives. Called only from file I/O workers.
+//! Undo provider selection and optional persistent archives. Bootstrap/restore
+//! may wait for the plugin worker; UI document creation uses cached factories.
 use std::path::{Path, PathBuf};
 use velk_core::{Buffer, BufferSnapshot};
+
+type Provider = std::sync::Arc<dyn velk_core::history::Provider>;
+#[derive(Default)]
+struct Providers {
+    client: Option<velk_plugin_host::Client>,
+    bootstrap_complete: bool,
+    selected: String,
+    disabled: std::collections::BTreeSet<String>,
+    factories: std::collections::BTreeMap<String, Provider>,
+}
+fn registry() -> &'static std::sync::RwLock<Providers> {
+    static REGISTRY: std::sync::OnceLock<std::sync::RwLock<Providers>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::RwLock::new(Providers::default()))
+}
+pub(crate) fn finish_bootstrap() {
+    registry().write().unwrap().bootstrap_complete = true;
+}
+pub(crate) fn set_client(client: Option<velk_plugin_host::Client>) {
+    registry().write().unwrap().client = client;
+}
+pub(crate) fn configure(
+    preferences: &crate::settings::Preferences,
+    factories: Option<std::collections::BTreeMap<String, Provider>>,
+) {
+    let mut registry = registry().write().unwrap();
+    registry.selected = preferences.undo_provider.clone();
+    registry.disabled = preferences.disabled_plugins.iter().cloned().collect();
+    if let Some(factories) = factories {
+        registry.bootstrap_complete = true;
+        registry.factories = factories;
+    }
+}
+fn resolve(id: &str) -> Result<Provider, String> {
+    {
+        let registry = registry().read().unwrap();
+        if registry.disabled.contains(id) {
+            return if id == velk_core::history::DEFAULT_PROVIDER {
+                Ok(std::sync::Arc::new(velk_undo_tree::Tree))
+            } else {
+                Err(format!("undo provider {id} is disabled"))
+            };
+        }
+        if let Some(provider) = registry.factories.get(id) {
+            return Ok(provider.clone());
+        }
+        if registry.bootstrap_complete {
+            return if id == velk_core::history::DEFAULT_PROVIDER {
+                Ok(std::sync::Arc::new(velk_undo_tree::Tree))
+            } else {
+                Err(format!("undo provider {id} is not loaded"))
+            };
+        }
+    }
+    let client = registry().read().unwrap().client.clone();
+    let loaded = (|| {
+        let client = client.ok_or("plugin runtime unavailable")?;
+        let report = client
+            .load_selected(vec![id.to_owned()])?
+            .recv_blocking()
+            .map_err(|e| e.to_string())??;
+        let provider = report
+            .undo
+            .get(id)
+            .cloned()
+            .ok_or("undo service unavailable")?;
+        registry().write().unwrap().factories.extend(report.undo);
+        Ok::<_, String>(provider)
+    })();
+    let provider = match loaded {
+        Ok(provider) => provider,
+        Err(_) if id == velk_core::history::DEFAULT_PROVIDER => {
+            std::sync::Arc::new(velk_undo_tree::Tree)
+        }
+        Err(error) => return Err(format!("undo provider {id} is unavailable: {error}")),
+    };
+    registry()
+        .write()
+        .unwrap()
+        .factories
+        .insert(id.into(), provider.clone());
+    Ok(provider)
+}
+pub(crate) fn provider() -> Provider {
+    let selected = registry().read().unwrap().selected.clone();
+    let selected = if selected.is_empty() {
+        velk_core::history::DEFAULT_PROVIDER
+    } else {
+        &selected
+    };
+    resolve(selected).unwrap_or_else(|error| {
+        tracing::warn!(%error, "using bundled undo provider for new document");
+        std::sync::Arc::new(velk_undo_tree::Tree)
+    })
+}
+pub(crate) fn editor(text: &str) -> velk_editor_widget::Editor {
+    velk_editor_widget::Editor::from_buffer(Buffer::with_history(text, provider()))
+}
+fn restore(bytes: &[u8]) -> Result<Buffer, String> {
+    let provider = Buffer::archive_history_provider(bytes)?
+        .map(|id| resolve(&id))
+        .transpose()?;
+    if let Some(provider) = provider {
+        Buffer::restore_with_history(bytes, provider)
+    } else {
+        let mut buffer = Buffer::restore(bytes)?;
+        buffer.attach_history(self::provider())?;
+        Ok(buffer)
+    }
+}
+pub(crate) fn restore_editor(
+    bytes: &[u8],
+    scroll: [f32; 2],
+) -> Result<velk_editor_widget::Editor, String> {
+    let mut editor = velk_editor_widget::Editor::from_buffer(restore(bytes)?);
+    editor.restore_view(editor.buffer().selection(), scroll)?;
+    Ok(editor)
+}
 
 pub(crate) struct Store {
     directory: PathBuf,
@@ -23,7 +141,7 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.to_string()),
         };
-        let mut buffer = Buffer::restore(&bytes)?;
+        let mut buffer = restore(&bytes)?;
         if buffer.text() != *text {
             return Ok(None);
         }
@@ -48,7 +166,8 @@ mod tests {
             directory: directory.path().join("undo"),
         };
         let path = directory.path().join("document.txt");
-        let mut buffer = Buffer::new("base");
+        let mut buffer =
+            velk_core::Buffer::with_history("base", std::sync::Arc::new(velk_undo_tree::Tree));
         assert!(store.load(&path, &buffer.text()).unwrap().is_none());
         buffer.document_edge(true, false);
         buffer.insert("A");

@@ -1,9 +1,9 @@
 use unicode_segmentation::UnicodeSegmentation;
-use velk_core::{Buffer, Selection};
+use velk_core::Selection;
 
 #[test]
 fn empty_document_edits_and_boundary_deletes_are_safe() {
-    let mut b = Buffer::default();
+    let mut b = velk_core::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree));
     b.backspace();
     b.delete();
     b.undo();
@@ -42,10 +42,13 @@ fn reader_loads_unicode_and_normalizes_line_endings_across_small_reads() {
         ),
     ] {
         for maximum in [1, 2, 7, 1024] {
-            let buffer = Buffer::from_reader(SmallReads {
-                bytes: source.as_bytes(),
-                maximum,
-            })
+            let buffer = velk_core::Buffer::from_reader_with_history(
+                SmallReads {
+                    bytes: source.as_bytes(),
+                    maximum,
+                },
+                std::sync::Arc::new(velk_undo_tree::Tree),
+            )
             .unwrap();
             assert_eq!(
                 buffer.text().to_string(),
@@ -62,7 +65,7 @@ fn reader_loads_unicode_and_normalizes_line_endings_across_small_reads() {
 fn reader_propagates_invalid_utf8_and_io_errors() {
     use std::io::{self, Read};
     assert!(
-        matches!(Buffer::from_reader(&b"bad\xff"[..]), Err(error) if error.kind()==io::ErrorKind::InvalidData)
+        matches!(velk_core::Buffer::from_reader_with_history(&b"bad\xff"[..], std::sync::Arc::new(velk_undo_tree::Tree)), Err(error) if error.kind()==io::ErrorKind::InvalidData)
     );
     struct Failed;
     impl Read for Failed {
@@ -74,13 +77,14 @@ fn reader_propagates_invalid_utf8_and_io_errors() {
         }
     }
     assert!(
-        matches!(Buffer::from_reader(Failed), Err(error) if error.kind()==io::ErrorKind::PermissionDenied)
+        matches!(velk_core::Buffer::from_reader_with_history(Failed, std::sync::Arc::new(velk_undo_tree::Tree)), Err(error) if error.kind()==io::ErrorKind::PermissionDenied)
     );
 }
 
 #[test]
 fn movement_and_deletion_preserve_combining_marks_and_emoji() {
-    let mut b = Buffer::new("a\u{301}👩‍💻🇭🇰z");
+    let mut b =
+        velk_core::Buffer::with_history("a\u{301}👩‍💻🇭🇰z", std::sync::Arc::new(velk_undo_tree::Tree));
     let end = b.text().len_chars();
     b.document_edge(true, false);
     b.horizontal(false, false);
@@ -98,7 +102,10 @@ fn movement_and_deletion_preserve_combining_marks_and_emoji() {
 #[test]
 fn graphemes_spanning_rope_chunks_are_indivisible() {
     let grapheme = format!("a{}", "\u{301}".repeat(3000));
-    let mut b = Buffer::new(&format!("{grapheme}z"));
+    let mut b = velk_core::Buffer::with_history(
+        &format!("{grapheme}z"),
+        std::sync::Arc::new(velk_undo_tree::Tree),
+    );
     assert!(b.text().chunks().count() > 1);
     b.horizontal(true, false);
     assert_eq!(b.selection().head, 3001);
@@ -108,7 +115,8 @@ fn graphemes_spanning_rope_chunks_are_indivisible() {
 
 #[test]
 fn external_carets_are_clamped_and_snapped() {
-    let mut b = Buffer::new("e\u{301}x");
+    let mut b =
+        velk_core::Buffer::with_history("e\u{301}x", std::sync::Arc::new(velk_undo_tree::Tree));
     b.set_caret(1, false);
     assert_eq!(b.selection().head, 0);
     b.set_caret(usize::MAX, false);
@@ -117,7 +125,8 @@ fn external_carets_are_clamped_and_snapped() {
 
 #[test]
 fn replacing_a_backward_selection_and_undo_restore_direction() {
-    let mut b = Buffer::new("abc世界");
+    let mut b =
+        velk_core::Buffer::with_history("abc世界", std::sync::Arc::new(velk_undo_tree::Tree));
     b.document_edge(true, false);
     b.set_caret(2, true);
     assert_eq!(b.selected_text(), "c世界");
@@ -134,7 +143,7 @@ fn replacing_a_backward_selection_and_undo_restore_direction() {
 
 #[test]
 fn editing_after_undo_discards_the_redo_branch() {
-    let mut b = Buffer::default();
+    let mut b = velk_core::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree));
     b.insert("a");
     b.insert("b");
     b.undo();
@@ -146,7 +155,10 @@ fn editing_after_undo_discards_the_redo_branch() {
 
 #[test]
 fn line_navigation_retains_grapheme_column_through_short_lines() {
-    let mut b = Buffer::new("abcde\nx\ne\u{301}12345\n");
+    let mut b = velk_core::Buffer::with_history(
+        "abcde\nx\ne\u{301}12345\n",
+        std::sync::Arc::new(velk_undo_tree::Tree),
+    );
     b.set_caret(4, false);
     b.vertical(true, false);
     assert_eq!(b.selection().head, 7);
@@ -162,7 +174,8 @@ fn line_navigation_retains_grapheme_column_through_short_lines() {
 
 #[test]
 fn newline_navigation_and_joining_lines() {
-    let mut b = Buffer::new("a\n\nb\n");
+    let mut b =
+        velk_core::Buffer::with_history("a\n\nb\n", std::sync::Arc::new(velk_undo_tree::Tree));
     b.set_caret(2, false);
     b.backspace();
     assert_eq!(b.text().to_string(), "a\nb\n");
@@ -176,12 +189,14 @@ fn newline_navigation_and_joining_lines() {
 
 #[test]
 fn insertions_and_deletions_that_join_graphemes_keep_valid_carets() {
-    let mut b = Buffer::new("\u{301}x");
+    let mut b =
+        velk_core::Buffer::with_history("\u{301}x", std::sync::Arc::new(velk_undo_tree::Tree));
     b.insert("e");
     assert_eq!(b.selection().head, 2);
     b.backspace();
     assert_eq!(b.text().to_string(), "x");
-    let mut b = Buffer::new("e\n\u{301}");
+    let mut b =
+        velk_core::Buffer::with_history("e\n\u{301}", std::sync::Arc::new(velk_undo_tree::Tree));
     b.set_caret(1, false);
     b.delete();
     assert_eq!(b.text().to_string(), "e\u{301}");
@@ -190,7 +205,7 @@ fn insertions_and_deletions_that_join_graphemes_keep_valid_carets() {
 
 #[test]
 fn collapsing_a_selection_does_not_skip_an_extra_grapheme() {
-    let mut b = Buffer::new("abcd");
+    let mut b = velk_core::Buffer::with_history("abcd", std::sync::Arc::new(velk_undo_tree::Tree));
     b.set_caret(1, false);
     b.set_caret(3, true);
     b.horizontal(false, false);
@@ -202,7 +217,8 @@ fn collapsing_a_selection_does_not_skip_an_extra_grapheme() {
 
 #[test]
 fn history_is_bounded_and_rope_snapshots_remain_unchanged() {
-    let mut b = Buffer::new("original");
+    let mut b =
+        velk_core::Buffer::with_history("original", std::sync::Arc::new(velk_undo_tree::Tree));
     let snapshot = b.text();
     b.document_edge(true, false);
     for _ in 0..150 {
@@ -243,7 +259,10 @@ fn edits_at_scalar_offsets_match_contiguous_grapheme_reference() {
                 .partition_point(|&p| p <= position)
                 .saturating_sub(1)];
             for insert in ["é", "\u{301}", "\u{200d}💻", "क्‍क", "\n"] {
-                let mut buffer = Buffer::new(&source);
+                let mut buffer = velk_core::Buffer::with_history(
+                    &source,
+                    std::sync::Arc::new(velk_undo_tree::Tree),
+                );
                 buffer.set_caret(position, false);
                 assert_eq!(buffer.selection().head, start);
                 let (inserted, head) = replace(&source, start..start, insert);
@@ -273,7 +292,8 @@ fn edits_at_scalar_offsets_match_contiguous_grapheme_reference() {
 #[test]
 fn transaction_is_atomic_grouped_and_restores_directed_selection() {
     use velk_core::{TextEdit, Transaction};
-    let mut b = Buffer::new("ab\n世界\ncd");
+    let mut b =
+        velk_core::Buffer::with_history("ab\n世界\ncd", std::sync::Arc::new(velk_undo_tree::Tree));
     b.set_caret(7, false);
     b.set_caret(1, true);
     let selection = b.selection();
@@ -313,7 +333,7 @@ fn transaction_is_atomic_grouped_and_restores_directed_selection() {
 #[test]
 fn invalid_and_stale_transactions_leave_text_history_and_selection_untouched() {
     use velk_core::{TextEdit, Transaction, TransactionError};
-    let mut b = Buffer::new("abc");
+    let mut b = velk_core::Buffer::with_history("abc", std::sync::Arc::new(velk_undo_tree::Tree));
     b.insert("x");
     b.undo();
     let before = b.selection();
@@ -388,7 +408,7 @@ fn invalid_and_stale_transactions_leave_text_history_and_selection_untouched() {
 #[test]
 fn no_op_edits_preserve_history_and_checkpoints_and_final_caret_snaps() {
     use velk_core::{TextEdit, Transaction};
-    let mut b = Buffer::new("éx");
+    let mut b = velk_core::Buffer::with_history("éx", std::sync::Arc::new(velk_undo_tree::Tree));
     assert!(
         !b.apply_transaction(Transaction {
             revision: 0,
@@ -418,7 +438,7 @@ fn no_op_edits_preserve_history_and_checkpoints_and_final_caret_snaps() {
 
 #[test]
 fn saved_checkpoints_follow_history_and_async_saves_without_revision_confusion() {
-    let mut b = Buffer::new("abc");
+    let mut b = velk_core::Buffer::with_history("abc", std::sync::Arc::new(velk_undo_tree::Tree));
     let loaded = b.checkpoint();
     b.insert("x");
     let saving = b.checkpoint();
@@ -436,5 +456,7 @@ fn saved_checkpoints_follow_history_and_async_saves_without_revision_confusion()
     assert!(!b.can_redo());
     assert!(b.mark_saved(loaded));
     assert!(b.is_dirty());
-    assert!(!b.mark_saved(Buffer::new("").checkpoint()));
+    assert!(!b.mark_saved(
+        velk_core::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree)).checkpoint()
+    ));
 }

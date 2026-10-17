@@ -347,7 +347,10 @@ mod tests {
     }
     #[test]
     fn normal_motions_counts_prefixes_and_line_targets() {
-        let mut buffer = Buffer::new("one two three\n  four\nlast");
+        let mut buffer = velk_core::Buffer::with_history(
+            "one two three\n  four\nlast",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "2w");
         assert_eq!(buffer.selection().head, 8);
@@ -374,7 +377,10 @@ mod tests {
     }
     #[test]
     fn vertical_movement_retains_column_across_short_lines() {
-        let mut buffer = Buffer::new("abcdef\nx\nabcdef");
+        let mut buffer = velk_core::Buffer::with_history(
+            "abcdef\nx\nabcdef",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(5, false);
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "j");
@@ -394,7 +400,10 @@ mod tests {
             ("o", 3, 6),
             ("O", 3, 0),
         ] {
-            let mut buffer = Buffer::new("  abc\ndef");
+            let mut buffer = velk_core::Buffer::with_history(
+                "  abc\ndef",
+                std::sync::Arc::new(velk_undo_tree::Tree),
+            );
             buffer.set_caret(initial, false);
             let mut session = session(&mut buffer);
             keys(&mut session, &mut buffer, key);
@@ -407,8 +416,8 @@ mod tests {
             assert_eq!(session.input_state().label, "NORMAL");
             assert_eq!(buffer.selection().head, expected);
         }
-        let mut a = Buffer::new("a");
-        let mut b = Buffer::new("b");
+        let mut a = velk_core::Buffer::with_history("a", std::sync::Arc::new(velk_undo_tree::Tree));
+        let mut b = velk_core::Buffer::with_history("b", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut sa = session(&mut a);
         let sb = session(&mut b);
         keys(&mut sa, &mut a, "i");
@@ -420,7 +429,10 @@ mod tests {
     }
     #[test]
     fn edits_use_graphemes_stay_on_lines_and_undo_atomically() {
-        let mut buffer = Buffer::new("e\u{301}界z\nnext");
+        let mut buffer = velk_core::Buffer::with_history(
+            "e\u{301}界z\nnext",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "lh");
         assert_eq!(buffer.selection().head, 0);
@@ -433,7 +445,10 @@ mod tests {
         assert_eq!(buffer.text().to_string(), "z\nnext");
         keys(&mut session, &mut buffer, "999x");
         assert_eq!(buffer.text().to_string(), "\nnext");
-        let mut buffer = Buffer::new("first\nsecond\nthird");
+        let mut buffer = velk_core::Buffer::with_history(
+            "first\nsecond\nthird",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(6, false);
         let mut session = self::session(&mut buffer);
         keys(&mut session, &mut buffer, "2dd");
@@ -444,7 +459,10 @@ mod tests {
     }
     #[test]
     fn doubled_operator_counts_multiply_and_meta_keys_preserve_insert_mode() {
-        let mut buffer = Buffer::new("1\n2\n3\n4\n5\n6\n7");
+        let mut buffer = velk_core::Buffer::with_history(
+            "1\n2\n3\n4\n5\n6\n7",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "2d");
         assert_eq!(session.input_state().label, "NORMAL 2d");
@@ -474,7 +492,10 @@ mod tests {
     }
     #[test]
     fn word_motions_advance_past_combining_and_joined_graphemes() {
-        let mut buffer = Buffer::new("e\u{301} x\u{301} \u{1f469}\u{200d}\u{1f4bb} z");
+        let mut buffer = velk_core::Buffer::with_history(
+            "e\u{301} x\u{301} \u{1f469}\u{200d}\u{1f4bb} z",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "e");
         assert_eq!(buffer.selection().head, 3);
@@ -487,7 +508,8 @@ mod tests {
     }
     #[test]
     fn visual_selection_is_inclusive_and_preserves_the_logical_cursor() {
-        let mut buffer = Buffer::new("abcde");
+        let mut buffer =
+            velk_core::Buffer::with_history("abcde", std::sync::Arc::new(velk_undo_tree::Tree));
         buffer.set_caret(2, false);
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "v");
@@ -512,7 +534,10 @@ mod tests {
     }
     #[test]
     fn visual_graphemes_delete_and_change_form_single_undo_steps() {
-        let mut buffer = Buffer::new("e\u{301}界z");
+        let mut buffer = velk_core::Buffer::with_history(
+            "e\u{301}界z",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "v");
         assert_eq!(buffer.selected_text(), "e\u{301}");
@@ -532,7 +557,10 @@ mod tests {
     }
     #[test]
     fn linewise_visual_switches_kind_extends_and_deletes_eof_without_a_blank_line() {
-        let mut buffer = Buffer::new("one\ntwo\nthree");
+        let mut buffer = velk_core::Buffer::with_history(
+            "one\ntwo\nthree",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(5, false);
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "V");
@@ -551,7 +579,10 @@ mod tests {
     }
     #[test]
     fn linewise_change_keeps_a_line_and_visual_toggles_do_not_edit() {
-        let mut buffer = Buffer::new("first\nsecond\nthird");
+        let mut buffer = velk_core::Buffer::with_history(
+            "first\nsecond\nthird",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(8, false);
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "VV");
@@ -566,14 +597,18 @@ mod tests {
     }
     #[test]
     fn visual_vertical_motions_keep_preferred_column_and_empty_lines_are_safe() {
-        let mut buffer = Buffer::new("abcdef\nx\nabcdef");
+        let mut buffer = velk_core::Buffer::with_history(
+            "abcdef\nx\nabcdef",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(5, false);
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "vjj");
         assert_eq!(session.caret_position(&buffer), 14);
         keys(&mut session, &mut buffer, "kk");
         assert_eq!(session.caret_position(&buffer), 5);
-        let mut empty = Buffer::new("");
+        let mut empty =
+            velk_core::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut se = self::session(&mut empty);
         keys(&mut se, &mut empty, "vjlkd");
         assert_eq!(empty.text().to_string(), "");
@@ -582,7 +617,10 @@ mod tests {
     #[test]
     fn linewise_selection_includes_the_final_empty_line_when_requested() {
         for (keys_to_apply, expected) in [("Vd", "one\n"), ("Vjd", "one"), ("Vjc", "one\n")] {
-            let mut buffer = Buffer::new("one\ntwo\n");
+            let mut buffer = velk_core::Buffer::with_history(
+                "one\ntwo\n",
+                std::sync::Arc::new(velk_undo_tree::Tree),
+            );
             buffer.set_caret(4, false);
             let mut session = session(&mut buffer);
             keys(&mut session, &mut buffer, keys_to_apply);
@@ -593,7 +631,8 @@ mod tests {
     }
     #[test]
     fn explicit_selection_and_replacement_of_the_visual_range_cancel_visual_mode() {
-        let mut buffer = Buffer::new("abc");
+        let mut buffer =
+            velk_core::Buffer::with_history("abc", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "vl");
         buffer.set_caret(2, false);
@@ -609,7 +648,8 @@ mod tests {
     }
     #[test]
     fn peer_edits_before_the_visual_range_preserve_mode_and_selected_text() {
-        let mut buffer = Buffer::new("abc");
+        let mut buffer =
+            velk_core::Buffer::with_history("abc", std::sync::Arc::new(velk_undo_tree::Tree));
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "vl");
         let mut peer = buffer.new_view();
@@ -624,7 +664,10 @@ mod tests {
     }
     #[test]
     fn visual_block_projects_disjoint_rows_and_deletes_atomically() {
-        let mut buffer = Buffer::new("abcd\nefgh\nijkl");
+        let mut buffer = velk_core::Buffer::with_history(
+            "abcd\nefgh\nijkl",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(1, false);
         let mut session = session(&mut buffer);
         press(&mut session, &mut buffer, "v", true);
@@ -647,7 +690,10 @@ mod tests {
     }
     #[test]
     fn block_columns_count_graphemes_clip_short_lines_and_treat_tabs_as_one_column() {
-        let mut buffer = Buffer::new("a\u{301}bc\nx\n\t界z");
+        let mut buffer = velk_core::Buffer::with_history(
+            "a\u{301}bc\nx\n\t界z",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(2, false);
         let mut session = session(&mut buffer);
         press(&mut session, &mut buffer, "q", true);
@@ -668,7 +714,10 @@ mod tests {
             ("I", "a!bcd\ne!fgh"),
             ("A", "abc!d\nefg!h"),
         ] {
-            let mut buffer = Buffer::new("abcd\nefgh");
+            let mut buffer = velk_core::Buffer::with_history(
+                "abcd\nefgh",
+                std::sync::Arc::new(velk_undo_tree::Tree),
+            );
             buffer.set_caret(1, false);
             let mut session = session(&mut buffer);
             press(&mut session, &mut buffer, "v", true);
@@ -700,7 +749,10 @@ mod tests {
     #[test]
     fn block_paste_distributes_matching_rows_and_undo_restores_the_document() {
         use velk_editor_model::EditCommand;
-        let mut buffer = Buffer::new("abcd\nefgh");
+        let mut buffer = velk_core::Buffer::with_history(
+            "abcd\nefgh",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         buffer.set_caret(1, false);
         let mut session = session(&mut buffer);
         press(&mut session, &mut buffer, "v", true);
@@ -717,7 +769,10 @@ mod tests {
     }
     #[test]
     fn block_switching_cancellation_and_row_limits_preserve_the_original_selection() {
-        let mut buffer = Buffer::new("abc\ndef\nghi");
+        let mut buffer = velk_core::Buffer::with_history(
+            "abc\ndef\nghi",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut session = session(&mut buffer);
         press(&mut session, &mut buffer, "v", true);
         keys(&mut session, &mut buffer, "lj");
@@ -729,7 +784,10 @@ mod tests {
         press(&mut session, &mut buffer, "q", true);
         assert!(buffer.selection().is_empty());
         assert_eq!(session.input_state().label, "NORMAL");
-        let mut large = Buffer::new(&"x\n".repeat(4100));
+        let mut large = velk_core::Buffer::with_history(
+            &"x\n".repeat(4100),
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut sl = self::session(&mut large);
         press(&mut sl, &mut large, "v", true);
         let before = large.selection();
@@ -751,7 +809,10 @@ mod tests {
     }
     #[test]
     fn unknown_keys_and_escape_cancel_prefixes_and_large_lines_remain_navigable() {
-        let mut buffer = Buffer::new(&"x".repeat(MAX_TEXT + 1));
+        let mut buffer = velk_core::Buffer::with_history(
+            &"x".repeat(MAX_TEXT + 1),
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut session = session(&mut buffer);
         keys(&mut session, &mut buffer, "12g");
         assert_eq!(session.input_state().label, "NORMAL 12 g");

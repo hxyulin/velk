@@ -172,6 +172,7 @@ mod tests {
             hooks: vec![],
             markdown: None,
             syntax: None,
+            undo: None,
             language: Some(LanguageApi {
                 context: NonNull::<c_void>::dangling().as_ptr(),
                 query,

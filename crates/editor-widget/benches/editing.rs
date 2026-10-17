@@ -1,7 +1,6 @@
 //! CPU timings only: no GPU upload, painting, presentation, or input latency.
 use rxui::astrelis::{FontFamily, TextBuffer, TextSpan, TextStyle, TextSystem, TextWrap};
 use std::{hint::black_box, time::Instant};
-use velk_editor_widget::Buffer;
 
 fn sample(mut operation: impl FnMut(), count: usize) -> (f64, f64) {
     let mut times = Vec::with_capacity(count);
@@ -34,7 +33,8 @@ fn main() {
     println!("case,lines,bytes,median_ms,p95_ms");
     for lines in [100, 1000, 10000] {
         let source = "let greeting = \"Hello, rope!\"; // a short line\n".repeat(lines);
-        let mut document = Buffer::new(&source);
+        let mut document =
+            velk_core::Buffer::with_history(&source, std::sync::Arc::new(velk_undo_tree::Tree));
         document.set_caret(document.text().len_chars() / 2, false);
         let (median, p95) = sample(
             || {
@@ -128,7 +128,10 @@ fn main() {
         );
     }
     // A single very long line stresses the current per-line grapheme scan.
-    let mut document = Buffer::new(&"a".repeat(100000));
+    let mut document = velk_core::Buffer::with_history(
+        &"a".repeat(100000),
+        std::sync::Arc::new(velk_undo_tree::Tree),
+    );
     document.set_caret(50000, false);
     let (median, p95) = sample(
         || {

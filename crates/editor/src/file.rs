@@ -94,6 +94,9 @@ impl FileState {
             after_cr: false,
         };
         let mut editor = Buffer::from_reader(&mut reader)?;
+        editor
+            .attach_history(crate::undo::provider())
+            .map_err(io::Error::other)?;
         if let Some(store) = crate::undo::Store::from_env() {
             match store.load(&path, &editor.text()) {
                 Ok(Some(restored)) => editor = restored,

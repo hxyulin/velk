@@ -186,7 +186,8 @@ impl EditingBehavior for Indentation {
 mod tests {
     use super::*;
     fn apply(text: &str, selection: Selection, intent: Intent, tabs: bool) -> velk_core::Buffer {
-        let mut buffer = velk_core::Buffer::new(text);
+        let mut buffer =
+            velk_core::Buffer::with_history(text, std::sync::Arc::new(velk_undo_tree::Tree));
         buffer.set_caret(selection.anchor, false);
         buffer.set_caret(selection.head, true);
         let request = Request {

@@ -8,7 +8,10 @@ does not need to live permanently in the application executable.
 
 `velk-core` is a linked Rust crate with no RXUI, plugin-host, or Tree-sitter
 dependency. It owns shared document text, per-view selection and grapheme navigation, revisioned
-transactions, undo/redo, saved checkpoints, change tracking, and session snapshots.
+transactions, validated undo/redo application, saved checkpoints, change tracking,
+and session snapshots. It depends on `velk-core-contracts` for document coordinates,
+Unicode helpers, and the undo service contract; it has no normal dependency on
+the bundled history implementation.
 Its `lifecycle` module owns close/prompt decisions and Save All sequencing,
 returning actions for the frontend to execute against stable document IDs.
 Ropey remains the storage implementation, and Rust callers still have direct
@@ -52,8 +55,8 @@ cargo test -p velk-editor-model --locked
 
 ## Documents and views
 
-`TextDocument` owns one authoritative Rope, revision, undo/redo history, change
-journal, and saved checkpoint. `Buffer` is a view handle with an independent
+`TextDocument` owns one authoritative Rope, revision, document-owned undo service
+session, change journal, and saved checkpoint. `Buffer` is a view handle with an independent
 selection and preferred movement column. `Buffer::new_view()` duplicates that
 view's caret without copying text or history. Every edit, including undo and
 redo, rebases the other views' selections through the individual changes.
@@ -71,7 +74,10 @@ start another document service.
 
 ## History and position tracking
 
-The live Rope is separate from `RamHistory`, a tree of reversible patches.
+The live Rope is separate from its undo provider. The default `RamHistory` lives
+in `plugins/undo/engine` (`velk-undo-tree`), not in Core. `plugins/undo` exports it
+as the bundled native `velk.undo.tree` service. Its storage is a tree of reversible
+patches.
 Each patch retains inserted and removed text and its original change coordinates;
 there is no historical Rope per entry and no whole-document diff during encoding.
 Each transaction is one history node unless the caller explicitly groups input.
@@ -80,6 +86,17 @@ child, `redo_branches()` lists alternatives, and `redo_branch(state)` selects on
 State IDs remain unique when grouped entries are extended, so old snapshots and
 saved checkpoints cannot accidentally identify newer text.
 
+`Buffer::new` and `Default` create provider-free headless buffers. Use
+`Buffer::with_history(text, provider)` or `attach_history(provider)` to opt in.
+The widget and application explicitly supply a provider. Core never creates
+an undo implementation implicitly. Headless tests inject the linked tree engine.
+
+The provider receives exact commits plus a merge hint and proposes undo/redo
+steps. Core validates source state, patch text and coordinates, target selection,
+and revision capacity before checkout and publication. Providers own branching,
+pruning, retention, and snapshot encoding. Core owns the input-group boundary
+hint, saved identities, and the actual mutation/rebasing of views.
+
 The default RAM limits are 128 entries and 64 MiB of retained patch data and
 entry overhead per document. `set_history_limits` changes these linked Rust
 limits. Pruning removes the oldest inactive branch leaves before advancing the
@@ -87,12 +104,14 @@ root along the active path. A patch larger than the budget can leave its edit
 without an undo entry. The limit excludes live text, allocator bookkeeping,
 and immutable snapshots still held by recovery/save workers.
 
-`BufferSnapshot` captures the current text, checkpoint, exact undo tree, and
-preferred branches. Immutable entries share their data with the live tree until
-modified. Encoding and validation run off the UI thread. Restore checks graph
+`BufferSnapshot` captures the current text/checkpoint and an immutable, opaque
+provider snapshot tagged with its provider ID. With the tree provider, this
+contains the exact undo tree and preferred branches. Immutable entries share
+their data with the live tree until modified. Encoding and validation run off the UI thread. Restore checks graph
 connectivity, patch contents, Unicode selections, coordinates, and limits.
 `write_archive(path)` atomically replaces a disk archive;
-`Buffer::read_archive(path, expected_text)` can reject a stale file baseline.
+`Buffer::read_archive_with_history(path, expected_text, provider)` rejects a stale
+file baseline and requires the archive's provider.
 These are blocking APIs for workers, not a disk paging layer. Disk archives
 preserve the retained RAM tree; they do not extend its retention budget.
 See [history.md](history.md) for application integration.

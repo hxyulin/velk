@@ -369,7 +369,8 @@ impl Document {
         match cx.try_spawn_blocking(
             move || {
                 let (_, buffer) = FileState::read(file.path())?;
-                let mut detached = velk_core::Buffer::new("");
+                let mut detached =
+                    velk_core::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree));
                 detached.insert(&buffer.text().to_string());
                 Ok::<_, std::io::Error>(detached)
             },

@@ -15,6 +15,7 @@ velk-plugin-sdk.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 [dev-dependencies]
+velk-undo-tree.workspace = true
 velk-core.workspace = true
 velk-editor-model.workspace = true
 [lints.rust]

@@ -101,6 +101,7 @@ impl Document {
         self.shell.store.error = None;
         match self.shell.store.preferences.set(key, value) {
             Ok(()) => {
+                crate::undo::configure(&self.shell.store.preferences, None);
                 if matches!(
                     key,
                     "indentation_provider" | "pairing_provider" | "keymap_provider"

@@ -1,8 +1,9 @@
-use velk_core::{Buffer, TextPoint};
+use velk_core::TextPoint;
 
 #[test]
 fn unicode_multiline_changes_keep_byte_coordinates_through_undo_and_redo() {
-    let mut buffer = Buffer::new("é\nabc");
+    let mut buffer =
+        velk_core::Buffer::with_history("é\nabc", std::sync::Arc::new(velk_undo_tree::Tree));
     buffer.set_caret(3, false);
     buffer.insert("λ\n中");
     let change = buffer.edits_since(0).unwrap().remove(0);
@@ -36,10 +37,13 @@ fn unicode_multiline_changes_keep_byte_coordinates_through_undo_and_redo() {
 
 #[test]
 fn restores_exact_history_without_a_view_or_parser() {
-    let mut original = Buffer::new("");
+    let mut original =
+        velk_core::Buffer::with_history("", std::sync::Arc::new(velk_undo_tree::Tree));
     original.insert("a");
     let bytes = original.snapshot().encode().unwrap();
-    let mut buffer = Buffer::restore(&bytes).unwrap();
+    let mut buffer =
+        velk_core::Buffer::restore_with_history(&bytes, std::sync::Arc::new(velk_undo_tree::Tree))
+            .unwrap();
     assert!(buffer.is_dirty());
     buffer.undo();
     assert_eq!(buffer.text().len_chars(), 0);
@@ -47,7 +51,11 @@ fn restores_exact_history_without_a_view_or_parser() {
     buffer.redo();
     assert_eq!(buffer.text().to_string(), "a");
     assert!(buffer.is_dirty());
-    let restored = Buffer::restore(&buffer.snapshot().encode().unwrap()).unwrap();
+    let restored = velk_core::Buffer::restore_with_history(
+        &buffer.snapshot().encode().unwrap(),
+        std::sync::Arc::new(velk_undo_tree::Tree),
+    )
+    .unwrap();
     assert_eq!(restored.text(), buffer.text());
     assert_eq!(restored.selection(), buffer.selection());
 }

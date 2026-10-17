@@ -1335,8 +1335,9 @@ mod tests {
         let Ok(graphics) = pollster::block_on(rxui::astrelis::GraphicsContext::headless()) else {
             return;
         };
-        let buffer = crate::Buffer::new(
+        let buffer = velk_core::Buffer::with_history(
             "use std::sync::Arc;\nstruct Document { value: usize }\nfn main() {\n    let document = Arc::new(Document { value: 42 });\n    println!(\"{}\", document.value);\n}\n",
+            std::sync::Arc::new(velk_undo_tree::Tree),
         );
         let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
@@ -1386,7 +1387,8 @@ mod tests {
             return;
         };
         let text = format!("fn main() {{ {} }}", "let value = 42; ".repeat(10_000));
-        let buffer = crate::Buffer::new(&text);
+        let buffer =
+            velk_core::Buffer::with_history(&text, std::sync::Arc::new(velk_undo_tree::Tree));
         let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()
             .update(0, buffer.text(), &[], || false)
@@ -1423,7 +1425,10 @@ mod tests {
         let Some(mut fonts) = fonts() else {
             return;
         };
-        let buffer = crate::Buffer::new("fn main() { let value = 42; }\n");
+        let buffer = velk_core::Buffer::with_history(
+            "fn main() { let value = 42; }\n",
+            std::sync::Arc::new(velk_undo_tree::Tree),
+        );
         let mut full = surface(&buffer.text().to_string());
         let snapshot = velk_plugin_tree_sitter::Engine::new(crate::Language::Rust)
             .unwrap()

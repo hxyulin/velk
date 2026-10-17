@@ -113,7 +113,7 @@ impl Saved {
                 {
                     return Err("invalid or duplicate recovered document identity".into());
                 }
-                let mut editor = Editor::from_session(d.buffer.as_bytes(), d.scroll)?;
+                let mut editor = crate::undo::restore_editor(d.buffer.as_bytes(), d.scroll)?;
                 if let Some(file) = &d.file {
                     editor
                         .set_language(velk_editor_widget::Language::for_path(file.path()))
@@ -509,13 +509,14 @@ mod tests {
                 .save(restored.documents[0].editor.buffer().text())
                 .is_err()
         );
-        let mut history = velk_core::Buffer::restore(
+        let mut history = velk_core::Buffer::restore_with_history(
             &restored.documents[0]
                 .editor
                 .buffer()
                 .snapshot()
                 .encode()
                 .unwrap(),
+            std::sync::Arc::new(velk_undo_tree::Tree),
         )
         .unwrap();
         history.undo();
