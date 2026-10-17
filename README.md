@@ -34,6 +34,10 @@ Today, Velk opens UTF-8 files in a GPU-rendered, rope-backed editor with multipl
 buffers, Rust syntax highlighting, and bundled plugins for files, search,
 language services, Markdown, indentation, autopairs, and a terminal.
 
+Optional [Wasm matching](docs/wasm-plugins.md) runs the shared ranking algorithm in
+Wasmtime with fuel and memory limits. Build with `cargo xtask run --release --wasm -- path/to/file.rs`
+and choose `velk.completion.wasm` in Plugins > Interfaces.
+
 ## Previews
 
 Same editor, different amounts of furniture. Choose a preset in

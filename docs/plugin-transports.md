@@ -3,8 +3,9 @@
 Interfaces describe behavior, ownership, cancellation, and validation independently
 of transport. The current implementation uses trusted native libraries, C tables,
 and owned/bounded message data. Internal versions remain 1 during development.
-This document records the transport research and next experiments; it does not
-introduce a Wasm runtime or a new ABI dependency.
+The first bounded Wasmtime adapter is implemented for completion matching; see
+[Wasm plugins](wasm-plugins.md) for building, ABI, memory behavior, and limits.
+This document records the broader transport direction and remaining experiments.
 
 ## Native options
 
@@ -59,11 +60,11 @@ are a useful reference for how narrow a safe plain-data subset is.
 Native process addresses cannot serve as Wasm pointers. Efficient native bindings
 and Wasm bindings should share semantics while using different representations.
 
-## Wasm prototype
+## Wasm matching and further experiments
 
-Keep Wasm as a concrete follow-up. Start with one pure matching provider using
-real editor candidate snapshots, rather than moving filesystem access, UI objects,
-async Rust futures, or document authority across the boundary at once.
+The optional `velk.completion.wasm` provider now runs the shared matching algorithm
+with direct buffer writes and borrowed guest-side strings. Filesystem access, UI
+objects, async Rust futures, and document authority remain outside this adapter.
 
 Compare the current native provider, a linked adapter, and a Wasmtime guest for:
 

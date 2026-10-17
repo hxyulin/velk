@@ -15,14 +15,17 @@
   macros, panic containment, and plugin-side lifecycle. It re-exports common
   definitions and settings at their existing paths; `contracts` also exposes the
   shared crate. Existing bundled plugins need no import migration.
-- `velk-plugin-host` owns native loading, scheduling, generations, discovery, and
+- `velk-plugin-wasm-api` owns the flat, checked core-Wasm matching buffer ABI;
+  [Wasm plugins](wasm-plugins.md) describes its exports and execution limits.
+- `velk-plugin-host` owns native/Wasm loading, scheduling, generations, discovery, and
   restart. It consumes shared contracts and native codecs directly, without
   depending on the authoring SDK. Its existing metadata/settings re-exports remain.
 
 Feature models remain in their domain crates, including `velk-markup`,
 `velk-semantic`, `velk-panels`, `velk-search`, and `velk-editing`. A future adapter should reuse
 their service semantics and common definitions instead of depending on native
-function tables. No Wasm runtime or new feature API is introduced by this split.
+function tables. The Wasmtime matching adapter uses the existing matching policy
+contract; the rest of the native SDK remains native-only.
 
 The root ABI and named contract versions stay at 1 during internal development;
 callback layouts may change. Rebuild the host, SDK, and bundled plugins together.
@@ -288,7 +291,8 @@ bundled `velk.tree-sitter` plugin supplies the default Rust implementation.
 See [plugin interfaces](plugin-interfaces.md) for implementation/requirement declarations,
 provider selection in Plugins, resolved dependency edges, and plugin-declared file
 associations. See [transport direction](plugin-transports.md) for ABI-safe Rust types,
-layout-aware fast paths, serialization research, and the planned Wasm experiment.
+layout-aware fast paths, serialization research, and further Wasm experiments.
+See [Wasm plugins](wasm-plugins.md) for the implemented matching provider.
 
 ## Reusable feature backends and dependencies
 

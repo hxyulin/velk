@@ -124,3 +124,7 @@ reading documentation cannot apply those edits.
 Completion matching regressions cover late exact-match promotion, explicit
 selection retention, reranking after typing, Unicode, typo edit ranges, and
 keeping the best document words before the source result cap.
+
+For the isolated Wasmtime matcher, run `cargo xtask test-plugins --wasm`. This
+builds the release Wasm guest and checks parity, lifecycle, and digest validation
+before the native smoke suite. See [Wasm plugins](wasm-plugins.md).
