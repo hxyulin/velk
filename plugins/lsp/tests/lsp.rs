@@ -495,7 +495,19 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
         else {
             unreachable!()
         };
-        match result.unwrap() {
+        let result = match result.unwrap() {
+            Outcome::Completions { items } => {
+                assert_eq!(items[0].filter_text, "call");
+                assert_eq!(items[0].sort_text, "001");
+                assert!(!items[0].id.is_empty());
+                Outcome::Choices {
+                    title: "Completions".into(),
+                    items: items.into_iter().map(|item| item.choice).collect(),
+                }
+            }
+            outcome => outcome,
+        };
+        match result {
             Outcome::Edit { edit } => {
                 assert_eq!(edit.documents[0].revision, Some(42));
                 if name == "rename" {
@@ -506,7 +518,7 @@ async fn formatting_rename_actions_and_completion_return_checked_edit_proposals(
                     assert_eq!(edit.documents[0].edits[0].text, "// formatted\n");
                 }
             }
-            Outcome::Completions { items } | Outcome::Choices { items, .. } => {
+            Outcome::Choices { items, .. } => {
                 assert_eq!(items.len(), if name == "complete" { 1 } else { 2 });
                 for item in items {
                     let ChoiceAction::Semantic { payload } = item.action else {
@@ -971,5 +983,72 @@ async fn real_cargo_shutdown(stop_server: bool) {
     assert!(
         released,
         "Cargo retained its build lock after rust-analyzer shutdown"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn completion_triggers_use_server_capabilities_and_forward_the_invocation_reason() {
+    use velk_plugin_sdk::{
+        Plugin,
+        commands::{Handler, Outcome},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("source.rs");
+    let logfile = dir.path().join("completion-triggers.jsonl");
+    let service = Service::start(backend(&logfile, "normal")).unwrap();
+    service.update(document(&path, 1, "fn old() {}"));
+    until(&service.events, |event| {
+        matches!(event, Event::Status(Status::Ready(_)))
+    })
+    .await;
+    let Handler::Semantic { payload } = velk_plugin_lsp::Lsp::contributions()
+        .remove(0)
+        .command
+        .handler
+    else {
+        panic!()
+    };
+    for (id, character, expected) in [(1, ".", true), (2, ":", true), (3, "!", false)] {
+        let input = serde_json::to_string(&velk_completion_contracts::Invocation::Character {
+            character: character.into(),
+        })
+        .unwrap();
+        service
+            .command(
+                PositionRequest {
+                    id,
+                    revision: 1,
+                    position: 6,
+                },
+                payload.clone(),
+                Some(input),
+            )
+            .unwrap();
+        let Event::Command { result, .. } = until(&service.events, |event| {
+            matches!(event, Event::Command { .. })
+        })
+        .await
+        else {
+            panic!()
+        };
+        let Outcome::Completions { items } = result.unwrap() else {
+            panic!()
+        };
+        assert_eq!(!items.is_empty(), expected);
+    }
+    service.shutdown_and_join().unwrap();
+    let messages = log(&logfile);
+    let requests: Vec<_> = messages
+        .iter()
+        .filter(|message| message["method"] == "textDocument/completion")
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0]["params"]["context"],
+        serde_json::json!({"triggerKind":2,"triggerCharacter":"."})
+    );
+    assert_eq!(
+        requests[1]["params"]["context"],
+        serde_json::json!({"triggerKind":2,"triggerCharacter":":"})
     );
 }

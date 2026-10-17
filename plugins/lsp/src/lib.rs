@@ -98,6 +98,12 @@ impl Plugin for Lsp {
     fn contributions() -> Vec<velk_plugin_sdk::commands::contributions::Contribution> {
         use velk_plugin_sdk::commands::{Declaration, Handler, contributions::Contribution};
         vec![Contribution {
+            metadata: velk_completion_contracts::Triggers {
+                typing: true,
+                dynamic_characters: true,
+                ..Default::default()
+            }
+            .metadata(),
             topic: velk_completion_contracts::TOPIC.into(),
             command: Declaration {
                 id: "velk.lsp.complete".into(),

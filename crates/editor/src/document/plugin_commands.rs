@@ -68,7 +68,7 @@ fn shortcut(spec: &velk_commands::Shortcut) -> rxui::Shortcut {
     )
 }
 impl Document {
-    fn command_available(&self, cx: &impl rxui::ReadContext) -> bool {
+    pub(super) fn command_available(&self, cx: &impl rxui::ReadContext) -> bool {
         !self.busy()
             && self.opening.is_none()
             && self.lifecycle.close_intent().is_none()
@@ -994,31 +994,34 @@ mod tests {
             session.events().publish(Event::Command {
                 request,
                 result: Ok(Outcome::Completions {
-                    items: vec![velk_commands::Choice {
-                        title: "print".into(),
-                        detail: Some("Print a value".into()),
-                        action: velk_commands::ChoiceAction::Edit {
-                            edit: velk_commands::WorkspaceEdit {
-                                documents: vec![velk_commands::DocumentEdit {
-                                    path: path.clone(),
-                                    revision: Some(request.revision),
-                                    edits: vec![velk_commands::TextEdit {
-                                        start: Position {
-                                            line: 0,
-                                            column: 0,
-                                            encoding: Encoding::Utf32,
-                                        },
-                                        end: Position {
-                                            line: 0,
-                                            column: request.position as u32,
-                                            encoding: Encoding::Utf32,
-                                        },
-                                        text: "print".into(),
+                    items: vec![
+                        velk_commands::Choice {
+                            title: "print".into(),
+                            detail: Some("Print a value".into()),
+                            action: velk_commands::ChoiceAction::Edit {
+                                edit: velk_commands::WorkspaceEdit {
+                                    documents: vec![velk_commands::DocumentEdit {
+                                        path: path.clone(),
+                                        revision: Some(request.revision),
+                                        edits: vec![velk_commands::TextEdit {
+                                            start: Position {
+                                                line: 0,
+                                                column: 0,
+                                                encoding: Encoding::Utf32,
+                                            },
+                                            end: Position {
+                                                line: 0,
+                                                column: request.position as u32,
+                                                encoding: Encoding::Utf32,
+                                            },
+                                            text: "print".into(),
+                                        }],
                                     }],
-                                }],
+                                },
                             },
-                        },
-                    }],
+                        }
+                        .into(),
+                    ],
                 }),
             });
             pollster::block_on(service.events.recv()).unwrap()

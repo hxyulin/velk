@@ -160,7 +160,7 @@ The bundled pack contains:
 - `velk.indentation`: Tab / Shift+Tab indentation and aligned newlines.
 - `velk.autopairs`: matching brackets, selection wrapping, closer skipping, and paired deletion.
 - `velk.vim`: opt-in Normal, Insert, and Visual modes (including blocks) with [basic Vim motions](plugins/vim/README.md).
-- `velk.completion`: [completion](docs/completion.md) from optional contributors, with Ctrl+Space.
+- `velk.completion`: [completion](docs/completion.md) from optional contributors, with automatic triggers and Ctrl+Space.
 - `velk.completion.words`: document-word suggestions, including untitled buffers.
 - `velk.autosave`: opt-in saves after an idle delay.
 - `velk.quick-open`: fuzzy project file opening with Cmd/Ctrl+P.
@@ -224,8 +224,10 @@ Current limitations include:
 
 - Language integration focuses on Rust. Ctrl+Space opens a caret completion popup;
   typing filters and refreshes suggestions, Up/Down selects, Enter/Tab accepts, and
-  Escape dismisses. Completion remains plain-text only; snippets, automatic initial
-  suggestions, and server command execution are not yet implemented.
+  Escape dismisses. Automatic suggestions start after two identifier characters or
+  supported provider trigger characters, and can be disabled in plugin settings.
+  Completion remains plain-text only; snippets and server command execution are
+  not yet implemented.
 - Language-server clients and diagnostic publications are shared by workspace.
   Problems includes unopened files when the server publishes them; Velk does not
   independently scan every file. Pull diagnostics are supported for open buffers

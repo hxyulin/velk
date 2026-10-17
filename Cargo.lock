@@ -4050,6 +4050,8 @@ dependencies = [
 name = "velk-completion-contracts"
 version = "0.0.0-dev"
 dependencies = [
+ "serde",
+ "serde_json",
  "velk-commands",
 ]
 

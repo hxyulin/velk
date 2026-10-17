@@ -71,8 +71,8 @@ An opt-in GPU walkthrough exercises the real bundled plugins and installed
 files. It checks Ctrl+Space, typing and refreshing completion, keyboard selection
 and acceptance, shared views, rename with unsaved text, saving/undo/redo, file and
 directory creation, deletion guards, and closing the final document. It then
-unloads LSP and checks document-word completion, acceptance, and undo in an
-untitled buffer.
+unloads LSP and checks automatic document-word completion after real keyboard
+input, acceptance, and undo in an untitled buffer.
 
 ```sh
 cargo xtask build --release
@@ -108,3 +108,9 @@ These use temporary Cargo projects with a sleeping build script. They wait until
 Cargo holds its build-directory lock, then check that server shutdown releases
 it. One case suspends the server to force the shutdown timeout path. They do not
 use the workspace's build directory or modify user configuration.
+
+Completion regression coverage also checks provider filter/sort metadata, identity
+across label changes and incremental results, trigger declarations/settings,
+keyboard versus paste/IME/programmatic input, dismissal and movement invalidation,
+and actual LSP wire contexts. Unsupported trigger characters must not send a server
+request. These deterministic tests do not require an installed language server.

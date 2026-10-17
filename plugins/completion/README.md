@@ -8,7 +8,7 @@ buffer, including untitled documents, without starting a language server.
 
 The host routes normal request or semantic commands, publishes partial result
 snapshots to the reducer, and renders the returned caret suggestions. The reducer
-preserves source order and source generations. Failed sources do not hide the
+sorts by provider ranking keys and preserves source generations and candidate identity. Failed sources do not hide the
 others. Accepting a result still uses the host's revision and view checks and
 normal undoable document transactions.
 
@@ -16,3 +16,10 @@ Providers use the constants from `velk-completion-contracts` and declare
 `Plugin::contributions()`. The protocol library is a build dependency; it does not
 install or enable the default completion plugin. See `docs/completion.md` for the
 boundaries and current limits.
+
+Automatic completion starts after two identifier characters or a supported
+provider trigger character, with a 150 ms initial debounce. The `automatic` and
+`typing` settings can disable automatic invocation or restrict it to character
+triggers. Ctrl+Space always remains available. LSP checks character triggers
+against its running server; the word source does not activate on punctuation.
+Providers supply separate display titles, filter text, sort text and stable IDs.

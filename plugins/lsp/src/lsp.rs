@@ -217,6 +217,11 @@ async fn drive(
                         Ok(spec) => spec,
                         Err(error) => { session.events().publish(Event::Command { request, result:Err(error) }); continue; }
                     };
+                    match spec.completion_trigger_supported(input.as_deref(), &server_capabilities) {
+                        Ok(true) => {},
+                        Ok(false) => { session.events().publish(Event::Command { request, result: Ok(velk_plugin_sdk::commands::Outcome::Completions { items: vec![] }) }); continue; },
+                        Err(error) => { session.events().publish(Event::Command { request, result: Err(error) }); continue; }
+                    }
                     if command.is_some() { session.events().publish(Event::Command { request, result:Err("another command is running".into()) }); continue; }
                     if next_id >= i32::MAX as u64 { return Err("LSP request ID space exhausted".into()); }
                     let id = next_id; next_id += 1;

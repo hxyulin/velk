@@ -225,11 +225,15 @@ impl Editor {
         {
             return;
         }
+        let revision = self.buffer.revision();
         if source == rxui::TextInsertSource::Keyboard
             && self.composition.is_none()
             && self.interactive(velk_editing::Intent::Type(text.into()))
         {
             self.buffer.break_undo_group();
+            if self.buffer.revision() != revision {
+                self.record_completion_typing(text);
+            }
             return;
         }
         if matches!(
@@ -239,6 +243,9 @@ impl Editor {
             self.execute(EditCommand::Paste(text));
         } else {
             self.insert(text);
+            if self.buffer.revision() != revision {
+                self.record_completion_typing(text);
+            }
         }
     }
     pub fn new(text: &str) -> Self {

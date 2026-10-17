@@ -12,7 +12,7 @@ the same topic without copying provider implementations.
 | --- | --- |
 | `plugins/completion/contracts` | Completion topic and default command/hook names |
 | Completion plugin | Default merge policy and source labels |
-| Contributor plugins | Produce candidates and deferred resolve payloads |
+| Contributor plugins | Declare activation support and produce candidates and deferred resolve payloads |
 | Command contracts | Feature-neutral contribution declarations, collection snapshots, and choices |
 | Application adapter | Discover loaded sources, schedule commands, cancel, and validate source/view/revision/generation |
 | Editor widget | Caret popup, local prefix filtering, selection, keyboard input, and accessibility |
@@ -74,11 +74,12 @@ The host coalesces reducer updates while a previous reducer call is running.
 Oversized batches share the native 1 MiB request budget; candidate tails are
 trimmed before transport so one large source does not block the others.
 
-The default reducer keeps declaration order, adds source details, and caps the
-combined list at 1,000 items. It wraps candidate actions in `Contributed` so a
+The default reducer uses each candidate's `sort_text` for ascending lexical order,
+keeps declaration order for ties, adds source details, and caps the combined list
+at 1,000 items. It wraps candidate actions in `Contributed` so a
 subsequent resolve or edit checks the actual source generation. Results from a
-retired source cannot be accepted. Equal labels from different sources remain
-separate, and selection survives incremental updates by label and source.
+retired source cannot be accepted. Equal labels remain separate. Selection follows the source generation, command,
+and candidate ID across incremental updates, even when display labels change.
 
 Typing inside the identifier prefix starts a fresh collection against the new
 revision. Old choices can remain visible while refreshing but cannot be accepted.
@@ -87,15 +88,66 @@ cancels the collection. Terminal semantic events release the command slot even
 when their collection has already been replaced. Results are guarded by the
 originating buffer, view, path, revision, caret, and reducer generation.
 
+## Candidate metadata
+
+`Outcome::Completions` carries `velk_completion_contracts::Item` values. Each has a
+normal `choice` (display title, detail and validated action), plus:
+
+- `id`: provider-owned identity stable across refreshes; exclude revision-specific
+  edits and transient resolve tokens. Distinguish candidates with equal labels.
+- `filter_text`: text matched against the current identifier prefix, independently
+  of the display title. Matching remains case-insensitive prefix matching.
+- `sort_text`: provider ranking key, compared lexically by the default reducer.
+
+The platform's completion item is a presentation contract, separate from generic
+picker choices. `Item::from(choice)` uses the title for all three fields when a
+source has no distinct metadata. The reducer namespaces IDs by contributor command;
+source plugin and generation are retained in the action. LSP preserves server
+`filterText` and `sortText` and derives identity from label, detail, kind and label
+details. Document words use their text as identity. Metadata is bounded and
+validated before presentation.
+
+## Automatic invocation
+
+The default completion plugin enables automatic completion. In its Settings page:
+
+- `automatic` enables or disables automatic invocation; Ctrl+Space remains explicit.
+- `typing` starts suggestions after two identifier characters. Disable it to keep
+  character triggers without starting on ordinary words.
+
+Sources declare `Triggers` as their contribution's topic-owned `metadata`:
+`typing`, a `characters` list, and `dynamic_characters`. The word source declares
+only typing. LSP declares typing and dynamic characters; it checks the running
+server's `completionProvider.triggerCharacters` before sending any character-triggered
+LSP request. This supports server-advertised characters without a hardcoded list
+in the editor. An unsupported character returns no candidates and sends no LSP
+completion request. Custom static sources can advertise their own characters.
+
+Only committed, single-character keyboard insertions activate this policy. Paste,
+IME commits, undo, programmatic edits, and modal Vim commands do not start a new
+session. The host waits 150 ms after the latest insertion and calls the collector's
+optional `automatic` policy hook with a feature-neutral `contributions::Activation`:
+document context, inserted text, identifier prefix, and matching loaded contribution
+declarations. The hook returns `Option<String>`: an opaque command input, or null
+to decline. The host does not interpret completion trigger metadata or policy input.
+Activation checks the originating view, buffer, revision, caret, dismissal epoch,
+provider generation, and modal/busy state before starting a collection.
+
+The completion contract encodes automatic input as `Invocation::Typing` or
+`Invocation::Character`. Providers receive it in `Context::input`. Explicit requests
+and active-session refreshes have no automatic input. LSP maps character invocation
+to trigger kind 2 with `triggerCharacter`; explicit, typing and refresh requests use
+kind 1. The word source declines character invocations. Active sessions retain the
+existing immediate refresh and stale-edit rejection behavior.
+
 ## Current limits
 
-Completion is explicitly invoked. There is no automatic trigger-character policy,
-snippet expansion, item documentation, cross-provider deduplication, configurable
-source priority, or `filterText`/`sortText` metadata in the common choice model yet.
-The host popup filters titles by identifier prefix. LSP retains its existing
-server-provided ordering within its batch. Plugin lifecycle operations dismiss the collection. Provider generation checks at
-acceptance also reject results from a source replaced outside that flow.
+There is no snippet expansion, item documentation, cross-provider deduplication,
+or configurable source priority yet. LSP still skips snippet and command-based
+items. Automatic IME completion and retriggering incomplete LSP lists with trigger
+kind 3 are deferred. Plugin lifecycle operations dismiss the collection; provider
+generation checks also reject results from retired sources.
 
-The first extraction deliberately retains shared popup/session mechanics in the
-platform. A separate frontend protocol is appropriate when there is a concrete
-second presentation, rather than moving RXUI types across the plugin boundary.
+The first extraction retains shared popup/session mechanics in the platform. A
+separate frontend protocol is appropriate when there is a concrete second
+presentation, rather than moving RXUI types across the plugin boundary.

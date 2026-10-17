@@ -132,20 +132,36 @@ impl Generation {
         {
             return Err("buffer events require editor.buffer.read".into());
         }
-        for command in &loaded.info.metadata.commands {
-            if let velk_plugin_contracts::commands::Handler::Request { hook }
-            | velk_plugin_contracts::commands::Handler::Picker { hook, .. } = &command.handler
-                && !loaded.hooks.iter().any(|h| {
-                    h.info.name == *hook
+        for command in loaded.info.metadata.commands.iter().chain(
+            loaded
+                .info
+                .metadata
+                .contributions
+                .iter()
+                .map(|source| &source.command),
+        ) {
+            use velk_plugin_contracts::commands::Handler;
+            let hooks: Vec<&str> = match &command.handler {
+                Handler::Request { hook } | Handler::Picker { hook, .. } => vec![hook],
+                Handler::Collect {
+                    hook, automatic, ..
+                } => std::iter::once(hook.as_str())
+                    .chain(automatic.as_deref())
+                    .collect(),
+                Handler::Semantic { .. } => vec![],
+            };
+            for hook in hooks {
+                if !loaded.hooks.iter().any(|h| {
+                    h.info.name == hook
                         && h.info.contract == BYTES_CONTRACT
                         && h.info.version == 1
                         && h.info.kind == REQUEST
-                })
-            {
-                return Err(format!(
-                    "command {} requires a request hook: {hook}",
-                    command.id
-                ));
+                }) {
+                    return Err(format!(
+                        "command {} requires a request hook: {hook}",
+                        command.id
+                    ));
+                }
             }
         }
         if let Some(host) = host {

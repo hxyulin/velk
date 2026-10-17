@@ -1,5 +1,51 @@
 //! Headless suggestion selection. Edits are usable only against their exact source.
 use crate::Choice;
+use serde::{Deserialize, Serialize};
+
+/// Presentation metadata for a caret suggestion, separate from picker choices.
+/// Providers own identity; reducers namespace it when combining sources.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Item {
+    pub id: String,
+    pub filter_text: String,
+    pub sort_text: String,
+    pub choice: Choice,
+}
+impl From<Choice> for Item {
+    fn from(choice: Choice) -> Self {
+        Self {
+            id: choice.title.clone(),
+            filter_text: choice.title.clone(),
+            sort_text: choice.title.clone(),
+            choice,
+        }
+    }
+}
+impl std::ops::Deref for Item {
+    type Target = Choice;
+    fn deref(&self) -> &Choice {
+        &self.choice
+    }
+}
+impl std::ops::DerefMut for Item {
+    fn deref_mut(&mut self) -> &mut Choice {
+        &mut self.choice
+    }
+}
+impl Item {
+    pub fn validate(&self) -> Result<(), String> {
+        for value in [&self.id, &self.filter_text, &self.sort_text] {
+            if value.len() > 4096 || value.chars().any(char::is_control) {
+                return Err("invalid completion metadata".into());
+            }
+        }
+        if self.id.is_empty() {
+            return Err("missing completion identity".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -9,7 +55,7 @@ pub struct Target {
 
 pub struct Session {
     pub target: Target,
-    pub items: Vec<Choice>,
+    pub items: Vec<Item>,
     pub visible: Vec<usize>,
     pub selected: usize,
     pub prefix: String,
@@ -17,7 +63,7 @@ pub struct Session {
     pub ready: bool,
 }
 impl Session {
-    pub fn new(target: Target, prefix: String, items: Vec<Choice>) -> Self {
+    pub fn new(target: Target, prefix: String, items: Vec<Item>) -> Self {
         let start = target.position.saturating_sub(prefix.chars().count());
         let mut session = Self {
             target,
@@ -45,7 +91,7 @@ impl Session {
         }
         true
     }
-    pub fn resolve(&mut self, target: Target, items: Vec<Choice>) -> bool {
+    pub fn resolve(&mut self, target: Target, items: Vec<Item>) -> bool {
         if self.target != target {
             return false;
         }
@@ -68,7 +114,7 @@ impl Session {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.title.to_lowercase().starts_with(&prefix))
+            .filter(|(_, item)| item.filter_text.to_lowercase().starts_with(&prefix))
             .map(|(index, _)| index)
             .collect();
         self.selected = self.selected.min(self.visible.len().saturating_sub(1));
@@ -83,30 +129,30 @@ impl Session {
             (self.selected + 1) % self.visible.len()
         };
     }
-    pub fn choice(&self) -> Option<&Choice> {
+    pub fn choice(&self) -> Option<&Item> {
         self.visible
             .get(self.selected)
             .and_then(|index| self.items.get(*index))
     }
-    pub fn accept(&self) -> Option<Choice> {
+    pub fn accept(&self) -> Option<Item> {
         self.ready.then(|| self.choice().cloned()).flatten()
     }
 }
 
-fn identity(choice: &Choice) -> (String, Option<(String, u64)>) {
+fn identity(choice: &Item) -> (String, Option<(String, u64)>) {
     let source = match &choice.action {
         crate::ChoiceAction::Contributed {
             plugin, generation, ..
         } => Some((plugin.clone(), *generation)),
         _ => None,
     };
-    (choice.title.clone(), source)
+    (choice.id.clone(), source)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn choice(title: &str) -> Choice {
+    fn choice(title: &str) -> Item {
         Choice {
             title: title.into(),
             detail: None,
@@ -114,6 +160,7 @@ mod tests {
                 payload: serde_json::Value::Null,
             },
         }
+        .into()
     }
     #[test]
     fn typing_filters_but_requires_fresh_edits_and_rejects_old_responses() {
@@ -169,7 +216,7 @@ mod tests {
 #[cfg(test)]
 mod contribution_tests {
     use super::*;
-    fn item(plugin: &str) -> Choice {
+    fn item(plugin: &str) -> Item {
         Choice {
             title: "print".into(),
             detail: None,
@@ -181,6 +228,7 @@ mod contribution_tests {
                 }),
             },
         }
+        .into()
     }
     #[test]
     fn partial_results_preserve_selection_between_equal_labels_from_different_sources() {
@@ -192,5 +240,73 @@ mod contribution_tests {
         session.resolve(target, vec![item("test.words"), item("test.lsp")]);
         assert_eq!(session.selected, 1);
         assert_eq!(session.accept().unwrap(), item("test.lsp"));
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    fn item(id: &str, label: &str, filter: &str) -> Item {
+        Item {
+            id: id.into(),
+            filter_text: filter.into(),
+            sort_text: id.into(),
+            choice: Choice {
+                title: label.into(),
+                detail: None,
+                action: crate::ChoiceAction::Semantic {
+                    payload: serde_json::Value::Null,
+                },
+            },
+        }
+    }
+    #[test]
+    fn filtering_uses_provider_text_and_refresh_tracks_identity_despite_label_changes() {
+        let target = Target {
+            revision: 1,
+            position: 2,
+        };
+        let mut session = Session::new(
+            target,
+            "pr".into(),
+            vec![
+                item("one", "Display label", "print"),
+                item("two", "Display label", "process"),
+            ],
+        );
+        assert_eq!(session.visible.len(), 2);
+        session.next(false);
+        assert_eq!(session.accept().unwrap().id, "two");
+        session.resolve(
+            target,
+            vec![
+                item("two", "Updated label", "process"),
+                item("one", "Display one", "print"),
+            ],
+        );
+        assert_eq!(session.selected, 0);
+        assert_eq!(session.accept().unwrap().title, "Updated label");
+        session.update(
+            Target {
+                revision: 2,
+                position: 3,
+            },
+            "pri".into(),
+        );
+        assert_eq!(session.visible.len(), 1);
+        assert_eq!(session.choice().unwrap().id, "one");
+        assert!(session.accept().is_none());
+    }
+    #[test]
+    fn malformed_metadata_is_rejected_before_presentation() {
+        let mut candidate = item("one", "label", "filter");
+        candidate.id.clear();
+        assert!(candidate.validate().is_err());
+        candidate.id = "one".into();
+        candidate.sort_text = "x\n".into();
+        assert!(candidate.validate().is_err());
+        candidate.sort_text = "x".into();
+        candidate.filter_text = "x".repeat(4097);
+        assert!(candidate.validate().is_err());
     }
 }

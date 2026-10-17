@@ -137,12 +137,14 @@ services, and presentation adapters. Outcomes are:
 - `Edit`: a workspace text-edit proposal, validated and applied by the host.
 - `Completions`: caret-anchored suggestions that keep keyboard focus in the editor.
   Up/Down selects, Enter/Tab accepts, and Escape dismisses. Typing filters the
-  current labels and requests fresh suggestions through the originating semantic
-  declaration. Old edit ranges remain unavailable until the current revision and
+  provider filter text and requests fresh suggestions through the originating
+  collector. Old edit ranges remain unavailable until the current revision and
   caret receive a matching response. Dismissed sessions cannot reopen from queued
   responses; moving the caret, selecting text, or starting IME composition closes
-  the session. Initial invocation is explicit (Ctrl+Space), and snippet expansion
-  is not supported.
+  the session. The completion plugin also supports debounced automatic invocation
+  after keyboard typing or provider trigger characters. Its settings and source
+  metadata control activation; Ctrl+Space remains explicit. Snippet expansion is
+  not supported. See [completion](completion.md) for item metadata and policy hooks.
 - `Choices`: searchable results whose selection applies an edit or requests
   backend resolution, using the original source and provider guard.
 - `Message`: a status message.

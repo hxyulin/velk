@@ -33,7 +33,7 @@ pub(super) struct Entry {
 enum Invocation {
     Edit(super::keybindings::Edit),
     Host(Rc<dyn Fn(&mut AppContext<'_>)>),
-    Plugin(super::plugin_commands::Invoke),
+    Plugin(Box<super::plugin_commands::Invoke>),
 }
 impl Entry {
     pub fn plugin(invocation: super::plugin_commands::Invoke, enabled: bool) -> Self {
@@ -59,7 +59,7 @@ impl Entry {
                     )
                 }),
             enabled,
-            invoke: Invocation::Plugin(invocation),
+            invoke: Invocation::Plugin(Box::new(invocation)),
         }
     }
 
@@ -172,7 +172,7 @@ impl Document {
                 return;
             }
             Invocation::Plugin(invocation) => {
-                self.invoke_plugin_command_with_input(invocation, input, cx);
+                self.invoke_plugin_command_with_input(*invocation, input, cx);
                 return;
             }
             Invocation::Host(invoke) => {

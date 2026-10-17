@@ -102,7 +102,7 @@ impl Document {
         self.keybindings.pending = None;
         self.keybindings.timer = None;
     }
-    fn binding_modal(&self) -> bool {
+    pub(super) fn binding_modal(&self) -> bool {
         self.palette.open
             || self.shell.open
             || self.plugin_menu_open

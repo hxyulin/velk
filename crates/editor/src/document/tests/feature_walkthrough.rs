@@ -518,7 +518,7 @@ fn render_feature_walkthrough() {
         entity.update(cx, |doc, cx| {
             doc.host_request(
                 velk_plugin_contracts::host::Request::NewBuffer {
-                    text: "print process\npr".into(),
+                    text: "print process\np".into(),
                 },
                 None,
                 cx,
@@ -526,7 +526,7 @@ fn render_feature_walkthrough() {
             .unwrap();
             doc.buffer
                 .editor
-                .update(cx, |editor, _| editor.select_range(16..16));
+                .update(cx, |editor, _| editor.select_range(15..15));
         })
     });
     capture.prepare().unwrap();
@@ -535,10 +535,39 @@ fn render_feature_walkthrough() {
         let (_, ui, _) = capture.parts();
         ui.focus(surface);
     }
-    invoke(&mut capture, "velk.completion.complete", None);
+    capture
+        .text_input(rxui::TextInputEvent::Insert("r".into()))
+        .unwrap();
+    capture
+        .key(rxui::KeyEvent {
+            key: rxui::KeyboardKey::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+    let dismissed_until = Instant::now() + Duration::from_millis(350);
+    while Instant::now() < dismissed_until {
+        capture.runtime().poll_tasks();
+        capture.runtime().flush().unwrap();
+        capture.read(|doc| assert!(doc.collection.is_none()));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    eprintln!("verified: Escape cancels debounced automatic completion");
+    capture
+        .key(rxui::KeyEvent {
+            key: rxui::KeyboardKey::Backspace,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+        .unwrap();
+    capture
+        .text_input(rxui::TextInputEvent::Insert("r".into()))
+        .unwrap();
     wait(
         &mut capture,
-        "word completion without semantic service",
+        "automatic word completion without semantic service",
         |doc, cx| {
             doc.buffer.semantic.is_none()
                 && doc
@@ -571,7 +600,7 @@ fn render_feature_walkthrough() {
             );
         })
     });
-    std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout; unload LSP; complete words in untitled buffer; undo completion.\n").unwrap();
+    std::fs::write(output.join("verified.txt"), "Real rust-analyzer; real bundled native plugins; Ctrl+Space completion popup; Enter acceptance; two shared views; rename preserves ID/unsaved text/disk baseline; save at new path; undo/redo saved checkpoint; create directory/file; reject deleting open file; delete closed file/empty directory; close final buffer and validate empty layout; unload LSP; automatic completion after keyboard typing in untitled buffer; undo completion.\n").unwrap();
     drop(capture);
     drop(plugins);
 }

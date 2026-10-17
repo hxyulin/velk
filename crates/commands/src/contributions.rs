@@ -7,10 +7,20 @@ use serde::{Deserialize, Serialize};
 pub struct Contribution {
     pub topic: String,
     pub command: Declaration,
+    /// Topic-owned policy data; the platform only bounds its serialized size.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }
 impl Contribution {
     pub fn validate(&self) -> Result<(), String> {
         self.command.validate()?;
+        if serde_json::to_vec(&self.metadata)
+            .map_err(|e| e.to_string())?
+            .len()
+            > 4096
+        {
+            return Err("contribution metadata exceeds 4 KiB".into());
+        }
         if !super::valid_id(&self.topic)
             || self.command.input.is_some()
             || self.command.shortcut.is_some()
@@ -47,6 +57,7 @@ mod tests {
     #[test]
     fn contributors_cannot_prompt_or_recursively_collect() {
         let mut contribution = Contribution {
+            metadata: serde_json::Value::Null,
             topic: "test.topic".into(),
             command: Declaration {
                 id: "test.source".into(),
@@ -64,6 +75,7 @@ mod tests {
         assert!(contribution.validate().is_err());
         contribution.command.input = None;
         contribution.command.handler = Handler::Collect {
+            automatic: None,
             topic: "test.topic".into(),
             hook: "test.reducer".into(),
         };
@@ -130,12 +142,15 @@ mod budget_tests {
             command: "test.complete".into(),
             outcome: Ok(Outcome::Completions {
                 items: (0..100)
-                    .map(|index| crate::Choice {
-                        title: format!("candidate{index}"),
-                        detail: Some("x".repeat(500)),
-                        action: crate::ChoiceAction::Semantic {
-                            payload: serde_json::Value::Null,
-                        },
+                    .map(|index| {
+                        crate::Choice {
+                            title: format!("candidate{index}"),
+                            detail: Some("x".repeat(500)),
+                            action: crate::ChoiceAction::Semantic {
+                                payload: serde_json::Value::Null,
+                            },
+                        }
+                        .into()
                     })
                     .collect(),
             }),
@@ -163,4 +178,15 @@ mod budget_tests {
             assert!(items.len() < 100);
         }
     }
+}
+
+/// A committed keyboard insertion, captured after editing behaviors have run.
+/// Policy hooks return `Option<String>`: opaque command input, or null to decline.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Activation {
+    pub context: Context,
+    pub text: String,
+    pub prefix: String,
+    pub contributions: Vec<Contribution>,
 }

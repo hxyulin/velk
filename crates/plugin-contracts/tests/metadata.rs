@@ -62,6 +62,7 @@ fn optional_contributions_are_validated_independently_of_commands() {
     let mut metadata = PluginMetadata {
         name: "Source".into(),
         contributions: vec![Contribution {
+            metadata: serde_json::Value::Null,
             topic: "test.completion".into(),
             command: Declaration {
                 id: "test.words".into(),

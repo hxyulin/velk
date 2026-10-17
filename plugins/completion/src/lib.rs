@@ -2,8 +2,18 @@
 use velk_completion_contracts::{Collection, Contribution, TOPIC};
 use velk_plugin_sdk::{Host, Plugin, Registrar, commands::*, hooks, host};
 
-#[derive(Default)]
-pub struct Completion;
+pub struct Completion {
+    automatic: bool,
+    typing: bool,
+}
+impl Default for Completion {
+    fn default() -> Self {
+        Self {
+            automatic: true,
+            typing: true,
+        }
+    }
+}
 impl Plugin for Completion {
     const ID: &'static str = "velk.completion";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -21,12 +31,40 @@ impl Plugin for Completion {
                 ..Default::default()
             }),
             handler: Handler::Collect {
+                automatic: Some(velk_completion_contracts::AUTOMATIC.into()),
                 topic: TOPIC.into(),
                 hook: velk_completion_contracts::REDUCE.into(),
             },
         }]
     }
+    fn settings() -> Vec<velk_plugin_sdk::settings::Definition> {
+        use velk_plugin_sdk::settings::{Definition, Kind};
+        vec![
+            Definition { key: "automatic".into(), title: "Automatic completion".into(), description: "Request suggestions after typing and provider trigger characters.".into(), kind: Kind::Boolean, default: true.into() },
+            Definition { key: "typing".into(), title: "Complete while typing words".into(), description: "Start suggestions after two identifier characters; trigger characters still work when disabled.".into(), kind: Kind::Boolean, default: true.into() },
+        ]
+    }
+    fn configure(&mut self, values: &velk_plugin_sdk::settings::Values) -> Result<(), String> {
+        self.automatic = values["automatic"]
+            .as_bool()
+            .ok_or("invalid automatic setting")?;
+        self.typing = values["typing"].as_bool().ok_or("invalid typing setting")?;
+        Ok(())
+    }
     fn register(reg: &mut Registrar<Self>) -> Result<(), String> {
+        reg.provide(
+            hooks::Request(velk_completion_contracts::AUTOMATIC),
+            |this: &mut Self, bytes: &[u8]| {
+                let input: contributions::Activation =
+                    serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+                let reason = this.activate(&input);
+                let input = reason
+                    .map(|reason| serde_json::to_string(&reason))
+                    .transpose()
+                    .map_err(|e| e.to_string())?;
+                serde_json::to_vec(&input).map_err(|e| e.to_string())
+            },
+        )?;
         reg.provide(
             hooks::Request(velk_completion_contracts::REDUCE),
             |_: &mut Self, bytes: &[u8]| {
@@ -40,22 +78,58 @@ impl Plugin for Completion {
     }
 }
 
+impl Completion {
+    fn activate(
+        &self,
+        input: &contributions::Activation,
+    ) -> Option<velk_completion_contracts::Invocation> {
+        if !self.automatic || input.text.chars().count() != 1 {
+            return None;
+        }
+        let ch = input.text.chars().next()?;
+        let triggers: Vec<velk_completion_contracts::Triggers> = input
+            .contributions
+            .iter()
+            .filter_map(|source| serde_json::from_value(source.metadata.clone()).ok())
+            .collect();
+        if ch == '_' || ch.is_alphanumeric() {
+            (self.typing
+                && input.prefix.chars().count() >= 2
+                && triggers.iter().any(|source| source.typing))
+            .then_some(velk_completion_contracts::Invocation::Typing)
+        } else if !ch.is_whitespace()
+            && !ch.is_control()
+            && triggers
+                .iter()
+                .any(|source| source.dynamic_characters || source.characters.contains(&input.text))
+        {
+            // Dynamic providers check their advertised characters before doing work.
+            Some(velk_completion_contracts::Invocation::Character {
+                character: input.text.clone(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
 pub fn reduce(input: Collection) -> Result<Outcome, String> {
     let mut items = Vec::new();
     // Host supplies results in declaration order, independent of response timing.
     for result in input.results {
         if let Ok(Outcome::Completions { items: candidates }) = result.outcome {
             for mut candidate in candidates {
-                candidate.action = ChoiceAction::Contributed {
+                candidate.choice.action = ChoiceAction::Contributed {
                     plugin: result.plugin.clone(),
                     generation: result.generation,
-                    action: Box::new(candidate.action),
+                    action: Box::new(candidate.choice.action),
                 };
                 let source = &result.plugin;
-                candidate.detail = Some(match candidate.detail {
+                candidate.choice.detail = Some(match candidate.choice.detail.take() {
                     Some(detail) => format!("{source}: {detail}"),
                     None => source.clone(),
                 });
+                candidate.id = format!("{}:{}", result.command, candidate.id);
                 items.push(candidate);
                 if items.len() == 1000 {
                     break;
@@ -66,6 +140,7 @@ pub fn reduce(input: Collection) -> Result<Outcome, String> {
             break;
         }
     }
+    items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
     let outcome = Outcome::Completions { items };
     outcome.validate()?;
     Ok(outcome)
@@ -95,6 +170,11 @@ impl Plugin for Words {
     }
     fn contributions() -> Vec<Contribution> {
         vec![Contribution {
+            metadata: velk_completion_contracts::Triggers {
+                typing: true,
+                ..Default::default()
+            }
+            .metadata(),
             topic: TOPIC.into(),
             command: Declaration {
                 id: "velk.completion.words".into(),
@@ -144,6 +224,12 @@ impl Words {
 }
 
 fn words(context: &Context, buffer: u64, text: &str) -> Result<Outcome, String> {
+    if matches!(
+        velk_completion_contracts::Invocation::decode(context.input.as_deref())?,
+        Some(velk_completion_contracts::Invocation::Character { .. })
+    ) {
+        return Ok(Outcome::Completions { items: vec![] });
+    }
     let position = context.position.ok_or("missing completion position")?;
     let revision = context.revision.ok_or("missing completion revision")?;
     let chars: Vec<_> = text.chars().collect();
@@ -182,19 +268,22 @@ fn words(context: &Context, buffer: u64, text: &str) -> Result<Outcome, String> 
         if word.is_empty() {
             continue;
         }
-        items.push(Choice {
-            title: word.into(),
-            detail: None,
-            action: ChoiceAction::BufferEdit {
-                id: buffer,
-                revision,
-                edits: vec![TextEdit {
-                    start: begin,
-                    end,
-                    text: word.into(),
-                }],
-            },
-        });
+        items.push(
+            Choice {
+                title: word.into(),
+                detail: None,
+                action: ChoiceAction::BufferEdit {
+                    id: buffer,
+                    revision,
+                    edits: vec![TextEdit {
+                        start: begin,
+                        end,
+                        text: word.into(),
+                    }],
+                },
+            }
+            .into(),
+        );
         if items.len() == 200 {
             break;
         }
@@ -312,5 +401,143 @@ mod tests {
         stale.revision = Some(6);
         assert!(words.complete(stale).is_err());
         assert_eq!(mock.take_requests().len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    use velk_completion_contracts::{Invocation, Triggers};
+    fn activation(text: &str, prefix: &str, triggers: Triggers) -> contributions::Activation {
+        let mut source = Words::contributions().remove(0);
+        source.metadata = triggers.metadata();
+        contributions::Activation {
+            context: Context {
+                input: None,
+                path: None,
+                language: None,
+                revision: Some(1),
+                position: Some(2),
+            },
+            text: text.into(),
+            prefix: prefix.into(),
+            contributions: vec![source],
+        }
+    }
+    #[test]
+    fn policy_respects_source_declarations_and_user_settings() {
+        let mut completion = Completion::default();
+        let input = activation(
+            "r",
+            "pr",
+            Triggers {
+                typing: true,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            completion.activate(&input),
+            Some(Invocation::Typing)
+        ));
+        assert!(
+            completion
+                .activate(&activation(
+                    "p",
+                    "p",
+                    Triggers {
+                        typing: true,
+                        ..Default::default()
+                    }
+                ))
+                .is_none()
+        );
+        assert!(
+            completion
+                .activate(&activation("r", "pr", Triggers::default()))
+                .is_none()
+        );
+        assert!(
+            completion
+                .activate(&activation(".", "", Triggers::default()))
+                .is_none()
+        );
+        let dot = activation(
+            ".",
+            "",
+            Triggers {
+                characters: vec![".".into()],
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(completion.activate(&dot), Some(Invocation::Character { character }) if character == ".")
+        );
+        completion.typing = false;
+        assert!(completion.activate(&input).is_none());
+        assert!(completion.activate(&dot).is_some());
+        completion.automatic = false;
+        assert!(completion.activate(&dot).is_none());
+    }
+    #[test]
+    fn policy_rejects_paste_and_whitespace_and_words_decline_character_triggers() {
+        let completion = Completion::default();
+        let dynamic = || Triggers {
+            typing: true,
+            dynamic_characters: true,
+            ..Default::default()
+        };
+        assert!(
+            completion
+                .activate(&activation("paste", "paste", dynamic()))
+                .is_none()
+        );
+        assert!(
+            completion
+                .activate(&activation("\n", "", dynamic()))
+                .is_none()
+        );
+        let mut input = activation(":", "", dynamic());
+        let reason = completion.activate(&input).unwrap();
+        input.context.input = Some(serde_json::to_string(&reason).unwrap());
+        input.context.position = Some(1);
+        let Outcome::Completions { items } = words(&input.context, 1, ": words").unwrap() else {
+            panic!()
+        };
+        assert!(items.is_empty());
+    }
+    #[test]
+    fn reducer_sorts_by_provider_metadata_and_namespaces_identity() {
+        let source = |command: &str, id: &str, sort: &str| contributions::ContributionResult {
+            plugin: "test.source".into(),
+            generation: 1,
+            command: command.into(),
+            outcome: Ok(Outcome::Completions {
+                items: vec![velk_completion_contracts::Item {
+                    id: id.into(),
+                    filter_text: "other".into(),
+                    sort_text: sort.into(),
+                    choice: Choice {
+                        title: "same label".into(),
+                        detail: None,
+                        action: ChoiceAction::Semantic {
+                            payload: Default::default(),
+                        },
+                    },
+                }],
+            }),
+        };
+        let Outcome::Completions { items } = reduce(Collection {
+            context: activation("x", "xx", Triggers::default()).context,
+            results: vec![
+                source("test.first", "same", "20"),
+                source("test.second", "same", "10"),
+            ],
+        })
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(items[0].id, "test.second:same");
+        assert_eq!(items[1].id, "test.first:same");
+        assert_eq!(items[0].filter_text, "other");
     }
 }

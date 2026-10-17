@@ -69,7 +69,7 @@ while (message := read()) is not None:
             "definitionProvider": True, "typeDefinitionProvider": True, "implementationProvider": True, "referencesProvider": True,
             "experimental": {"parentModule": True},
             "documentFormattingProvider": True, "renameProvider": True,
-            "codeActionProvider": {"resolveProvider": True}, "completionProvider": {"resolveProvider": True},
+            "codeActionProvider": {"resolveProvider": True}, "completionProvider": {"resolveProvider": True, "triggerCharacters": [".", ":"]},
             "textDocumentSync": {"openClose": True, "change": 2, "save": {"includeText": True}}
         }}})
         send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "rust-analyzer"}]}})
@@ -136,7 +136,7 @@ while (message := read()) is not None:
         send({"id": message["id"], "result": action})
     elif method == "textDocument/completion":
         send({"id": message["id"], "result": {"isIncomplete": False, "items": [
-            {"label": "complete_call", "detail": "with an import", "textEdit": {"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}, "newText": "complete_call()"}, "data": {"imports": True}},
+            {"label": "complete_call", "filterText": "call", "sortText": "001", "detail": "with an import", "textEdit": {"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 6}}, "newText": "complete_call()"}, "data": {"imports": True}},
             {"label": "snippet", "insertTextFormat": 2, "insertText": "call(${1:value})"}
         ]}})
     elif method == "completionItem/resolve":

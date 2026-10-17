@@ -40,6 +40,29 @@ impl Request {
         }
         Ok(request)
     }
+    pub fn completion_trigger_supported(
+        &self,
+        input: Option<&str>,
+        capabilities: &Value,
+    ) -> Result<bool, String> {
+        if self.method != "textDocument/completion" {
+            return Ok(true);
+        }
+        let Some(velk_completion_contracts::Invocation::Character { character }) =
+            velk_completion_contracts::Invocation::decode(input)?
+        else {
+            return Ok(true);
+        };
+        Ok(character.chars().count() == 1
+            && capabilities
+                .pointer("/completionProvider/triggerCharacters")
+                .and_then(Value::as_array)
+                .is_some_and(|characters| {
+                    characters
+                        .iter()
+                        .any(|value| value.as_str() == Some(&character))
+                }))
+    }
     pub fn params(
         &self,
         document_uri: &str,
@@ -71,7 +94,14 @@ impl Request {
                     .collect();
                 params = json!({"textDocument":{"uri":document_uri},"range":{"start":position,"end":position},"context":{"diagnostics":diagnostics,"triggerKind":1}});
             }
-            "textDocument/completion" => params["context"] = json!({"triggerKind":1}),
+            "textDocument/completion" => {
+                params["context"] = match velk_completion_contracts::Invocation::decode(input)? {
+                    Some(velk_completion_contracts::Invocation::Character { character }) => {
+                        json!({"triggerKind":2,"triggerCharacter":character})
+                    }
+                    _ => json!({"triggerKind":1}),
+                };
+            }
             _ => {}
         }
         Ok(params)
@@ -296,6 +326,13 @@ fn completion(
         }
         let title = item.label.clone();
         let detail = item.detail.clone();
+        let filter_text = item.filter_text.clone().unwrap_or_else(|| title.clone());
+        let sort_text = item.sort_text.clone().unwrap_or_else(|| title.clone());
+        // Label plus semantic detail distinguishes overloads without including
+        // revision-dependent edits or server resolve tokens in identity.
+        let id =
+            serde_json::to_string(&(&item.label, &item.detail, &item.kind, &item.label_details))
+                .map_err(|e| e.to_string())?;
         let action = if item.data.is_some()
             && capabilities.pointer("/completionProvider/resolveProvider") == Some(&json!(true))
         {
@@ -313,10 +350,15 @@ fn completion(
                 edit: completion_edit(item, encoding, source, request)?,
             }
         };
-        items.push(Choice {
-            title,
-            detail,
-            action,
+        items.push(velk_completion_contracts::Item {
+            id,
+            filter_text,
+            sort_text,
+            choice: Choice {
+                title,
+                detail,
+                action,
+            },
         });
     }
     Ok(Outcome::Completions { items })
@@ -364,4 +406,57 @@ fn completion_edit(
             encoding,
         )],
     })
+}
+
+#[cfg(test)]
+mod completion_trigger_tests {
+    use super::*;
+    #[test]
+    fn advertised_characters_gate_requests_and_set_lsp_context() {
+        let capabilities = json!({"completionProvider":{"triggerCharacters":[".",":"]}});
+        let spec = Request::decode(json!({"method":"textDocument/completion","result":"completion","capability":"/completionProvider"}), &capabilities).unwrap();
+        let dot = serde_json::to_string(&velk_completion_contracts::Invocation::Character {
+            character: ".".into(),
+        })
+        .unwrap();
+        assert!(
+            spec.completion_trigger_supported(Some(&dot), &capabilities)
+                .unwrap()
+        );
+        let params = spec
+            .params(
+                "file:///test.rs",
+                lsp_types::Position::new(0, 4),
+                Some(&dot),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            params["context"],
+            json!({"triggerKind":2,"triggerCharacter":"."})
+        );
+        assert!(
+            !spec
+                .completion_trigger_supported(Some(&dot), &json!({"completionProvider":{}}))
+                .unwrap()
+        );
+        let unsupported =
+            serde_json::to_string(&velk_completion_contracts::Invocation::Character {
+                character: "!".into(),
+            })
+            .unwrap();
+        assert!(
+            !spec
+                .completion_trigger_supported(Some(&unsupported), &capabilities)
+                .unwrap()
+        );
+        assert!(
+            spec.completion_trigger_supported(None, &capabilities)
+                .unwrap()
+        );
+        let params = spec
+            .params("file:///test.rs", lsp_types::Position::new(0, 4), None, &[])
+            .unwrap();
+        assert_eq!(params["context"], json!({"triggerKind":1}));
+    }
 }

@@ -28,7 +28,136 @@ impl State {
 }
 
 impl Document {
+    pub(super) fn schedule_automatic_completion(
+        &mut self,
+        text: String,
+        prefix: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.automatic_completion = None;
+        if self.background_buffer
+            || !self.command_available(cx)
+            || self.command_task.is_some()
+            || self.binding_modal()
+        {
+            return;
+        }
+        let Some(buffer) = self.buffer.as_ref() else {
+            return;
+        };
+        let editor = buffer.editor.clone();
+        let epoch = editor.read(cx).completion_epoch();
+        let view = self.views.layout.active;
+        let context = self.command_context(cx);
+        let Some((invocation, hook)) = self
+            .plugins
+            .as_ref()
+            .into_iter()
+            .flat_map(|plugins| &plugins.loaded)
+            .find_map(|plugin| {
+                plugin.metadata.commands.iter().find_map(|command| {
+                    let Handler::Collect {
+                        automatic: Some(hook),
+                        ..
+                    } = &command.handler
+                    else {
+                        return None;
+                    };
+                    if command.language.is_some() && command.language != context.language {
+                        return None;
+                    }
+                    Some((
+                        Invoke {
+                            plugin: plugin.id.clone(),
+                            generation: plugin.generation,
+                            command: command.clone(),
+                        },
+                        hook.clone(),
+                    ))
+                })
+            })
+        else {
+            return;
+        };
+        let Handler::Collect { topic, .. } = &invocation.command.handler else {
+            unreachable!()
+        };
+        let sources = self
+            .plugins
+            .as_ref()
+            .into_iter()
+            .flat_map(|plugins| &plugins.loaded)
+            .flat_map(|plugin| &plugin.metadata.contributions)
+            .filter(|source| {
+                source.topic == *topic
+                    && (source.command.language.is_none()
+                        || source.command.language == context.language)
+            })
+            .take(32)
+            .cloned()
+            .collect();
+        let activation = contributions::Activation {
+            context,
+            text,
+            prefix,
+            contributions: sources,
+        };
+        let client = self.plugins.as_ref().unwrap().client.clone();
+        let provider = invocation.clone();
+        let context = activation.context.clone();
+        let guard = self.edit_guard(cx);
+        self.automatic_completion = cx
+            .try_spawn(
+                async move {
+                    rxui::sleep(std::time::Duration::from_millis(150)).await;
+                    let handle = client
+                        .bind_hook(provider.plugin, hook)?
+                        .recv()
+                        .await
+                        .map_err(|e| e.to_string())??;
+                    if handle.generation() != provider.generation {
+                        return Err("activation provider replaced".to_string());
+                    }
+                    let output = client
+                        .call_hook(
+                            handle,
+                            serde_json::to_vec(&activation).map_err(|e| e.to_string())?,
+                        )
+                        .await?;
+                    serde_json::from_slice::<Option<String>>(&output).map_err(|e| e.to_string())
+                },
+                move |this, result, cx| {
+                    this.automatic_completion = None;
+                    let Ok(Ok(Some(input))) = result else {
+                        return;
+                    };
+                    if input.len() > 16 * 1024
+                        || !this.command_available(cx)
+                        || this.command_task.is_some()
+                        || this.binding_modal()
+                        || this.background_buffer
+                        || this.views.layout.active != view
+                        || !this.guard_valid(&guard, cx)
+                        || !this.command_source_matches(&context, cx)
+                        || this
+                            .buffer
+                            .as_ref()
+                            .is_none_or(|buffer| buffer.editor.id() != editor.id())
+                        || editor.read(cx).completion_epoch() != epoch
+                        || editor.read(cx).completion_active()
+                        || !this.command_owner_loaded(&invocation.plugin, invocation.generation)
+                    {
+                        return;
+                    }
+                    this.begin_collection_input(invocation, false, Some(input), cx);
+                },
+            )
+            .ok();
+    }
     pub(super) fn cancel_collection(&mut self, dismiss: bool, cx: &mut Context<'_, Self>) {
+        if dismiss {
+            self.automatic_completion = None;
+        }
         if let Some(state) = self.collection.take() {
             // The terminal event still owns the semantic slot until cancellation
             // is acknowledged. A replacement collection waits for that event.
@@ -52,6 +181,16 @@ impl Document {
         refresh: bool,
         cx: &mut Context<'_, Self>,
     ) {
+        self.begin_collection_input(invocation, refresh, None, cx);
+    }
+    fn begin_collection_input(
+        &mut self,
+        invocation: Invoke,
+        refresh: bool,
+        input: Option<String>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.automatic_completion = None;
         self.cancel_collection(false, cx);
         let Handler::Collect { topic, .. } = &invocation.command.handler else {
             return;
@@ -60,7 +199,8 @@ impl Document {
             return;
         };
         let editor = buffer.editor.clone();
-        let context = self.command_context(cx);
+        let mut context = self.command_context(cx);
+        context.input = input;
         let providers: Vec<_> = self
             .plugins
             .as_ref()
@@ -181,7 +321,8 @@ impl Document {
         let provider = state.providers[index].clone();
         let mut guard = state.guard.clone();
         guard.owner = Some((provider.plugin.clone(), provider.generation));
-        self.execute_plugin_command(provider, None, guard, cx);
+        let input = state.context.input.clone();
+        self.execute_plugin_command(provider, input, guard, cx);
         if let Some(pending) = self
             .buffer
             .as_mut()
@@ -348,14 +489,14 @@ impl Document {
                 && self.guard_valid(&guard, cx)
                 && source_valid
             {
-                self.apply_choice_action(choice.action, guard, cx);
+                self.apply_choice_action(choice.choice.action, guard, cx);
             }
             return true;
         }
         if !source.read(cx).completion_active() {
             self.cancel_collection(false, cx);
         } else if source.read(cx).completion_refresh().is_some()
-            && self.command_context(cx) != self.collection.as_ref().unwrap().context
+            && !self.command_source_matches(&self.collection.as_ref().unwrap().context, cx)
         {
             let invocation = self.collection.as_ref().unwrap().invocation.clone();
             self.begin_collection(invocation, true, cx);
@@ -479,6 +620,7 @@ mod tests {
                 input: None,
                 shortcut: None,
                 handler: Handler::Collect {
+                    automatic: None,
                     topic: "test.completion".into(),
                     hook: "test.reduce".into(),
                 },
@@ -564,6 +706,7 @@ mod tests {
             let mut plugins = super::super::plugins::State::new(host.client(), "test.markdown".into());
             let mut source = info("test.lsp", 2);
             source.metadata.contributions.push(contributions::Contribution {
+                metadata: serde_json::Value::Null,
                 topic: "test.completion".into(), command: Declaration {
                     handler: Handler::Semantic { payload: serde_json::Value::Null },
                     ..invocation().command

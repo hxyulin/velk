@@ -101,7 +101,20 @@ impl Document {
         {
             return;
         }
-        if self.sync_collection_completion(source.clone(), cx) {
+        let typed = source.update(cx, |editor, cx| {
+            let typed = editor.take_completion_typing();
+            if typed.is_none() {
+                cx.unchanged();
+            }
+            typed
+        });
+        let collected = self.sync_collection_completion(source.clone(), cx);
+        if let Some((_, text, prefix)) = typed
+            && !source.read(cx).completion_active()
+        {
+            self.schedule_automatic_completion(text, prefix, cx);
+        }
+        if collected {
             return;
         }
         let accepted = source.update(cx, |editor, cx| {
@@ -127,7 +140,7 @@ impl Document {
             }
             let mut guard = self.edit_guard(cx);
             guard.owner = Some((invocation.plugin.clone(), invocation.generation));
-            self.apply_choice_action(choice.action, guard, cx);
+            self.apply_choice_action(choice.choice.action, guard, cx);
             return;
         }
         let epoch = source.read(cx).completion_epoch();

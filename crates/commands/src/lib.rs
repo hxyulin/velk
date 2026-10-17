@@ -38,6 +38,9 @@ pub enum Handler {
     Collect {
         topic: String,
         hook: String,
+        /// Optional policy hook, evaluated after debounced keyboard text input.
+        /// Returns an optional opaque command input; null declines activation.
+        automatic: Option<String>,
     },
     Picker {
         hook: String,
@@ -86,6 +89,12 @@ impl Declaration {
                 if !valid_id(hook) =>
             {
                 return Err("invalid command hook".into());
+            }
+            Handler::Collect {
+                automatic: Some(hook),
+                ..
+            } if !valid_id(hook) => {
+                return Err("invalid automatic activation hook".into());
             }
             Handler::Collect { topic, .. } if !valid_id(topic) => {
                 return Err("invalid contribution topic".into());
@@ -259,7 +268,7 @@ pub enum Outcome {
     },
     /// Caret-anchored suggestions; typing refreshes this session without moving focus.
     Completions {
-        items: Vec<Choice>,
+        items: Vec<completion::Item>,
     },
     Choices {
         title: String,
@@ -286,48 +295,23 @@ impl Outcome {
                 return Err("invalid panel identity".into());
             }
             Self::Edit { edit } => edit.validate()?,
-            Self::Completions { items } | Self::Choices { items, .. } => {
+            Self::Completions { items } => {
+                if items.len() > 1000 {
+                    return Err("too many completions".into());
+                }
+                for item in items {
+                    item.validate()?;
+                    validate_choice(&item.choice)?;
+                }
+            }
+            Self::Choices { items, .. } => {
                 if matches!(self, Self::Choices { title, .. } if title.is_empty() || title.len() > 256)
                     || items.len() > 1000
                 {
                     return Err("invalid command choices".into());
                 }
                 for item in items {
-                    if item.title.trim().is_empty()
-                        || item.title.len() > 1024
-                        || item.title.chars().any(char::is_control)
-                    {
-                        return Err("invalid choice title".into());
-                    }
-                    let action = match &item.action {
-                        ChoiceAction::Contributed { plugin, action, .. } => {
-                            if !valid_id(plugin)
-                                || matches!(**action, ChoiceAction::Contributed { .. })
-                            {
-                                return Err("invalid contributed choice source".into());
-                            }
-                            action.as_ref()
-                        }
-                        action => action,
-                    };
-                    match action {
-                        ChoiceAction::Location { location } if !location.path.is_absolute() => {
-                            return Err("choice location must be absolute".into());
-                        }
-                        ChoiceAction::BufferEdit { edits, .. } if edits.len() > 10_000 => {
-                            return Err("too many buffer replacements".into());
-                        }
-                        ChoiceAction::Edit { edit } => edit.validate()?,
-                        ChoiceAction::Semantic { payload }
-                            if serde_json::to_vec(payload)
-                                .map_err(|e| e.to_string())?
-                                .len()
-                                > 16 * 1024 =>
-                        {
-                            return Err("choice payload exceeds 16 KiB".into());
-                        }
-                        _ => {}
-                    }
+                    validate_choice(item)?;
                 }
             }
             Self::Locations { locations }
@@ -439,3 +423,41 @@ pub struct PickerCancel {
 
 mod path;
 pub use path::NativePath;
+
+fn validate_choice(item: &Choice) -> Result<(), String> {
+    if item.title.trim().is_empty()
+        || item.title.len() > 1024
+        || item.title.chars().any(char::is_control)
+    {
+        return Err("invalid choice title".into());
+    }
+    let action = match &item.action {
+        ChoiceAction::Contributed { plugin, action, .. } => {
+            if !valid_id(plugin) || matches!(**action, ChoiceAction::Contributed { .. }) {
+                return Err("invalid contributed choice source".into());
+            }
+            action.as_ref()
+        }
+        action => action,
+    };
+    match action {
+        ChoiceAction::Location { location } if !location.path.is_absolute() => {
+            return Err("choice location must be absolute".into());
+        }
+        ChoiceAction::BufferEdit { edits, .. } if edits.len() > 10_000 => {
+            return Err("too many buffer replacements".into());
+        }
+        ChoiceAction::Edit { edit } => edit.validate()?,
+        ChoiceAction::Semantic { payload }
+            if serde_json::to_vec(payload)
+                .map_err(|e| e.to_string())?
+                .len()
+                > 16 * 1024 =>
+        {
+            return Err("choice payload exceeds 16 KiB".into());
+        }
+        _ => {}
+    }
+
+    Ok(())
+}

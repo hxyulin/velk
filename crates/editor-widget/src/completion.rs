@@ -1,15 +1,16 @@
 use crate::Editor;
 use rxui::{Element, prelude::*};
 use velk_commands::{
-    Choice,
+    completion::Item,
     completion::{Session, Target},
 };
 
 #[derive(Default)]
 pub(super) struct State {
     session: Option<Session>,
-    accepted: Option<(Target, Choice)>,
+    accepted: Option<(Target, Item)>,
     generation: u64,
+    typed: Option<(Target, String)>,
 }
 impl Editor {
     fn completion_target(&self) -> Target {
@@ -31,7 +32,21 @@ impl Editor {
         }
         text.slice(start..end).to_string()
     }
-    pub fn show_completions(&mut self, items: Vec<Choice>, refresh: bool) {
+    pub(super) fn record_completion_typing(&mut self, text: &str) {
+        if text.chars().count() == 1
+            && !self.has_composition()
+            && self.buffer.selection().is_empty()
+            && !self.editing.input_state().capture_text
+        {
+            self.completion.typed = Some((self.completion_target(), text.into()));
+        }
+    }
+    /// Consume one keyboard insertion; paste, undo and programmatic edits do not activate.
+    pub fn take_completion_typing(&mut self) -> Option<(Target, String, String)> {
+        let (target, text) = self.completion.typed.take()?;
+        (target == self.completion_target()).then(|| (target, text, self.completion_prefix()))
+    }
+    pub fn show_completions(&mut self, items: Vec<Item>, refresh: bool) {
         let target = self.completion_target();
         if refresh {
             if let Some(session) = &mut self.completion.session {
@@ -43,7 +58,7 @@ impl Editor {
         self.hide_hover();
     }
     /// Currently highlighted proposal, which may still await a refreshed revision.
-    pub fn completion_choice(&self) -> Option<&Choice> {
+    pub fn completion_choice(&self) -> Option<&Item> {
         self.completion.session.as_ref()?.choice()
     }
     pub fn completion_active(&self) -> bool {
@@ -56,7 +71,7 @@ impl Editor {
             .filter(|session| !session.ready)
             .map(|session| session.target)
     }
-    pub fn take_completion(&mut self) -> Option<(Target, Choice)> {
+    pub fn take_completion(&mut self) -> Option<(Target, Item)> {
         self.completion.accepted.take()
     }
     pub fn completion_epoch(&self) -> u64 {
@@ -65,9 +80,14 @@ impl Editor {
     pub fn dismiss_completions(&mut self) {
         self.completion.session = None;
         self.completion.accepted = None;
+        self.completion.typed = None;
         self.completion.generation += 1;
     }
     pub(super) fn update_completion(&mut self) {
+        self.completion.typed = None;
+        if self.completion.session.is_none() {
+            self.completion.generation += 1;
+        }
         let target = self.completion_target();
         let prefix = self.completion_prefix();
         if self.composition.is_some()
@@ -196,14 +216,15 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn item(title: &str) -> Choice {
-        Choice {
+    fn item(title: &str) -> Item {
+        velk_commands::Choice {
             title: title.into(),
             detail: None,
             action: velk_commands::ChoiceAction::Semantic {
                 payload: Default::default(),
             },
         }
+        .into()
     }
     #[test]
     fn typed_prefix_refreshes_without_accepting_stale_edits_and_movement_dismisses() {
@@ -264,5 +285,52 @@ mod empty_result_tests {
             assert!(!editor.completion_active());
             assert_eq!(editor.buffer().text().to_string(), "prefix\n");
         });
+    }
+}
+
+#[cfg(test)]
+mod typing_tests {
+    use super::*;
+    #[test]
+    fn only_committed_keyboard_characters_activate_and_movement_invalidates_pending_policy() {
+        let mut editor = Editor::new("p");
+        editor.select_range(1..1);
+        editor.committed_text("r", rxui::TextInsertSource::Keyboard);
+        let (target, text, prefix) = editor.take_completion_typing().unwrap();
+        assert_eq!(text, "r");
+        assert_eq!(prefix, "pr");
+        assert_eq!(target.position, 2);
+        assert!(editor.take_completion_typing().is_none());
+        let epoch = editor.completion_epoch();
+        editor.execute(crate::EditCommand::Horizontal {
+            right: false,
+            extend: false,
+        });
+        editor.execute(crate::EditCommand::Horizontal {
+            right: true,
+            extend: false,
+        });
+        assert_eq!(editor.caret_position(), 2);
+        assert_ne!(editor.completion_epoch(), epoch);
+        editor.committed_text("paste", rxui::TextInsertSource::Paste);
+        assert!(editor.take_completion_typing().is_none());
+        editor.committed_text("界", rxui::TextInsertSource::Ime);
+        assert!(editor.take_completion_typing().is_none());
+        editor.insert("programmatic");
+        assert!(editor.take_completion_typing().is_none());
+        editor.execute(crate::EditCommand::Undo);
+        assert!(editor.take_completion_typing().is_none());
+        editor.committed_text("ab", rxui::TextInsertSource::Keyboard);
+        assert!(editor.take_completion_typing().is_none());
+    }
+    #[test]
+    fn dismissing_or_editing_cancels_unconsumed_typing() {
+        let mut editor = Editor::new("");
+        editor.committed_text("p", rxui::TextInsertSource::Keyboard);
+        editor.dismiss_completions();
+        assert!(editor.take_completion_typing().is_none());
+        editor.committed_text("r", rxui::TextInsertSource::Keyboard);
+        editor.insert("x");
+        assert!(editor.take_completion_typing().is_none());
     }
 }
