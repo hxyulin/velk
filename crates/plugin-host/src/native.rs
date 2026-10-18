@@ -1,5 +1,5 @@
 #![allow(unsafe_code)]
-use crate::{Event, PluginSpec, read_manifest};
+use crate::{Event, PluginSpec};
 mod code;
 mod completion_frontend;
 mod editing;
@@ -17,9 +17,8 @@ pub use hooks::{HookDescriptor, HookHandle};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
-    path::PathBuf,
     ptr::NonNull,
-    sync::{Arc, Weak},
+    sync::Arc,
 };
 use velk_plugin_api::*;
 
@@ -28,17 +27,12 @@ pub struct PluginInfo {
     pub id: String,
     pub version: String,
     pub generation: u64,
-    /// Private loaded copy. Ordinary code is removed after teardown; resident
-    /// builds retain their copy and reuse it across logical generations.
-    pub loaded_path: PathBuf,
     /// Host-owned copy; remains valid after the library is unloaded.
     pub description: String,
     /// Owned display name, Markdown README and declared access requirements.
     pub metadata: velk_plugin_contracts::PluginMetadata,
     pub settings_values: velk_plugin_contracts::settings::Values,
     pub settings_error: Option<String>,
-    /// Logical unload releases sessions/instances, while this build stays mapped.
-    pub resident_code: bool,
     /// Names of the hooks this generation registered, in registration order.
     pub hooks: Vec<String>,
     pub dependencies: Vec<String>,
@@ -60,7 +54,7 @@ struct Generation {
     semantic: Option<SemanticApi>,
     editing: BTreeMap<velk_editing::Role, EditingApi>,
     services_active: Arc<std::sync::RwLock<bool>>,
-    // Explicit drop order: instance, library, then its on-disk copy.
+    // Registration tables outlive every instance and retained service lease.
     library: Option<Arc<Code>>,
 }
 impl Generation {
@@ -93,12 +87,10 @@ impl Generation {
                 id,
                 version,
                 generation,
-                loaded_path: code.path.clone(),
                 description: String::new(),
                 metadata: Default::default(),
                 settings_values: Default::default(),
                 settings_error: None,
-                resident_code: code.resident,
                 hooks: vec![],
                 dependencies: spec.dependencies.clone(),
             },
@@ -348,7 +340,6 @@ impl Generation {
 impl Drop for Generation {
     fn drop(&mut self) {
         self.retire();
-        // Close before TempDir deletes its files (required on Windows).
         drop(self.library.take());
     }
 }
@@ -366,100 +357,33 @@ fn metadata(bytes: &[u8]) -> Result<String, String> {
 /// Serial, worker-owned lifecycle manager. It exposes no raw function pointers or
 /// plugin-owned values. Session producers are joined before instance destruction.
 static NEXT_MANAGER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-struct WasmGeneration {
-    info: PluginInfo,
-    matching: Arc<crate::wasm::Matching>,
-}
 pub struct Manager {
     pub(crate) host: Option<Arc<crate::services::Bridge>>,
     owner: u64,
-    directory: PathBuf,
     plugins: BTreeMap<String, Generation>,
-    wasm_plugins: BTreeMap<String, WasmGeneration>,
-    wasm_engine: Option<crate::wasm::Runtime>,
-    wasm_cache_directory: Option<PathBuf>,
     next_generation: u64,
     blocked: BTreeSet<String>,
     excluded: BTreeSet<String>,
     sessions: BTreeMap<u64, semantic::DocumentSession>,
-    resident_code: BTreeMap<(String, bool), Arc<Code>>,
-    images: BTreeMap<(String, bool), Weak<Code>>,
     settings: velk_plugin_contracts::settings::PluginValues,
-    interface_bindings: velk_plugin_contracts::interfaces::Bindings,
     interface_routes: BTreeMap<String, BTreeMap<String, (String, String)>>,
 }
 impl Manager {
-    pub fn new(directory: PathBuf) -> Self {
+    pub fn new() -> Self {
         Self {
             host: None,
             owner: NEXT_MANAGER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            directory,
             plugins: BTreeMap::new(),
-            wasm_plugins: BTreeMap::new(),
-            wasm_engine: None,
-            wasm_cache_directory: crate::default_wasm_cache_directory(),
             next_generation: 1,
             blocked: BTreeSet::new(),
             excluded: BTreeSet::new(),
             sessions: BTreeMap::new(),
-            resident_code: BTreeMap::new(),
-            images: BTreeMap::new(),
             settings: Default::default(),
-            interface_bindings: Default::default(),
             interface_routes: Default::default(),
         }
     }
-    /// Select an app-owned compilation cache before preparing or loading Wasm.
-    /// `None` disables persistence; existing cached files are never removed here.
-    pub fn set_wasm_cache_directory(&mut self, directory: Option<PathBuf>) -> Result<(), String> {
-        if self.wasm_engine.is_some() {
-            return Err(
-                "Wasm compilation cache must be configured before runtime initialization".into(),
-            );
-        }
-        if directory.as_ref().is_some_and(|path| !path.is_absolute()) {
-            return Err("Wasm compilation cache directory must be absolute".into());
-        }
-        self.wasm_cache_directory = directory;
-        Ok(())
-    }
-
-    pub fn wasm_cache_stats(&self) -> crate::WasmCacheStats {
-        self.wasm_engine
-            .as_ref()
-            .map_or_else(Default::default, |runtime| runtime.cache_stats())
-    }
-
-    /// Verify and compile distinct Wasm artifacts without instantiating guest code.
-    /// Native artifacts are skipped. Returns the number of distinct Wasm digests.
-    pub fn prepare_wasm(&mut self) -> Result<usize, String> {
-        let mut digests = BTreeSet::new();
-        for spec in self.manifest()?.plugins {
-            if !matches!(&spec.runtime, crate::PluginRuntime::WasmMatching { .. }) {
-                continue;
-            }
-            let bytes = self.verified_wasm_bytes(&spec)?;
-            if digests.insert(spec.digest) {
-                self.wasm_runtime()?.prepare(&bytes)?;
-            }
-        }
-        Ok(digests.len())
-    }
-
-    fn wasm_runtime(&mut self) -> Result<&crate::wasm::Runtime, String> {
-        if self.wasm_engine.is_none() {
-            self.wasm_engine = Some(crate::wasm::engine(self.wasm_cache_directory.as_deref())?);
-        }
-        Ok(self.wasm_engine.as_ref().unwrap())
-    }
     fn manifest(&self) -> Result<crate::Manifest, String> {
-        read_manifest(&self.directory)?.resolve_interfaces(&self.interface_bindings)
-    }
-    pub fn set_interface_bindings(
-        &mut self,
-        bindings: velk_plugin_contracts::interfaces::Bindings,
-    ) {
-        self.interface_bindings = bindings;
+        crate::builtins::manifest().resolve_interfaces()
     }
     pub fn set_settings(&mut self, settings: velk_plugin_contracts::settings::PluginValues) {
         self.settings = settings;
@@ -469,7 +393,6 @@ impl Manager {
             .values()
             .filter(|p| !p.destroyed)
             .map(|p| &p.info)
-            .chain(self.wasm_plugins.values().map(|p| &p.info))
     }
     /// Route a host-authenticated consumer generation through its declared interface.
     pub fn call_interface(
@@ -521,9 +444,6 @@ impl Manager {
         self.call_hook(&handle, &input)
     }
     pub fn describe(&mut self, id: &str) -> Result<String, String> {
-        if let Some(plugin) = self.wasm_plugins.get(id) {
-            return Ok(plugin.info.description.clone());
-        }
         self.plugins
             .get_mut(id)
             .ok_or_else(|| format!("plugin {id} is not loaded"))?
@@ -553,30 +473,19 @@ impl Manager {
         }
     }
 
-    /// Load inactive plugins listed on disk. Already-active IDs are left alone,
-    /// even when a newer build is staged. Unload explicitly before replacing one.
-    /// # Safety
-    /// All libraries selected by the directory must implement the trusted v1 ABI,
-    /// including its join-before-release semantic session contract.
+    /// Initialize built-in services, leaving existing instances intact.
     #[tracing::instrument(level = "debug", skip_all)]
-    pub unsafe fn load(&mut self) -> Result<Vec<Event>, String> {
-        unsafe { self.load_except(&[]) }
+    pub fn load(&mut self) -> Result<Vec<Event>, String> {
+        self.load_except(&[])
     }
-    /// Like `load`, skipping the given IDs (for example user-disabled plugins).
-    /// # Safety
-    /// Same trusted native-code requirements as `load`.
-    pub unsafe fn load_except(&mut self, excluded: &[String]) -> Result<Vec<Event>, String> {
-        if !self.directory.join(crate::MANIFEST).exists() {
-            return Ok(vec![]);
-        }
+    /// Initialize a subset for internal lifecycle tests.
+    pub fn load_except(&mut self, excluded: &[String]) -> Result<Vec<Event>, String> {
         self.excluded = excluded.iter().cloned().collect();
         let manifest = self.manifest()?;
         let roots = manifest
             .plugins
             .iter()
-            .filter(|p| {
-                p.install_reason != crate::InstallReason::Dependency && !excluded.contains(&p.id)
-            })
+            .filter(|p| !excluded.contains(&p.id))
             .map(|p| p.id.clone())
             .collect::<Vec<_>>();
         let selected = manifest.dependency_closure(&roots);
@@ -587,23 +496,18 @@ impl Manager {
             .collect();
         unsafe { self.load_specs(specs) }
     }
-    /// IDs listed in the current manifest, loaded or not. Unreadable is empty.
+    /// The compiled-in feature catalogue.
     pub fn inventory(&self) -> Vec<PluginSpec> {
-        read_manifest(&self.directory)
-            .map(|m| m.plugins)
-            .unwrap_or_default()
+        crate::builtins::manifest().plugins
     }
     pub fn available(&self) -> Vec<String> {
-        if !self.directory.join(crate::MANIFEST).exists() {
-            return vec![];
-        }
-        self.manifest()
-            .map(|m| m.plugins.into_iter().map(|p| p.id).collect())
-            .unwrap_or_default()
+        self.inventory()
+            .into_iter()
+            .map(|feature| feature.id)
+            .collect()
     }
-    /// # Safety
-    /// Same trusted native-code requirements as `load`.
-    pub unsafe fn load_selected(&mut self, ids: &[String]) -> Result<Vec<Event>, String> {
+    /// Initialize selected built-ins and their required services.
+    pub fn load_selected(&mut self, ids: &[String]) -> Result<Vec<Event>, String> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -613,7 +517,7 @@ impl Manager {
             .filter(|id| !manifest.plugins.iter().any(|p| &p.id == *id))
             .map(|id| Event::Rejected {
                 id: id.clone(),
-                message: "requested plugin is missing from plugins.json".into(),
+                message: "unknown built-in feature".into(),
             })
             .collect();
         for id in ids {
@@ -630,7 +534,7 @@ impl Manager {
     }
     unsafe fn load_specs(&mut self, specs: Vec<PluginSpec>) -> Result<Vec<Event>, String> {
         let mut events = Vec::new();
-        let mut verified = BTreeMap::new();
+        let code = Code::builtin();
         // Excluded or failed dependencies stay absent; consumers are rejected.
         let manifest = self.manifest()?;
         let order = manifest.dependency_order()?;
@@ -661,55 +565,15 @@ impl Manager {
             }
             let generation = self.next_generation;
             self.next_generation += 1;
-            if let crate::PluginRuntime::WasmMatching { metadata, version } = &spec.runtime {
-                let candidate =
-                    self.load_wasm(&spec, generation, metadata.clone(), version.clone());
-                match candidate {
-                    Ok(plugin) => {
-                        events.push(Event::Loaded(Box::new(plugin.info.clone())));
-                        self.wasm_plugins.insert(id, plugin);
-                    }
-                    Err(message) => events.push(Event::Rejected { id, message }),
-                }
-                continue;
-            }
-            // SAFETY: inherited from load's caller.
-            let key = (spec.digest.clone(), spec.pack);
-            let cached = self
-                .resident_code
-                .get(&key)
-                .cloned()
-                .or_else(|| self.images.get(&key).and_then(Weak::upgrade));
-            // Always verify the selected artifact, even when its code is cached.
-            let artifact = (spec.library.clone(), key.clone());
-            let code = if let Some(code) = verified.get(&artifact) {
-                Ok(Arc::clone(code))
-            } else {
-                unsafe { Code::load(&self.directory, &spec, cached) }.inspect(|code| {
-                    verified.insert(artifact, Arc::clone(code));
-                })
+            let candidate = unsafe {
+                Generation::load(
+                    &spec,
+                    generation,
+                    code.clone(),
+                    self.settings.get(&id).unwrap_or(&Default::default()),
+                    self.host.clone(),
+                )
             };
-            let candidate = code.and_then(|code| {
-                self.images.insert(key.clone(), Arc::downgrade(&code));
-                // Residency applies to the entire image before any factory runs,
-                // including factories which fail during initialization.
-                if code.resident {
-                    self.resident_code.entry(key).or_insert_with(|| {
-                        std::mem::forget(code.clone());
-                        code.clone()
-                    });
-                }
-                unsafe {
-                    Generation::load(
-                        &spec,
-                        generation,
-                        code,
-                        self.settings.get(&id).unwrap_or(&Default::default()),
-                        self.host.clone(),
-                    )
-                }
-            });
-            self.images.retain(|_, image| image.strong_count() != 0);
             match candidate {
                 Ok(candidate) => {
                     let routes = spec
@@ -717,10 +581,7 @@ impl Manager {
                         .requires
                         .iter()
                         .map(|requirement| {
-                            let provider = self
-                                .interface_bindings
-                                .get(&requirement.interface)
-                                .unwrap_or(&requirement.default_provider);
+                            let provider = &requirement.default_provider;
                             let implementation = manifest
                                 .plugins
                                 .iter()
@@ -747,55 +608,10 @@ impl Manager {
         }
         Ok(events)
     }
-    fn load_wasm(
-        &mut self,
-        spec: &PluginSpec,
-        generation: u64,
-        metadata: velk_plugin_contracts::PluginMetadata,
-        version: String,
-    ) -> Result<WasmGeneration, String> {
-        let bytes = self.verified_wasm_bytes(spec)?;
-        let matching = Arc::new(crate::wasm::Matching::load(self.wasm_runtime()?, &bytes)?);
-        Ok(WasmGeneration {
-            info: PluginInfo {
-                id: spec.id.clone(),
-                version,
-                generation,
-                loaded_path: self.directory.join(&spec.library),
-                description: metadata.name.clone(),
-                metadata,
-                settings_values: Default::default(),
-                settings_error: None,
-                resident_code: false,
-                hooks: vec![velk_plugin_contracts::commands::completion::matching::HOOK.into()],
-                dependencies: spec.dependencies.clone(),
-            },
-            matching,
-        })
-    }
-
-    fn verified_wasm_bytes(&self, spec: &PluginSpec) -> Result<Vec<u8>, String> {
-        use std::io::Read;
-        let path = self.directory.join(&spec.library);
-        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-        let mut bytes = Vec::new();
-        file.take(crate::wasm::MAX_MODULE_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() > crate::wasm::MAX_MODULE_BYTES {
-            return Err("Wasm module exceeds 4 MiB".into());
-        }
-        if blake3::hash(&bytes).to_hex().as_str() != spec.digest {
-            return Err("Wasm module digest mismatch".into());
-        }
-        Ok(bytes)
-    }
     /// Recreate active instances as one worker operation. Inactive plugins stay
     /// inactive. Optional named hooks transfer owned bytes, never native handles.
-    /// # Safety
-    /// As with `load`, all selected native libraries must obey the v1 contract.
     #[tracing::instrument(level = "debug", skip_all, fields(plugin = id))]
-    pub unsafe fn restart(&mut self, id: Option<&str>) -> Result<Vec<Event>, String> {
+    pub fn restart(&mut self, id: Option<&str>) -> Result<Vec<Event>, String> {
         let mut ids: Vec<_> = self
             .plugins()
             .filter(|plugin| id.is_none_or(|id| id == plugin.id))
@@ -827,7 +643,7 @@ impl Manager {
             .filter(|spec| ids.contains(&spec.id))
             .collect();
         if specs.len() != ids.len() {
-            return Err("an active plugin is missing from plugins.json; restart cancelled".into());
+            return Err("an active feature has no built-in registration; restart cancelled".into());
         }
         let states = self.snapshot_plugins(&ids)?;
         let mut events = self.unload_ids(&ids.iter().cloned().collect());
@@ -901,9 +717,6 @@ impl Manager {
             if let Some(plugin) = self.plugins.get(id) {
                 plugin.deactivate();
             }
-            if let Some(plugin) = self.wasm_plugins.get(id) {
-                plugin.matching.retire();
-            }
         }
         let mut inventory = self.inventory();
         for spec in &mut inventory {
@@ -942,10 +755,6 @@ impl Manager {
         self.unload_one(id)
     }
     fn unload_one(&mut self, id: &str) -> Option<Event> {
-        if let Some(plugin) = self.wasm_plugins.remove(id) {
-            plugin.matching.retire();
-            return Some(Event::Removed(id.into()));
-        }
         let plugin = self.plugins.get(id)?;
         let consumer = velk_plugin_contracts::backend::Consumer {
             plugin: id.into(),
@@ -971,127 +780,6 @@ impl Manager {
     pub fn unload_all(&mut self) -> Vec<Event> {
         let ids = self.plugins().map(|plugin| plugin.id.clone()).collect();
         self.unload_ids(&ids)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static DESTROYS: AtomicUsize = AtomicUsize::new(0);
-    unsafe extern "C" fn fails_to_destroy(_: *mut c_void) -> i32 {
-        DESTROYS.fetch_add(1, Ordering::SeqCst);
-        PANICKED
-    }
-    #[test]
-    fn failed_teardown_is_not_repeated_and_blocks_reactivation() {
-        let directory = tempfile::tempdir().unwrap();
-        let copy = tempfile::tempdir().unwrap();
-        let mut manager = Manager::new(directory.path().into());
-        manager.plugins.insert(
-            "test.failed".into(),
-            Generation {
-                info: PluginInfo {
-                    id: "test.failed".into(),
-                    version: "1".into(),
-                    generation: 1,
-                    loaded_path: copy.path().into(),
-                    description: String::new(),
-                    metadata: Default::default(),
-                    settings_values: Default::default(),
-                    settings_error: None,
-                    resident_code: false,
-                    hooks: vec![],
-                    dependencies: Vec::new(),
-                },
-                api: PluginApi {
-                    abi_version: ABI_VERSION,
-                    struct_size: std::mem::size_of::<PluginApi>() as u32,
-                    flags: 0,
-                    id: [0; 64],
-                    version: [0; 32],
-                    create: None,
-                    destroy: Some(fails_to_destroy),
-                    describe: None,
-                    hook_count: None,
-                    hook_info: None,
-                    get_hook: None,
-                },
-                // This local test destructor never dereferences the opaque instance.
-                instance: NonNull::dangling(),
-                destroyed: false,
-                host: None,
-                hooks: vec![],
-                markdown: None,
-                syntax: None,
-                matching: None,
-                completion_frontend: None,
-                snippet_provider: None,
-                undo: None,
-                language: None,
-                semantic: None,
-                editing: Default::default(),
-                services_active: Arc::new(std::sync::RwLock::new(true)),
-                library: None,
-            },
-        );
-        assert!(matches!(
-            manager.unload("test.failed"),
-            Some(Event::Rejected { .. })
-        ));
-        assert_eq!(DESTROYS.load(Ordering::SeqCst), 1);
-        assert!(manager.unload("test.failed").is_none());
-        let manifest = crate::Manifest {
-            plugins: vec![PluginSpec {
-                runtime: Default::default(),
-                interfaces: Default::default(),
-                dependencies: Vec::new(),
-                install_reason: Default::default(),
-                id: "test.failed".into(),
-                library: "absent-library".into(),
-                digest: "0".repeat(64),
-                pack: false,
-            }],
-        };
-        std::fs::write(
-            directory.path().join(crate::MANIFEST),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
-        // SAFETY: the blocked ID is rejected before any artifact can be loaded.
-        let events = unsafe { manager.load() }.unwrap();
-        assert!(
-            matches!(&events[..], [Event::Rejected { message, .. }] if message.contains("restart required"))
-        );
-        assert_eq!(DESTROYS.load(Ordering::SeqCst), 1);
-    }
-    #[test]
-    fn load_except_skips_excluded_ids_and_available_lists_the_manifest() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut manager = Manager::new(directory.path().into());
-        assert!(manager.available().is_empty());
-        let spec = |id: &str| PluginSpec {
-            runtime: Default::default(),
-            interfaces: Default::default(),
-            dependencies: Vec::new(),
-            install_reason: Default::default(),
-            id: id.into(),
-            library: format!("{id}.dylib").into(),
-            digest: "0".repeat(64),
-            pack: false,
-        };
-        let manifest = crate::Manifest {
-            plugins: vec![spec("test.one"), spec("test.two")],
-        };
-        std::fs::write(
-            directory.path().join(crate::MANIFEST),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manager.available(), ["test.one", "test.two"]);
-        // SAFETY: the libraries are absent, so nothing native is loaded.
-        let events = unsafe { manager.load_except(&["test.two".into()]) }.unwrap();
-        assert!(matches!(&events[..], [Event::Rejected { id, .. }] if id == "test.one"));
     }
 }
 
@@ -1159,8 +847,7 @@ pub(super) mod test_provider {
         manager
     }
     pub fn manager(control: Control) -> Manager {
-        let copy = tempfile::tempdir().unwrap();
-        let mut manager = Manager::new(copy.path().into());
+        let mut manager = Manager::new();
         manager.plugins.insert(
             crate::DEFAULT_MARKDOWN_PROVIDER.into(),
             Generation {
@@ -1168,19 +855,16 @@ pub(super) mod test_provider {
                     id: crate::DEFAULT_MARKDOWN_PROVIDER.into(),
                     version: "1".into(),
                     generation: 1,
-                    loaded_path: copy.path().into(),
                     description: String::new(),
                     metadata: Default::default(),
                     settings_values: Default::default(),
                     settings_error: None,
-                    resident_code: false,
                     hooks: vec![],
                     dependencies: Vec::new(),
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,
                     struct_size: std::mem::size_of::<PluginApi>() as u32,
-                    flags: 0,
                     id: [0; 64],
                     version: [0; 32],
                     create: None,
@@ -1299,5 +983,45 @@ mod markdown_tests {
             1,
             "unavailable selections never invoke another provider"
         );
+    }
+}
+
+impl Default for Manager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod builtin_tests {
+    use super::*;
+    #[test]
+    fn all_features_are_linked_and_undo_browser_is_absent() {
+        let mut manager = Manager::new();
+        let events = manager.load().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::Rejected { .. })),
+            "{events:?}"
+        );
+        let ids = manager.available();
+        for id in [
+            "velk.vim",
+            "velk.undo.tree",
+            "velk.tree-sitter",
+            "velk.completion",
+            "velk.files",
+            "velk.quick-open",
+            "velk.workspace-find",
+            "velk.problems",
+        ] {
+            assert!(ids.iter().any(|candidate| candidate == id), "{id}");
+            assert!(manager.plugins().any(|feature| feature.id == id), "{id}");
+        }
+        assert!(!ids.iter().any(|id| id == "velk.undo.browser"));
+        assert!(manager.matching_provider("velk.completion").is_ok());
+        manager.unload_all();
+        assert_eq!(manager.plugins().count(), 0);
     }
 }

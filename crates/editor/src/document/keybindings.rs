@@ -105,7 +105,6 @@ impl Document {
     pub(super) fn binding_modal(&self) -> bool {
         self.palette.open
             || self.shell.open
-            || self.plugin_menu_open
             || self.command_result.is_some()
             || self.lifecycle.close_intent().is_some()
             || self.reloading()

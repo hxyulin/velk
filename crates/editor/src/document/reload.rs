@@ -4,8 +4,6 @@ use crate::{session, settings::Preferences};
 use rxui::prelude::*;
 use serde::{Deserialize, Serialize};
 
-pub(super) struct RestartPlugins;
-impl Command for RestartPlugins {}
 pub(crate) struct RestoreFocus;
 impl Command for RestoreFocus {}
 pub(super) struct ReloadWindow;
@@ -16,7 +14,6 @@ pub struct UiState {
     #[serde(default)]
     pub(crate) views: velk_editor_model::views::Snapshot,
     settings_open: bool,
-    plugins_open: bool,
     palette_open: bool,
     palette_query: String,
     palette_selected: usize,
@@ -60,7 +57,6 @@ impl Document {
         }
         self.shell.store.preferences = state.preferences;
         self.shell.open = state.settings_open;
-        self.plugin_menu_open = state.plugins_open;
         self.palette.open = state.palette_open;
         self.palette.query = state.palette_query;
         self.palette.selected = state.palette_selected;
@@ -85,7 +81,7 @@ impl Document {
             .flatten()
     }
     pub(super) fn restore_focus(&mut self, cx: &mut Context<'_, Self>) {
-        let result = if self.shell.open || self.plugin_menu_open || self.palette.open {
+        let result = if self.shell.open || self.palette.open {
             Ok(()) // RXUI's modal owns autofocus and the focus trap.
         } else if let Some(result) = self.focus_bottom(cx) {
             result
@@ -107,7 +103,6 @@ impl Document {
             views: self.capture_editor_views(cx),
             preferences: self.shell.store.preferences.clone(),
             settings_open: self.shell.open,
-            plugins_open: self.plugin_menu_open,
             palette_open: self.palette.open,
             palette_query: self.palette.query.clone(),
             palette_selected: self.palette.selected,

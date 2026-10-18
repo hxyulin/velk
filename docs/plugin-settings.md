@@ -1,31 +1,18 @@
-# Plugin settings
+# Built-in feature settings
 
-Plugin settings use the existing host Settings page and user `settings.json`.
-Plugins declare their settings; the host renders controls, validates values,
-stores overrides, and delivers a configuration snapshot to the owning plugin.
-There are no workspace overrides or plugin-defined settings widgets in this
-first version.
+Open Settings > Features to configure the built-in editor services. Search matches
+setting names, descriptions, keys, and feature names. Controls support booleans,
+bounded integers, text, and fixed choices. Reset removes an override and restores
+its default.
 
-## Using settings
+Changes save through the settings writer. Select **Apply changes** when a feature
+has pending configuration. Applying settings restarts that feature's active
+sessions; for a terminal this terminates its shell. Editing the settings file
+requires saving it and using Reload Window. There is no settings-file watcher.
 
-Open Settings and select **Plugins**, or open a plugin's detail page and select
-**Settings**. Search matches the setting title, description, full key, and plugin
-display name. Controls support booleans, bounded integers, bounded single-line
-text, and fixed string choices.
-
-Changes save through the existing settings writer. A modified setting has a
-**Reset** action; resetting removes its override and restores the declared
-default. Selecting the default value also removes the override.
-
-Changes do not reconfigure a running plugin. **Restart to apply** appears when
-its effective settings differ from the running snapshot. Restart is explicit:
-a terminal restart terminates its shell, and language-plugin restarts retire
-affected language-service sessions. Other plugins keep their own configuration.
-Disabled plugins retain overrides and receive them when enabled.
-
-The host retains declarations after a plugin unloads during the current session,
-so its settings remain editable. A plugin disabled before application startup
-has not supplied declarations yet; enable it once to discover its settings.
+All features are linked into the executable and initialized at startup. There is
+no plugin enable/disable or installation UI. The internal `plugins` settings key
+and namespaced IDs remain implementation details of the existing settings store.
 
 ## Storage and validation
 
@@ -48,7 +35,7 @@ Only user overrides are stored, under exact plugin IDs:
 }
 ```
 
-Other host settings, including `disabled_plugins`, keep their existing format.
+Other editor settings share the same file.
 Unknown plugin IDs and keys survive writes and resets. Undeclared keys are not
 sent to a plugin, and a plugin receives only the values under its own ID.
 
@@ -57,7 +44,7 @@ existing JSON file contains an invalid declared value, the plugin starts with
 its complete validated defaults. Its Settings section shows the error; correct
 or reset the value and restart to apply it. The invalid stored override remains
 available for correction. A plugin's own configuration-handler failure rejects
-that plugin's load and appears in the plugin manager.
+that plugin's load and appears in its Settings section.
 
 There is no settings-file watcher. After editing `settings.json` as a document,
 save it and use **Reload Window** to read it again. In-page edits apply to the
@@ -148,4 +135,4 @@ plugin override map is bounded to 1 MiB.
 
 Legacy plugins without settings continue loading. The native API is experimental;
 rebuild editor and plugin artifacts together when adopting the new metadata.
-See [plugin API](plugin-api.md) and [plugin packs](plugin-packs.md).
+See [plugin API](plugin-api.md) and [built-in feature services](plugin-api.md).

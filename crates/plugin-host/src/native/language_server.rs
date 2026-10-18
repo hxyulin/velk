@@ -145,18 +145,15 @@ mod tests {
                 id: id.into(),
                 version: "1".into(),
                 generation: 1,
-                loaded_path: PathBuf::new(),
                 description: String::new(),
                 metadata: Default::default(),
                 settings_values: Default::default(),
                 settings_error: None,
-                resident_code: false,
                 hooks: vec![],
             },
             api: PluginApi {
                 abi_version: ABI_VERSION,
                 struct_size: std::mem::size_of::<PluginApi>() as u32,
-                flags: 0,
                 id: [0; 64],
                 version: [0; 32],
                 create: None,
@@ -188,8 +185,7 @@ mod tests {
     }
     #[test]
     fn dependencies_use_exact_ids_and_competing_language_definitions_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut manager = Manager::new(directory.path().into());
+        let mut manager = Manager::new();
         assert!(manager.resolve_language_server("rust").unwrap().is_none());
         manager.plugins.insert(
             "velk.language-server.rust-analyzer".into(),

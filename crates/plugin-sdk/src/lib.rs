@@ -34,7 +34,6 @@ pub trait Plugin: Default + 'static {
     const README: &'static str = "";
     /// Declared access requirements, not enforced grants for native code.
     const CAPABILITIES: &'static [CapabilityDeclaration] = &[];
-    const RESIDENT_CODE: bool = false;
     fn commands() -> Vec<commands::Declaration> {
         Vec::new()
     }
@@ -63,50 +62,11 @@ pub trait Plugin: Default + 'static {
 }
 #[doc(hidden)]
 pub mod ffi;
-/// Export exactly one plugin from a cdylib. The generated wrapper delegates all
-/// pointer handling and panic containment to the SDK.
-#[macro_export]
-macro_rules! export_plugin {
-    ($plugin:ty) => {
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        unsafe extern "C" fn velk_plugin_entry_v1(
-            abi: u32,
-            output: *mut $crate::api::PluginApi,
-            size: usize,
-        ) -> i32 {
-            // SAFETY: called by a host satisfying the documented v1 ABI.
-            unsafe { $crate::ffi::entry::<$plugin>(abi, output, size) }
-        }
-    };
-}
-
-/// Export several implementations from one native image. Implementations must
-/// not also export standalone entry points in their library dependencies.
-#[macro_export]
-macro_rules! export_plugin_pack {
-    ($($plugin:ty),+ $(,)?) => {
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        unsafe extern "C" fn velk_plugin_pack_entry_v1(
-            abi: u32,
-            output: *mut $crate::api::PluginPackApi,
-            size: usize,
-        ) -> i32 {
-            #[allow(unsafe_code)]
-            unsafe extern "C" fn member(index: usize, abi: u32, output: *mut $crate::api::PluginApi, size: usize) -> i32 {
-                let entries: &[$crate::api::Entry] = &[$($crate::ffi::member::<$plugin>),+];
-                match entries.get(index) {
-                    Some(entry) => unsafe { entry(abi, output, size) },
-                    None => $crate::api::NOT_FOUND,
-                }
-            }
-            let count = [$(stringify!($plugin)),+].len();
-            unsafe { $crate::ffi::pack_entry(abi, output, size, count, member) }
-        }
-    };
-}
-
 pub use velk_syntax as syntax;
 
 pub mod backend;
+
+/// Register a feature compiled into the same executable as its host.
+pub fn builtin<P: Plugin>() -> api::PluginApi {
+    ffi::builtin::<P>()
+}

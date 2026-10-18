@@ -156,46 +156,14 @@ the supplied order and can stop after a cancelled destination picker or failed
 write. Dialogs, async file jobs, checkpoint updates, and final recovery cleanup
 remain frontend responsibilities.
 
-## Intended boundaries
+## Current boundaries
 
-- The frontend supplies RXUI rendering and native interaction, platform services,
-  and module bootstrap and compatibility checks.
-- One active engine owns the authoritative document model. Storage, transactions,
-  and history initially stay together in one coherent implementation.
-- Feature plugins consume versioned services rather than concrete engine types.
-  Settings controls, commands, and document operations share contracts.
-- Required services have a default implementation distributed with Velk. Optional
-  features can be disabled; required services must resolve before startup.
+The editor uses linked Rust crates for document storage, renderer-independent
+editing, widgets, feature services, and platform hosting. There is one
+authoritative document model. The frontend owns native interaction and rendering;
+feature services use its validated document operations.
 
-Separate Rust crates are the current modularity boundary. Editor behavior,
-rendering, and platform hosting can have alternative implementations without
-requiring a dynamic library for each one. Rendering and window/event-loop backends
-also involve RXUI/Astrelis interfaces; this extraction does not make them selectable.
-
-A later plugin architecture can support trusted native modules and sandboxed
-Wasm modules through shared service semantics, with separate transport bindings.
-Rust is the primary SDK language; Rust trait objects, futures, closures, RXUI
-objects, and Ropey internals must not become the independently compiled ABI.
-Native plugins remain trusted in-process code. Current capability declarations
-are descriptive and do not enforce access restrictions.
-
-## Migration order
-
-1. Extract and test the linked, UI-independent document implementation. Done in
-   Core; it is not registered as an optional feature plugin.
-2. Separate renderer-independent presentation data and text projections. Done in
-   the editor model; text shaping, geometry, and painting remain in the widget.
-3. Establish editor behavior, text layout, and frontend boundaries as alternative
-   implementations need them. Keep hit testing, caret placement, IME, and
-   accessibility consistent with the implementation that owns layout.
-4. Separate platform hosting from application behavior, using RXUI's host
-   facilities where appropriate. Desktop event loops and a future browser host
-   supply different implementations of native interaction and scheduling.
-5. Introduce native module entry points or Wasm bindings when independent loading
-   or sandboxing is needed. Validate real editing workloads and recovery before
-   moving the default engine into Wasm. Live engine migration remains deferred.
-
-Module packaging and logical service boundaries are separate choices. Avoid an
-independent provider or dynamic library for every internal helper; expose a new
-replacement point when a concrete implementation needs it. Maintain behavioral
-conformance tests so replacing a provider preserves plugin expectations.
+All shipped features are compiled into the editor. Dynamic native loading and
+Wasm execution have been removed. The immediate priority is a coherent Vim-focused
+editor, not runtime replacement of its engine or renderer. Internal interfaces
+can change with concrete editing requirements; no external ABI is promised.

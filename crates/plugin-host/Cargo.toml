@@ -5,8 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [dependencies]
-velk-plugin-wasm-api.workspace = true
-wasmtime = { version = "=49.0.3", default-features = false, features = ["std", "runtime", "cranelift", "cache"] }
+velk-plugin-builtin = { path = "../../plugins/builtin" }
 velk-core-contracts.workspace = true
 ropey.workspace = true
 velk-syntax.workspace = true
@@ -17,15 +16,10 @@ velk-plugin-contracts.workspace = true
 velk-semantic.workspace = true
 velk-markup.workspace = true
 velk-plugin-api.workspace = true
-libloading = "0.9"
 async-channel = "2.5.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-blake3 = "1.8"
 tempfile = "3.27.0"
-directories-next = "2"
-[dev-dependencies]
-wat = "1"
 
 [lints.rust]
 unsafe_code = "deny"

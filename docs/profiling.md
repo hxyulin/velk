@@ -251,5 +251,5 @@ Validation helpers:
 
 ```sh
 cargo xtask test-diagnostics  # Real DLL logging/filtering and worker timing bridge.
-cargo xtask test-plugins     # Existing ABI, pack, restart and service checks.
+cargo xtask test-features     # Existing ABI, pack, restart and service checks.
 ```

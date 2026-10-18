@@ -258,6 +258,8 @@ pub fn text_hash(bytes: impl IntoIterator<Item = u8>) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Outcome {
+    /// Work was accepted; its owner reports completion without replacing notices.
+    Accepted,
     SignatureHelp {
         help: Option<signature::Help>,
     },

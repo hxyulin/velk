@@ -210,14 +210,6 @@ pub(super) unsafe extern "C" fn collect(context: *mut c_void, bytes: Bytes, stat
 }
 impl Manager {
     pub fn hooks(&self, plugin: &str) -> Result<Vec<HookDescriptor>, String> {
-        if self.wasm_plugins.contains_key(plugin) {
-            return Ok(vec![HookDescriptor {
-                name: velk_plugin_contracts::commands::completion::matching::HOOK.into(),
-                contract: velk_plugin_contracts::commands::completion::matching::CONTRACT.into(),
-                version: 1,
-                kind: SERVICE,
-            }]);
-        }
         let plugin = self
             .plugins
             .get(plugin)

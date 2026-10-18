@@ -6,10 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 [lib]
 crate-type = ["rlib"]
-[[example]]
-name = "velk_plugin_completion"
-path = "examples/standalone.rs"
-crate-type = ["cdylib"]
+
 [dependencies]
 velk-completion-matching.workspace = true
 velk-plugin-sdk.workspace = true

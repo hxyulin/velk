@@ -6,13 +6,13 @@ Velk is a native Rust editor built with RXUI. Use the pinned toolchain in
 ## Commands
 
 - `cargo xtask setup-terminal`: cache the pinned Zig and Ghostty build inputs.
-- `cargo xtask run --release -- path/to/file.rs`: build and run with bundled plugins.
+- `cargo xtask run --release -- path/to/file.rs`: build and run the self-contained editor.
 - `prek install`: install file checks and Conventional Commit message validation.
 - `prek run --all-files`: run repository checks and formatters.
 - `cargo xtask test`: run workspace tests with the cached terminal build inputs.
 - `cargo xtask test-headless [filter]`: run model, widget, app-adapter, and SDK
   fixture tests without opening a native window. See [docs/testing.md](docs/testing.md).
-- `cargo xtask test-plugins`: check native plugin loading and shared contracts.
+- `cargo xtask test-features`: exercise built-in editing, syntax, search, project tools, and undo.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: lint with
   Zig available on `PATH`, for example inside `nix develop`.
 
@@ -30,20 +30,15 @@ and any checks that could not run.
   projections, and open-document identity/tab selection without renderer dependencies.
 - `crates/editor` adapts document lifecycle, saves, recovery, workspace state,
   and the shell. `crates/editor-widget` adapts Core to RXUI input and rendering.
-- Platform contracts and services live in `crates/`; feature plugins and their
-  shared contract libraries live in `plugins/`. The host must not depend on
-  feature-specific protocols or re-export them through the platform SDK.
-  Build and staging commands live in `xtask/`.
-- Common plugin definitions live in `plugin-contracts`; native tables/codecs in
-  `plugin-api`. The host must not depend on SDK authoring/lifecycle code.
-- Keep one authoritative document model and a consistent service interface.
-  Extend existing contracts before introducing parallel plugin-specific mechanisms. Update the
-  host, SDK, bundled plugins, and relevant docs together when a contract changes.
-- Native plugins are trusted in-process code. Capability declarations currently
-  describe requirements; they do not enforce permissions or provide isolation.
-- Keep independent Wasm plugins' mutable memories private. Share compiled code
-  and host-owned resources through checked interfaces; do not introduce a shared
-  writable heap across independent plugins to avoid copies.
+- Editor features are linked into the executable. The existing `plugins/` and
+  `plugin-*` crate names describe internal feature organization, not an external
+  extension API. Do not add dynamic loading, distribution manifests, Wasm runtimes,
+  or public ABI compatibility machinery.
+- Keep one authoritative document model and shared edit, revision, cancellation,
+  and lifecycle rules. Preserve the working built-in features and their settings.
+- Prioritize a coherent out-of-box editor for Vim users over plugin infrastructure.
+  Keep implementations in cohesive modules; source modularity does not require a
+  runtime boundary.
 
 ## Coding conventions
 

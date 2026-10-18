@@ -147,7 +147,7 @@ impl Document {
                 .into_element()
         })
     }
-    /// One icon per sidebar panel, with Plugins and Settings pinned below.
+    /// One icon per sidebar panel, with Settings pinned below.
     pub(super) fn rail(&self, layout: Layout, cx: &mut ViewContext<'_, Self>) -> Option<Element> {
         if !layout.rail {
             return None;
@@ -235,26 +235,15 @@ impl Document {
                 cx,
             ));
         }
-        let plugins_open = self.plugin_menu_open;
         let settings_open = self.shell.open;
-        rail = rail
-            .child(column().flex_grow(1.))
-            .child(item(
-                "rail-plugins".into(),
-                Icon::Plugins.element(17.),
-                plugins_open,
-                "Plugins (F4)".into(),
-                cx.listener(|this, _, cx| this.set_plugin_menu(!this.plugin_menu_open, cx)),
-                cx,
-            ))
-            .child(item(
-                "rail-settings".into(),
-                Icon::Settings.element(17.),
-                settings_open,
-                format!("Settings ({})", super::palette::primary(",")),
-                cx.listener(|this, _, cx| this.set_settings(!this.shell.open, cx)),
-                cx,
-            ));
+        rail = rail.child(column().flex_grow(1.)).child(item(
+            "rail-settings".into(),
+            Icon::Settings.element(17.),
+            settings_open,
+            format!("Settings ({})", super::palette::primary(",")),
+            cx.listener(|this, _, cx| this.set_settings(!this.shell.open, cx)),
+            cx,
+        ));
         Some(rail.into_element())
     }
     /// Global status line: file, transient messages, then editor state.
@@ -382,7 +371,6 @@ impl Document {
     pub(super) fn set_settings(&mut self, open: bool, cx: &mut Context<'_, Self>) {
         self.shell.open = open;
         if open {
-            self.plugin_menu_open = false;
             self.palette.open = false;
         } else {
             let _ = self.editor_focus.focus(cx);

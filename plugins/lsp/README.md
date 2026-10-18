@@ -47,8 +47,7 @@ markers support other project roots; an explicitly configured root takes
 precedence. The client is language-neutral, but Velk currently bundles only a Rust
 language definition and editor routing.
 
-The native library stays resident because process-wide signal handlers may
-outlive a client. Every file publication also enters the host's workspace
+The language client is linked into the editor. Every file publication enters the editor's workspace
 diagnostic store, including unopened files. Publications replace earlier results
 for the same client and path; empty publications clear them. Failure or retirement
 clears the client's results. Unversioned publications use saved file contents,

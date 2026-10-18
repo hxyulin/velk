@@ -6,10 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 [lib]
 crate-type = ["rlib"]
-[[example]]
-name = "velk_plugin_undo"
-path = "examples/standalone.rs"
-crate-type = ["cdylib"]
+
 [dependencies]
 velk-panels.workspace = true
 velk-core-contracts.workspace = true

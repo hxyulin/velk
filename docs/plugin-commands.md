@@ -1,6 +1,7 @@
-# Plugin commands
+# Built-in feature commands
 
-Loaded plugins contribute commands to the command palette using `Plugin::commands()`.
+Built-in features register commands through the internal `Plugin::commands()`
+adapter. The names below describe linked feature modules, not installable plugins.
 Open it with Command+Shift+P on macOS, Ctrl+Shift+P elsewhere, or F3. Search for an
 action and press Enter. The host owns discovery, input, asynchronous scheduling,
 navigation, and presentation; plugins own their behavior.
@@ -8,7 +9,7 @@ navigation, and presentation; plugins own their behavior.
 Commands have a stable dotted ID, a title, an optional language filter, and one
 of two handlers. Identity includes the owning plugin ID, so two plugins may use
 the same local command ID. Declarations are copied into plugin metadata and
-validated during load. Unloading a plugin removes its commands.
+validated during feature initialization. There is no user-facing plugin loader.
 
 User [keybindings](keybindings.md) invoke these same declarations using
 `plugin-id:command-id`. A binding can supply a string `input` to bypass a declared
@@ -16,7 +17,12 @@ prompt; ordinary invocation retains the prompt. Pickers keep their interactive
 query flow and reject fixed input. Keybindings retain the existing generation,
 capability, availability, and revision checks.
 
-## Plugin request handlers
+Commands that queue work owned by another editor subsystem return
+`Outcome::Accepted`. This acknowledges dispatch without changing the current
+notice. The subsystem reports completion or failure; a late queue acknowledgement
+must not overwrite a faster operation's error.
+
+## Internal request handlers
 
 Use a named handler for an action performed by the plugin itself:
 

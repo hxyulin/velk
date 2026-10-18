@@ -1,10 +1,8 @@
-use super::*;
+use std::path::Path;
 #[allow(unsafe_code)]
-pub(super) fn run(output: &Path) -> Result<(), String> {
+pub(super) fn run() -> Result<(), String> {
     use velk_commands::{PickerReply, PickerRequest};
     use velk_plugin_host::host::{Buffer, Request, Response, Workspace};
-    let plugins = tempfile::tempdir().map_err(|e| e.to_string())?;
-    publish(plugins.path(), stage_builtins(output, plugins.path())?)?;
     let project = tempfile::tempdir().map_err(|e| e.to_string())?;
     std::fs::create_dir(project.path().join("src")).map_err(|e| e.to_string())?;
     std::fs::write(project.path().join(".gitignore"), "ignored.txt\n")
@@ -12,7 +10,7 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
     std::fs::write(project.path().join("ignored.txt"), "needle").map_err(|e| e.to_string())?;
     let path = project.path().join("src/main.rs");
     std::fs::write(&path, "disk text").map_err(|e| e.to_string())?;
-    let runtime = unsafe { velk_plugin_host::Runtime::start(plugins.path().into())? };
+    let runtime = velk_plugin_host::Runtime::start()?;
     let client = runtime.client();
     client.set_workspace(Workspace {
         current_directory: project.path().into(),

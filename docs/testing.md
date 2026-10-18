@@ -57,7 +57,7 @@ requests in the handler so accidental host dependencies fail the test.
 The fixture uses the SDK's actual serialization, synchronous reply callbacks,
 and host-reference lifetime path. It is available only with `test-support` and
 does not load dynamic libraries or enforce plugin capability declarations.
-Use `cargo xtask test-plugins` for native loading, capability checks, dependency
+Use `cargo xtask test-features` for linked feature integration, host-service checks, dependency
 routing, retirement, and other behavior that needs the real host.
 
 Keep generated screenshots, scenario output, logs, and snapshots in `target/`
@@ -75,7 +75,6 @@ unloads LSP and checks automatic document-word completion after real keyboard
 input, acceptance, and undo in an untitled buffer.
 
 ```sh
-cargo xtask plugins
 cargo xtask test-headless render_feature_walkthrough -- --ignored --nocapture
 python3 tools/rgba_to_png.py target/feature-demo/captures --width 1280 --height 800
 ```
@@ -124,7 +123,3 @@ reading documentation cannot apply those edits.
 Completion matching regressions cover late exact-match promotion, explicit
 selection retention, reranking after typing, Unicode, typo edit ranges, and
 keeping the best document words before the source result cap.
-
-For the isolated Wasmtime matcher, run `cargo xtask test-plugins --wasm`. This
-builds the release Wasm guest and checks parity, lifecycle, and digest validation
-before the native smoke suite. See [Wasm plugins](wasm-plugins.md).

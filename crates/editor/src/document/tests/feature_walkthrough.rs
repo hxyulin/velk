@@ -1,7 +1,7 @@
-//! Opt-in end-to-end walkthrough using the installed server and bundled plugins.
+//! Opt-in end-to-end walkthrough using the installed server and built-in features.
 use super::*;
 #[test]
-#[ignore = "manual native-plugin GPU walkthrough"]
+#[ignore = "manual built-in feature GPU walkthrough"]
 #[allow(unsafe_code)]
 fn render_feature_walkthrough() {
     use rxui::{TestUi, astrelis::GraphicsContext};
@@ -141,16 +141,8 @@ fn render_feature_walkthrough() {
     std::fs::write(&path, text).unwrap();
     let output = root.join("target/feature-demo/captures");
     std::fs::create_dir_all(&output).unwrap();
-    // SAFETY: these are the locally built bundled plugins.
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    let plugins = unsafe {
-        velk_plugin_host::Runtime::start(root.join("target").join(profile).join("plugins"))
-    }
-    .unwrap();
+
+    let plugins = velk_plugin_host::Runtime::start().unwrap();
     let graphics = pollster::block_on(GraphicsContext::headless()).unwrap();
     let mut capture = TestUi::new(&graphics, [1280, 800], Document::empty(1)).unwrap();
     capture.painter_mut().fonts_mut().load_system_fonts();
@@ -171,6 +163,7 @@ fn render_feature_walkthrough() {
         runtime.update(|cx| {
             entity.update(cx, |doc, cx| {
                 doc.shell.store.preferences = crate::settings::Preferences::default();
+                doc.shell.store.preferences.keymap_provider.clear();
                 doc.shell.store.preferences.set_layout("rail");
                 doc.workspace.set_root(project.clone());
                 let (file, mut editor) = crate::file::FileState::open(&path).unwrap();

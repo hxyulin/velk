@@ -1333,10 +1333,7 @@ mod tests {
             (false, Some("Panels: refreshing")),
             (false, Some("Unrelated notice")),
         ] {
-            let directory = tempfile::tempdir().unwrap();
-            // SAFETY: this test-owned directory contains no native libraries.
-            let host =
-                unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+            let host = velk_plugin_host::Runtime::start().unwrap();
             let executor = Arc::new(Executor::default());
             let mut runtime = Runtime::new();
             runtime.configure_tasks(executor.clone(), || {}).unwrap();

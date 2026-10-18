@@ -31,7 +31,6 @@ impl Plugin for Lsp {
     ];
 
     // Tokio process signal handlers can outlive their reactor on Unix.
-    const RESIDENT_CODE: bool = true;
     fn attach_host(&mut self, host: velk_plugin_sdk::Host) {
         self.client.attach_host(host);
     }

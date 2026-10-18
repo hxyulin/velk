@@ -28,9 +28,7 @@ impl Default for Page {
 pub(super) fn error_color() -> [f32; 4] {
     rgb8(0xDE, 0x8A, 0x82)
 }
-pub(super) fn success_color() -> [f32; 4] {
-    rgb8(0xA6, 0xC4, 0x8A)
-}
+
 pub(super) fn error_box(title: &str, message: String) -> Element {
     row()
         .key("error-box")
@@ -525,11 +523,6 @@ impl Document {
                     .child(content),
             )
     }
-    pub(super) fn open_plugin_settings(&mut self, id: String, cx: &mut Context<'_, Self>) {
-        self.set_settings(true, cx);
-        self.shell.page.category = Category::Plugins;
-        self.shell.page.query = id;
-    }
     fn plugin_settings_header(&self, id: &str, cx: &mut ViewContext<'_, Self>) -> Element {
         let state = self.plugins.as_ref().expect("settings plugin state");
         let info = &state.known[id];
@@ -556,7 +549,7 @@ impl Document {
                     .flex_grow(1.),
             )
             .children(pending.then(|| {
-                button("Restart to apply")
+                button("Apply changes")
                     .key(format!("settings-restart-{id}"))
                     .height(28.)
                     .padding_y(0.)
@@ -570,11 +563,11 @@ impl Document {
                     }))
             }));
         let status = if loaded.is_none() {
-            "Enable this plugin to apply its settings."
+            "Feature service is unavailable."
         } else if pending {
-            "Changes take effect after restart. Restarting ends this plugin’s active sessions."
+            "Apply changes to restart this feature’s active sessions."
         } else {
-            "Settings apply when this plugin starts. Restarting ends its active sessions."
+            "Built-in feature settings. Applying changes restarts its active sessions."
         };
         let mut header = column()
             .gap(6.)
@@ -582,9 +575,9 @@ impl Document {
             .child(heading)
             .child(label(status).font_size(12.).color(ThemeColor::TextMuted));
         if let Err(error) = resolved {
-            header = header.child(error_box("Invalid plugin settings", error));
+            header = header.child(error_box("Invalid feature settings", error));
         } else if let Some(error) = loaded.and_then(|p| p.settings_error.as_ref()) {
-            header = header.child(error_box("Plugin is using defaults", error.clone()));
+            header = header.child(error_box("Feature is using defaults", error.clone()));
         }
         header.into_element()
     }
@@ -680,15 +673,14 @@ mod tests {
                 Ok([r.text.len() as f32 * 7., 18.])
             }
         }
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: this test-owned directory contains no native libraries.
-        let plugins = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+
+        let plugins = velk_plugin_host::Runtime::start().unwrap();
         let info = PluginInfo {
             dependencies: Vec::new(),
             id: "test.files".into(),
             version: "1".into(),
             generation: 1,
-            loaded_path: directory.path().into(),
+
             description: String::new(),
             metadata: PluginMetadata {
                 name: "Workspace Browser".into(),
@@ -703,7 +695,7 @@ mod tests {
             },
             settings_values: Values::from([("show_hidden".into(), true.into())]),
             settings_error: None,
-            resident_code: false,
+
             hooks: vec![],
         };
         let mut runtime = rxui::Runtime::new();
@@ -717,7 +709,8 @@ mod tests {
                 state.loaded.push(info.clone());
                 state.known.insert(info.id.clone(), info);
                 this.plugins = Some(state);
-                this.open_plugin_settings("test.files".into(), cx);
+                this.set_settings(true, cx);
+                this.shell.page.category = Category::Plugins;
                 this.shell.page.query = "Workspace Browser".into();
             })
         });

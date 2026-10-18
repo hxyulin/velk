@@ -7,7 +7,6 @@ pub(super) enum Icon {
     Files,
     Search,
     Terminal,
-    Plugins,
     Settings,
     Close,
 }
@@ -77,24 +76,7 @@ impl CustomElement for Icon {
                 lines(paint, &[(5., 7.), (10., 12.), (5., 17.)])?;
                 lines(paint, &[(12., 17.), (19., 17.)])?;
             }
-            Self::Plugins => {
-                lines(paint, &[(9., 3.), (9., 8.)])?;
-                lines(paint, &[(15., 3.), (15., 8.)])?;
-                lines(
-                    paint,
-                    &[
-                        (6., 8.),
-                        (18., 8.),
-                        (18., 11.),
-                        (16.2, 15.2),
-                        (12., 17.),
-                        (7.8, 15.2),
-                        (6., 11.),
-                        (6., 8.),
-                    ],
-                )?;
-                lines(paint, &[(12., 17.), (12., 21.)])?;
-            }
+
             Self::Settings => {
                 for i in 0..8 {
                     let (sin, cos) = (i as f32 * std::f32::consts::FRAC_PI_4).sin_cos();

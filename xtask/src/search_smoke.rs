@@ -1,21 +1,10 @@
 //! Exercise the real search DLL, including upload boundaries and worker unload.
-use super::*;
 use velk_search::{self as model, Query, Reply, Request};
 #[allow(unsafe_code)]
-pub(super) fn run(output: &Path) -> Result<(), String> {
-    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let spec = stage_plugin(
-        output,
-        temp.path(),
-        model::DEFAULT_BACKEND,
-        "velk_plugin_search",
-    )?;
-    publish(temp.path(), vec![spec])?;
-    let mut manager = velk_plugin_host::Manager::new(temp.path().into());
+pub(super) fn run() -> Result<(), String> {
+    let mut manager = velk_plugin_host::Manager::new();
     // SAFETY: only the bundled locally compiled SDK provider is in the manifest.
-    unsafe {
-        manager.load()?;
-    }
+    manager.load()?;
     let handle = manager.bind_hook(model::DEFAULT_BACKEND, model::HOOK)?;
     let call =
         |manager: &mut velk_plugin_host::Manager, request: Request| -> Result<Reply, String> {
@@ -83,20 +72,13 @@ pub(super) fn run(output: &Path) -> Result<(), String> {
         )?;
     }
     call(&mut manager, Request::Start { id: 2 })?;
-    let copy = manager.plugins().next().unwrap().loaded_path.clone();
-    assert!(matches!(
-        manager.unload_all().as_slice(),
-        [velk_plugin_host::Event::Removed(_)]
-    ));
-    assert!(!copy.exists());
+    assert!(!manager.unload_all().is_empty());
     assert_eq!(
         result.matches.len(),
         2,
         "results own their storage after unload"
     );
-    unsafe {
-        manager.load()?;
-    }
+    manager.load()?;
     assert!(
         manager
             .call_hook(&handle, &model::encode(&Request::Poll { id: 2 })?)

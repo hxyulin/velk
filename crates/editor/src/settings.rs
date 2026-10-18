@@ -18,7 +18,6 @@ pub struct Preferences {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_bar: Option<bool>,
     pub file_associations: BTreeMap<String, String>,
-    pub interface_bindings: velk_plugin_contracts::interfaces::Bindings,
     pub search_backend: String,
     pub markdown_provider: String,
     pub syntax_provider: String,
@@ -29,8 +28,6 @@ pub struct Preferences {
     pub indentation_provider: String,
     pub pairing_provider: String,
     pub keymap_provider: String,
-    /// Plugin IDs the user turned off; every other manifest plugin loads.
-    pub disabled_plugins: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: velk_plugin_host::settings::PluginValues,
     // Preserve settings written by newer versions when changing the shell.
@@ -45,7 +42,6 @@ impl Default for Preferences {
             status_bar: None,
             activity_bar: None,
             file_associations: Default::default(),
-            interface_bindings: Default::default(),
             search_backend: velk_search::DEFAULT_BACKEND.into(),
             markdown_provider: velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER.into(),
             syntax_provider: velk_syntax::DEFAULT_PROVIDER.into(),
@@ -55,8 +51,7 @@ impl Default for Preferences {
             undo_provider: velk_core::history::DEFAULT_PROVIDER.into(),
             indentation_provider: "velk.indentation".into(),
             pairing_provider: "velk.autopairs".into(),
-            keymap_provider: String::new(),
-            disabled_plugins: Vec::new(),
+            keymap_provider: "velk.vim".into(),
             plugins: Default::default(),
             extra: Default::default(),
         }
@@ -331,7 +326,7 @@ impl Category {
             Self::Keymap => "Keymap",
             Self::Files => "Files",
             Self::Search => "Search",
-            Self::Plugins => "Plugins",
+            Self::Plugins => "Features",
         }
     }
 }
@@ -538,7 +533,7 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         default: Value::Null,
         key: "rail".into(),
         title: "Icon rail".into(),
-        description: "Sidebar panels, plugins and settings on the left edge. Applies to the current layout.".into(),
+        description: "Sidebar panels and settings on the left edge. Applies to the current layout.".into(),
         category: Category::Layout,
         control: Control::Toggle,
     },
@@ -548,7 +543,7 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         default: Value::Null,
         key: "search_backend".into(),
         title: "Search backend".into(),
-        description: "Plugin that finds matches in the current buffer.".into(),
+        description: "Search implementation for the current buffer.".into(),
         category: Category::Search,
         control: Control::Choice(search_backends),
     },
@@ -567,7 +562,7 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
     Setting {
         plugin: None, keywords: "completion popup menu presentation compact".into(), default: Value::Null,
         key: "completion_frontend".into(), title: "Completion frontend".into(),
-        description: "Plugin that presents ranked suggestions. Applies to the next completion session. A minimal menu is used when unavailable.".into(),
+        description: "Presentation of ranked suggestions. Applies to the next completion session. A minimal menu is used when unavailable.".into(),
         category: Category::Plugins, control: Control::Choice(completion_frontends),
     },
     Setting {
@@ -592,7 +587,7 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
         default: Value::Null,
         key: "markdown_provider".into(),
         title: "Markdown provider".into(),
-        description: "Plugin for README and hover documentation. Reload Window to apply. If unavailable, show source text.".into(),
+        description: "Rendering of hover documentation. Reload Window to apply. If unavailable, show source text.".into(),
         category: Category::Plugins,
         control: Control::Choice(markdown_providers),
     },
@@ -605,13 +600,13 @@ pub static REGISTRY: std::sync::LazyLock<Vec<Setting>> = std::sync::LazyLock::ne
     Setting {
         plugin: None, keywords: "tab shift-tab newline indent".into(), default: Value::Null,
         key: "indentation_provider".into(), title: "Indentation provider".into(),
-        description: "Plugin for Tab, Shift+Tab, and newline indentation.".into(), category: Category::Plugins,
+        description: "Tab, Shift+Tab, and newline indentation.".into(), category: Category::Plugins,
         control: Control::Choice(indentation_providers),
     },
     Setting {
         plugin: None, keywords: "brackets parentheses pairing".into(), default: Value::Null,
         key: "pairing_provider".into(), title: "Pairing provider".into(),
-        description: "Plugin for typed pairs and paired deletion.".into(), category: Category::Plugins,
+        description: "Typed pairs and paired deletion.".into(), category: Category::Plugins,
         control: Control::Choice(pairing_providers),
     },
 ]
@@ -718,6 +713,15 @@ pub fn plugin_rows(plugins: &BTreeMap<String, velk_plugin_host::PluginInfo>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fresh_preferences_use_vim_and_builtin_features() {
+        let preferences = Preferences::default();
+        assert_eq!(preferences.keymap_provider, "velk.vim");
+        assert_eq!(Category::Plugins.title(), "Features");
+        let stored = serde_json::to_value(preferences).unwrap();
+        assert!(stored.get("disabled_plugins").is_none());
+        assert!(stored.get("interface_bindings").is_none());
+    }
     #[test]
     fn syntax_provider_validates_roundtrips_and_resets() {
         let mut preferences = Preferences::default();
@@ -852,9 +856,9 @@ mod tests {
         assert_eq!(preferences.resolve_layout().0, Layout::QUIET);
     }
     #[test]
-    fn keymap_selection_is_opt_in_and_can_return_to_standard_editing() {
+    fn keymap_defaults_to_vim_and_can_select_standard_editing() {
         let mut preferences = Preferences::default();
-        assert_eq!(preferences.keymap_provider, "");
+        assert_eq!(preferences.keymap_provider, "velk.vim");
         preferences
             .set("keymap_provider", Some("velk.vim".into()))
             .unwrap();
@@ -894,19 +898,6 @@ mod tests {
             preferences.markdown_provider,
             velk_plugin_host::DEFAULT_MARKDOWN_PROVIDER
         );
-    }
-    #[test]
-    fn disabled_plugins_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        let preferences = Preferences {
-            disabled_plugins: vec!["velk.terminal".into()],
-            ..Preferences::default()
-        };
-        save(&path, &preferences).unwrap();
-        assert_eq!(Store::read(path).preferences, preferences);
-        let legacy: Preferences = serde_json::from_str(r#"{"status_bar":false}"#).unwrap();
-        assert!(legacy.disabled_plugins.is_empty());
     }
 }
 

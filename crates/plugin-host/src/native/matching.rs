@@ -53,9 +53,6 @@ impl Policy for Lease {
 }
 impl Manager {
     pub fn matching_provider(&self, id: &str) -> Result<Arc<dyn Policy>, String> {
-        if let Some(plugin) = self.wasm_plugins.get(id) {
-            return Ok(plugin.matching.clone());
-        }
         let generation = self
             .plugins
             .get(id)

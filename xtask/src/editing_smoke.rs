@@ -1,45 +1,8 @@
-use super::*;
 use velk_editing::{Intent, Role};
 #[allow(unsafe_code)]
-pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
-    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let specs = if pack {
-        stage_builtins(output, temp.path())?
-            .into_iter()
-            .filter(|s| {
-                matches!(
-                    s.id.as_str(),
-                    "velk.indentation" | "velk.autopairs" | "velk.vim"
-                )
-            })
-            .collect()
-    } else {
-        vec![
-            stage_plugin(
-                &output.join("examples"),
-                temp.path(),
-                "velk.vim",
-                "velk_plugin_vim",
-            )?,
-            stage_plugin(
-                &output.join("examples"),
-                temp.path(),
-                "velk.indentation",
-                "velk_plugin_indentation",
-            )?,
-            stage_plugin(
-                &output.join("examples"),
-                temp.path(),
-                "velk.autopairs",
-                "velk_plugin_autopairs",
-            )?,
-        ]
-    };
-    publish(temp.path(), specs)?;
-    let mut manager = velk_plugin_host::Manager::new(temp.path().into());
-    unsafe {
-        manager.load()?;
-    }
+pub(super) fn run() -> Result<(), String> {
+    let mut manager = velk_plugin_host::Manager::new();
+    manager.load()?;
     let provider = manager.editing_provider("velk.indentation", Role::Indentation)?;
     let mut session = velk_editor_model::editing::Session::default();
     session.set_providers(std::collections::BTreeMap::from([(
@@ -65,9 +28,7 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
         "velk.indentation".into(),
         std::collections::BTreeMap::from([("tab_width".into(), 2.into())]),
     )]));
-    unsafe {
-        manager.load()?;
-    }
+    manager.load()?;
     let provider = manager.editing_provider("velk.indentation", Role::Indentation)?;
     session.set_providers(std::collections::BTreeMap::from([(
         Role::Indentation,
@@ -174,7 +135,7 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     assert!(modal.input_state().label.is_empty());
     manager.unload_all();
     println!(
-        "Editing provider smoke passed: pack={pack}, native Vim modes/block selections/multiple carets/motions/state retirement, indentation/newlines/autopairs, undo, settings and stale lease fallback"
+        "Editing provider smoke passed: native Vim modes/block selections/multiple carets/motions/state retirement, indentation/newlines/autopairs, undo, settings and stale lease fallback"
     );
     Ok(())
 }

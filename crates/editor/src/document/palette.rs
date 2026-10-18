@@ -146,7 +146,6 @@ impl Document {
             self.palette.query.clear();
             self.palette.selected = 0;
             self.shell.open = false;
-            self.plugin_menu_open = false;
         } else {
             let _ = self.editor_focus.focus(cx);
         }

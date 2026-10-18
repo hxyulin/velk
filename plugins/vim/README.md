@@ -1,6 +1,7 @@
 # Vim
 
-Select **Vim** in Settings > Keymap provider to enable this opt-in keymap.
+Vim is enabled by default. Select Standard editing in Settings > Features >
+Keymap provider to disable modal input.
 Each editor view starts in Normal mode and keeps its own mode and pending command.
 The status bar shows `NORMAL`, `INSERT`, `VISUAL`, `V-LINE`, `V-BLOCK`, and pending counts or prefixes.
 

@@ -14,7 +14,7 @@ normal undoable document transactions.
 
 Providers use the constants from `velk-completion-contracts` and declare
 `Plugin::contributions()`. The protocol library is a build dependency; it does not
-install or enable the default completion plugin. See `docs/completion.md` for the
+load an independently installed completion plugin. See `docs/completion.md` for the
 boundaries and current limits.
 
 Automatic completion starts after two identifier characters or a supported

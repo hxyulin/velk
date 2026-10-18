@@ -9,7 +9,6 @@ struct Providers {
     client: Option<velk_plugin_host::Client>,
     bootstrap_complete: bool,
     selected: String,
-    disabled: std::collections::BTreeSet<String>,
     factories: std::collections::BTreeMap<String, Provider>,
 }
 fn registry() -> &'static std::sync::RwLock<Providers> {
@@ -28,7 +27,6 @@ pub(crate) fn configure(
 ) {
     let mut registry = registry().write().unwrap();
     registry.selected = preferences.undo_provider.clone();
-    registry.disabled = preferences.disabled_plugins.iter().cloned().collect();
     if let Some(factories) = factories {
         registry.bootstrap_complete = true;
         registry.factories = factories;
@@ -37,13 +35,6 @@ pub(crate) fn configure(
 fn resolve(id: &str) -> Result<Provider, String> {
     {
         let registry = registry().read().unwrap();
-        if registry.disabled.contains(id) {
-            return if id == velk_core::history::DEFAULT_PROVIDER {
-                Ok(std::sync::Arc::new(velk_undo_tree::Tree))
-            } else {
-                Err(format!("undo provider {id} is disabled"))
-            };
-        }
         if let Some(provider) = registry.factories.get(id) {
             return Ok(provider.clone());
         }

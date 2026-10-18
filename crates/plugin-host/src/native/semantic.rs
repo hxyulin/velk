@@ -321,8 +321,7 @@ mod tests {
     }
     #[test]
     fn failed_session_join_preserves_callback_and_never_destroys_the_plugin_instance() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut manager = Manager::new(dir.path().into());
+        let mut manager = Manager::new();
         let endpoint = services::test_endpoint();
         let (_service, session) = velk_semantic::Service::external(|| {});
         let callback = Box::new(Callback {
@@ -354,18 +353,15 @@ mod tests {
                     id: "test.stateful".into(),
                     version: "1".into(),
                     generation: 1,
-                    loaded_path: dir.path().into(),
                     description: String::new(),
                     metadata: Default::default(),
                     settings_values: Default::default(),
                     settings_error: None,
-                    resident_code: false,
                     hooks: vec![],
                 },
                 api: PluginApi {
                     abi_version: ABI_VERSION,
                     struct_size: std::mem::size_of::<PluginApi>() as u32,
-                    flags: 0,
                     id: [0; 64],
                     version: [0; 32],
                     create: None,

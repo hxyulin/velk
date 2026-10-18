@@ -8,10 +8,6 @@ publish.workspace = true
 [lib]
 crate-type = ["rlib"]
 
-[[example]]
-name = "velk_plugin_tree_sitter"
-path = "examples/standalone.rs"
-crate-type = ["cdylib"]
 
 [dependencies]
 velk-syntax.workspace = true

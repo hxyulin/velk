@@ -75,14 +75,10 @@ service clients, and broad editor lifecycle event publication are future work.
 This first pass exposes the generic registry/host dispatch plus the three existing
 typed adapters, rather than introducing a new unbounded executor or event bus.
 
-The test-only `hooks-probe` cdylib example is built by `cargo xtask test-plugins`.
-It is never staged as a bundled plugin. It proves custom names, binary payloads,
-ordered notifications, dropped acknowledgements, reply ownership, contained
-errors/panics, library-copy cleanup, and stale handles after unload/reload. SDK
-unit tests reject duplicate/malformed names and wrong contract/version/layout
-queries. The root native ABI and semantic-session contract remain version 1 during
-internal development. Rebuild the editor and bundled plugins together when
-their contracts change.
+These registration adapters are internal to the editor build. Feature code is
+linked into the executable; no dynamic library is loaded. Unit tests cover request
+validation and session teardown; `cargo xtask test-features` exercises the linked
+feature services.
 
 ## Plugin commands
 
@@ -310,7 +306,7 @@ unchanged.
 cargo test --workspace --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test -p velk-semantic --locked
-cargo xtask test-plugins
+cargo xtask test-features
 ```
 
 The actual native-library smoke additionally verifies unload during a held hover

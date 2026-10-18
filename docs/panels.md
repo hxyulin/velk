@@ -153,7 +153,7 @@ unload/reload/restart to restore expansion without retaining native code.
 
 Validation covers malformed paths/trees, lazy reads, refresh restoration,
 cancellation, unusual filenames, bounds and host buffer queuing. The native
-pack smoke in `cargo xtask test-plugins` expands a real directory, collects an
+pack smoke in `cargo xtask test-features` expands a real directory, collects an
 open-file effect, unloads with outstanding work, verifies stale-handle rejection
 observes a filesystem invalidation, and reads host-owned snapshots after unload.
 

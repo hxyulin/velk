@@ -1,62 +1,28 @@
-<div align="center">
-
 # Velk
 
-**Solving a problem nobody has: their editor is too complete.**
+A native Rust editor for Vim users, built with [RXUI](https://github.com/hxyulin/rxui).
 
-Built with Rust and [RXUI](https://github.com/hxyulin/rxui).
+Velk aims for a useful out-of-box experience: modal editing, fast navigation,
+completion, diagnostics, project search, and a terminal, without assembling a
+plugin collection first. It is early development, with macOS as the currently
+exercised desktop platform. Vim support is a useful subset, not full Vim or
+Neovim compatibility.
 
-[![Status: experimental](https://img.shields.io/badge/status-experimental-orange)](#project-status)
-[![Rust: 1.99.0](https://img.shields.io/badge/Rust-1.99.0-000000?logo=rust)](rust-toolchain.toml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-
-[Previews](#previews) · [Quickstart](#quickstart) · [Plugins](#plugins) · [Documentation](#documentation) · [Contributing](#contributing)
-
-</div>
-
-Your editor opens files, searches text, indents lines, and even closes brackets
-for you. Clearly, things have gone too far.
-
-Velk's response is to make those features plugins. File browsing? Plugin.
-Search? Plugin. Markdown, language services, a terminal, indentation, and the
-other half of your parentheses? Plugins. We bundle defaults so you can actually
-use the editor before deciding how much of it to replace.
-
-Under the joke is a native Rust editor built as a configurable platform. The
-host owns the shared document model, edit transactions, undo history, saving,
-recovery, and application shell. Feature plugins use shared contracts and UI
-conventions, so replacing a behavior does not mean giving it a separate copy of
-your document. The core, editor model, and rendering adapter are separate crates;
-making every layer a loadable plugin is still a direction, not today's feature
-list.
-
-Today, Velk opens UTF-8 files in a GPU-rendered, rope-backed editor with multiple
-buffers, Rust syntax highlighting, and bundled plugins for files, search,
-language services, Markdown, indentation, autopairs, and a terminal.
-
-Optional [Wasm matching](docs/wasm-plugins.md) runs the shared ranking algorithm in
-Wasmtime with fuel and memory limits. Build with `cargo xtask run --release --wasm -- path/to/file.rs`
-and choose `velk.completion.wasm` in Plugins > Interfaces. Staging prepares the
-per-user compilation cache so subsequent launches can reuse compiled code. Migration remains subject
-to the [performance and memory adoption gate](docs/wasm-adoption.md).
+The editor features are built into one executable. Source modules remain separate
+where that makes the code easier to understand and test. Dynamic plugin loading
+and Wasm experiments have been removed from the active development path; their
+checkpoint is tagged [`plugin-architecture-checkpoint`](https://github.com/hxyulin/velk/tree/plugin-architecture-checkpoint).
 
 ## Previews
 
-Same editor, different amounts of furniture. Choose a preset in
-**Settings → Layout**, then adjust the icon rail and status line to taste.
-
 | Quiet | Rail |
 | --- | --- |
-| [![Quiet layout with a Rust source buffer and no sidebar](docs/images/layout-quiet.jpg)](docs/images/layout-quiet.jpg) | [![Rail layout with an icon bar and the Files sidebar](docs/images/layout-rail.jpg)](docs/images/layout-rail.jpg) |
-| The document gets the room. Panels stay hidden until opened. | An icon rail keeps tools close, with panels in a sidebar. |
+| [![Quiet layout](docs/images/layout-quiet.jpg)](docs/images/layout-quiet.jpg) | [![Rail layout](docs/images/layout-rail.jpg)](docs/images/layout-rail.jpg) |
 
-| Tiled | Plugins |
-| --- | --- |
-| [![Tiled layout with the Files panel beside a Rust source buffer](docs/images/layout-tiled.jpg)](docs/images/layout-tiled.jpg) | [![Plugin manager showing bundled plugins and the Autopairs README](docs/images/plugins.jpg)](docs/images/plugins.jpg) |
-| Plugin panels share the workspace as splits. | Inspect plugin READMEs, manage enabled features, open settings, and restart providers. |
+[![Tiled layout](docs/images/layout-tiled.jpg)](docs/images/layout-tiled.jpg)
 
-Click a preview for the full image. These are captures of the running macOS app;
-the terminal plugin is disabled in this example workspace.
+These are earlier captures of the native editor. Layout presets remain available
+in Settings; the former plugin-management screen has been removed.
 
 ## What works today
 
@@ -66,285 +32,103 @@ the terminal plugin is disabled in this example workspace.
   and scrolling over shared text and undo history, with layout recovery. Split
   right with Command+\ / Control+\ or use the command palette.
 - **Configurable shortcuts:** text-file keybindings, chords, Vim mode filters, and
-  direct invocation of host and plugin commands.
-- **Plugin-provided editing:** Tab / Shift+Tab indentation, aligned newlines, matching brackets, and selection wrapping.
+  direct invocation of editor commands.
+- **Editing assistance:** Tab / Shift+Tab indentation, aligned newlines, matching brackets, and selection wrapping.
 - **Documents that survive interruptions:** untitled and file-backed buffers,
   Save As, Save All, atomic file replacement, disk-change conflict protection,
   and separate recovery snapshots with exact undo trees. Typing groups into undo
-  steps through a replaceable undo provider, with an interactive branch browser; [optional disk undo](docs/history.md) retains saved history across sessions.
+  steps with branching history; [optional disk undo](docs/history.md) retains saved history across sessions.
 - **A persistent workspace:** tab order, selections, scroll positions, workspace
   roots, and recovery state. Closing the final tab leaves the window open with
   New and Open actions.
 - **A shared editor shell:** command palette, settings, docked panels, layout
-  presets, and a plugin manager with enable, disable, and restart controls.
-- **Rust support:** highlighting through the Tree-sitter plugin and, with `rust-analyzer` installed,
-  hover documentation and diagnostics through the language-service plugins.
+  presets, and built-in feature settings.
+- **Rust support:** highlighting through Tree-sitter and, with `rust-analyzer` installed,
+  hover documentation and diagnostics through the built-in language services.
 - **Bundled tools:** a watched file tree with create, rename/move, and guarded delete
   commands, literal search in the current buffer,
   CommonMark rendering, and a terminal backed by Ghostty's terminal library.
 
 ## Quickstart
 
-Velk currently runs from source. The `velk` package on crates.io is a
-[name reservation](crates/velk/README.md); it does not install the application.
-
-You will need:
-
-- [Rust via rustup](https://rustup.rs/). The checkout pins Rust **1.99.0**, including
-  its formatting and lint tools, in [rust-toolchain.toml](rust-toolchain.toml).
-- Your platform's native compiler and linker tools; on macOS, install the Xcode
-  Command Line Tools.
-- Python 3 and `curl` for the terminal build setup.
-- A graphical desktop session to launch the editor.
+Install [Rust through rustup](https://rustup.rs/), your platform's native compiler
+and linker tools, Python 3, and `curl`. The checkout pins its Rust toolchain.
 
 ```sh
 git clone https://github.com/hxyulin/velk.git
 cd velk
-
-# Cache the pinned Zig compiler and Ghostty terminal sources.
 cargo xtask setup-terminal
-
-# Build the editor and bundled plugins, then launch.
-cargo xtask run --release
-
-# Or open a file at startup.
 cargo xtask run --release -- path/to/file.rs
 ```
 
-The setup command downloads build inputs into `~/.cache/velk/toolchains` by
-default; `VELK_TOOLCHAIN_DIR` overrides that location. It does not install system
-packages. The first build also fetches Cargo dependencies, including pinned Git
-revisions of RXUI and its rendering dependencies.
+`setup-terminal` caches the pinned Zig and Ghostty inputs under
+`~/.cache/velk/toolchains`; `VELK_TOOLCHAIN_DIR` can override that location.
+For Rust language services, install `rust-analyzer` on `PATH` or set
+`VELK_RUST_ANALYZER` to its executable path. Editing works without a language server.
 
-For Rust language services, install `rust-analyzer` and put it on `PATH`, or set
-`VELK_RUST_ANALYZER` to its executable path. The editor can run without it.
-
-Useful shortcuts:
-
-- **Command/Ctrl+S:** Save.
-- **Command/Ctrl+Shift+S:** Save As.
-- **Command/Ctrl+Alt+S:** Save All.
-- **F4:** Open the plugin manager.
-
-Unsaved documents prompt before closing. Closing the last document keeps the
-application running. See [documents and recovery](docs/document-foundation.md)
-for storage behavior and the limits of external-file conflict detection.
-
-### Build without launching
+To build without launching:
 
 ```sh
 cargo xtask build --release
 ./target/release/velk path/to/file.rs
 ```
 
-The build stages bundled native plugins beside the application in
-`target/release/plugins/`. Direct launches discover that directory;
-`VELK_PLUGIN_DIR` can select another plugin directory. Cargo's target-directory
-overrides are respected, so adjust the executable path if you use one.
+The executable includes the built-in features. There is no separate plugin
+staging step or runtime plugin directory. Cargo target-directory overrides apply.
+A [Nix development shell](flake.nix) supplies Zig and `prek`; Rust uses rustup.
 
-A [Nix development shell](flake.nix) supplies Zig 0.16 and `prek` on Darwin and
-Linux. Rust is still managed by rustup. With Nix installed, enter it with
-`nix develop`; direnv users can instead allow the included `.envrc`.
+## Editing and navigation
 
-## Plugins
+Vim mode is enabled by default. Use `i` to insert, Escape or Ctrl+[ to return to
+Normal mode, `h j k l`, `w b e`, `gg G`, counts, `x`, `dd`, `u`, and Ctrl+r.
+Characterwise, linewise, and block Visual modes use `v`, `V`, and Ctrl+v.
+See [the current Vim keymap](plugins/vim/README.md) for supported behavior and limits.
+Settings > Features > Keymap provider also offers Standard editing.
 
-Velk's direction is to keep the host responsible for the editing foundation and
-let plugins supply features. Common document, semantic, markup, and panel
-contracts let those features share state and presentation instead of building
-separate editor stacks.
+| Shortcut | Action |
+| --- | --- |
+| Command/Ctrl+P | Quick open |
+| Command/Ctrl+Shift+P | Command palette |
+| Command/Ctrl+F | Find in buffer |
+| Command/Ctrl+S | Save |
+| Command/Ctrl+W | Close buffer |
+| Command/Ctrl+, | Settings |
+| F2 | Rename symbol when supported by the language server |
 
-The bundled pack contains:
+Closing the last buffer leaves the window open. Unsaved documents prompt before
+closing, and recovery snapshots preserve unsaved work across application restarts.
 
-- `velk.files`: the default file-tree frontend, using `velk.files.backend` for lazy directory reads and watching.
-- `velk.problems`: a live [Problems panel and diagnostic navigation](plugins/problems/README.md) across workspace files.
-- `velk.search.literal`: Unicode-aware literal search in the active buffer.
-- `velk.terminal`: a terminal session with an owned PTY and Ghostty VT processing.
-- `velk.tree-sitter`: replaceable [Rust syntax-highlighting service](docs/syntax-services.md).
-- `velk.markdown`: bundled, replaceable CommonMark provider for documentation surfaces.
-- `velk.lsp`: generic language-server transport and session management.
-- `velk.language-server.rust-analyzer`: the Rust language-server definition.
-- `velk.indentation`: Tab / Shift+Tab indentation and aligned newlines.
-- `velk.autopairs`: matching brackets, selection wrapping, closer skipping, and paired deletion.
-- `velk.vim`: opt-in Normal, Insert, and Visual modes (including blocks) with [basic Vim motions](plugins/vim/README.md).
-- `velk.completion`: [completion](docs/completion.md) from optional contributors, with automatic triggers and Ctrl+Space.
-- `velk.completion.compact`: an optional compact completion frontend, selected with `completion_frontend`.
-- `velk.snippets`: replaceable snippet expansion, variables, choices, and transforms, selected with `snippet_provider`.
-- `velk.completion.words`: document-word suggestions, including untitled buffers.
-- `velk.autosave`: opt-in saves after an idle delay.
-- `velk.quick-open`: fuzzy project file opening with Cmd/Ctrl+P.
-- `velk.workspace-find`: workspace text search with Cmd/Ctrl+Shift+F.
-- `velk.project.files` and `velk.project.search`: reusable file-index and workspace-search backends.
-
-Plugins declare a display name, a short description, a Markdown README, and
-required or optional capabilities with explanations. The plugin manager exposes
-this metadata alongside plugin state and controls. Plugins can also declare
-[command palette actions](docs/plugin-commands.md); bundled actions include
-definition/type/implementation navigation, references, formatting, rename, code
-actions, a caret completion popup, Rust parent modules, and macro expansion. Plugins
-propose [workspace text edits](docs/workspace-edits.md); the host validates targets
-and applies changes through document transactions. Per-instance
-[host services](docs/host-services.md) expose workspace context, project file
-reads, current buffer text, and normal buffer lifecycle operations.
-
-[Interactive editing providers](docs/interactive-editing.md) supply indentation
-and pairing through a separate synchronous decision interface. Settings select
-one provider per role; the host owns transactions, undo, caret placement, IME,
-and pair tracking. Both bundled providers can be disabled or replaced.
-
-**Native plugins are trusted code running inside the editor process.** Capability
-declarations describe what a plugin needs. Host services check these declarations,
-but native plugins retain ambient OS access and are not sandboxed. A plugin can
-crash or block the process. The
-native ABI and extension contracts are experimental: rebuild the editor and
-plugins together when those contracts change.
-
-File tree, Quick Open, and workspace search have separate default frontend and
-backend plugins, connected through [feature-owned contract libraries](docs/feature-backends.md)
-that the editor host does not depend on.
-Plugin frontends can also reuse the buffer-search engine. The plugin manager
-groups bundled defaults, explicit installs, and dependencies, and offers a
-dependency tree with links to requirements and consumers.
-
-Plugin-declared settings appear in the existing Settings page, with validation,
-defaults, and Reset controls. Changes apply after an explicit plugin restart.
-See [plugin settings](docs/plugin-settings.md) for the bundled options and SDK.
-
-Plugins > Interfaces groups provider choices, including backend bindings for File
-Tree, Quick Open, and workspace search. File identities and associations can also
-be declared by plugins; the bundled Rust language plugin is independent of syntax
-and LSP implementations. See [interfaces and file types](docs/plugin-interfaces.md)
-and [native/Wasm transport direction](docs/plugin-transports.md).
-
-Start with the [plugin API guide](docs/plugin-api.md) and
-[plugin pack guide](docs/plugin-packs.md). The host currently supports shared
-text, tree, and grid panel models. A general interactive widget API is future
-work.
-
-## Project status
-
-Velk is in early development at **0.0.0-dev**. Expect behavior and API changes;
-there are no stable application releases or compatibility guarantees yet.
-We prioritize correcting the design over preserving early decisions. Breaking
-changes to APIs, plugin contracts, configuration, and storage formats are allowed;
-we do not add compatibility shims, deprecated aliases, or migration machinery just
-to preserve experimental behavior. Update the host, SDK, and bundled plugins
-together when their contracts change. Internal contract versions stay at 1 during
-this development phase; API changes do not trigger version bumps.
-
-macOS is the primary development environment. Other platforms are not yet
-release-tested.
-
-Current limitations include:
-
-- Language integration focuses on Rust. Ctrl+Space opens a caret completion popup;
-  typing filters and refreshes suggestions, Up/Down selects, Enter/Tab accepts, and
-  Escape dismisses. Selected suggestions can show formatted documentation. Automatic suggestions start after two identifier characters or
-  supported provider trigger characters, and can be disabled in plugin settings.
-  Snippet placeholders support Tab/Shift+Tab navigation and mirrored editing.
-  The replaceable Snippets plugin supports document variables, interactive choices,
-  and bounded Rust-regex transforms; select it with `snippet_provider`.
-  Server command execution remains deferred.
-  The completion frontend and local matcher are independently replaceable plugin services.
-  Ctrl+Shift+Space displays LSP signature help, and ready suggestions support provider-declared punctuation commit characters.
-- Language-server clients and diagnostic publications are shared by workspace.
-  Problems includes unopened files when the server publishes them; Velk does not
-  independently scan every file. Pull diagnostics are supported for open buffers
-  when the server advertises them; workspace pull remains future work.
-- External changes automatically reload clean files up to 1 MiB. Dirty, unavailable,
-  or larger files keep their contents and expose reload/compare/overwrite actions.
-  Streaming reconciliation for large files and interactive merging remain future work.
-- Accessibility exposes the editor role and label, but does not yet publish
-  document text and selection to assistive technology.
-- Plugin capabilities, ABI compatibility, and richer widget contracts need more
-  work before supporting a broad third-party plugin ecosystem.
-
-## Documentation
-
-- [Documents, saving, and recovery](docs/document-foundation.md)
-- [Headless tests and plugin host mocks](docs/testing.md)
-- [Buffers](docs/buffers.md) and [edit transactions](docs/edit-transactions.md)
-- [Editor shell](docs/editor-shell.md), [panels](docs/panels.md), and
-  [window reloading](docs/reloading.md)
-- [Feature backends and dependency graphs](docs/feature-backends.md)
-- [Plugin API and shared contracts](docs/plugin-api.md), [plugin packs](docs/plugin-packs.md), and
-  [plugin settings](docs/plugin-settings.md)
-- [Keybindings and command configuration](docs/keybindings.md)
-- [Interactive editing, indentation, and autopairs](docs/interactive-editing.md)
-- [Workspace and buffer host services](docs/host-services.md)
-- [Buffer events and autosave](docs/buffer-events.md), [Quick Open and workspace search](docs/project-tools.md)
-- [Plugin commands](docs/plugin-commands.md), [workspace edits](docs/workspace-edits.md),
-  and [semantic services and Rust LSP](docs/semantic-services.md)
-- [Syntax services](docs/syntax-services.md)
-- [Core and component boundaries](docs/core.md)
-- [Files](docs/files.md), [search](docs/search.md), and [terminal](docs/terminal.md)
-- [Profiling and performance tooling](docs/profiling.md)
-
-## Contributing
-
-Build and try the editor before making a change. The workspace separates the
-application shell (`crates/editor`), UI-independent document state (`crates/core`),
-editor commands and presentation data (`crates/editor-model`), RXUI editor widget
-(`crates/editor-widget`), shared command data (`crates/commands`), syntax and
-semantic services, markup contracts, and the native plugin API, SDK, and host. Bundled feature implementations live under
-`plugins/`; development commands live in `xtask/`.
-
-Install [prek](https://prek.j178.dev/) and enable the repository hooks:
+## Development
 
 ```sh
 prek install
 prek run --all-files
-```
-
-`prek install` installs both the pre-commit and commit-message hooks. File checks
-normalize text and format Rust and TOML; the commit-message hook checks
-Conventional Commits. Review and stage any formatting fixes before committing
-again. See [AGENTS.md](AGENTS.md) for coding conventions and project boundaries.
-
-After setting up the terminal build inputs, run the workspace checks:
-
-```sh
-cargo fmt --all -- --check
+cargo xtask test-headless
+cargo xtask test-features
 cargo xtask test
 ```
 
-For the full check and lint commands, ensure Zig 0.16 is available on `PATH`
-(or enter `nix develop`):
+Use Conventional Commits. Read [AGENTS.md](AGENTS.md) for repository conventions
+and [testing](docs/testing.md) for headless workflows. Generated captures, traces,
+logs, and build output belong under `target/` or a temporary directory.
 
-```sh
-cargo check --workspace --all-targets --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-```
+The internal feature runtime is documented in [built-in feature services](docs/plugin-api.md).
+Document and rendering code remain in separate crates; their interfaces are
+internal and may change during early development. We do not promise compatibility
+with earlier configuration, archives, or internal APIs, and prefer correcting
+incorrect designs over carrying compatibility shims.
 
-Development and test builds use line-table debug information and disable
-incremental compilation to limit local build output. This retains file/line
-backtraces, but local-variable debugging requires a rebuild with
-`CARGO_PROFILE_DEV_DEBUG=2` (or `CARGO_PROFILE_TEST_DEBUG=2` for tests). Set
-`CARGO_INCREMENTAL=1` temporarily when faster repeated builds matter more than
-disk space. The profiling profile retains full debug information.
+Useful references: [documents](docs/document-foundation.md),
+[history](docs/history.md), [keybindings](docs/keybindings.md),
+[completion](docs/completion.md), and [diagnostics and language services](docs/semantic-services.md).
 
-Cargo retains artifacts from previous dependency versions, compiler flags, and
-feature combinations. Run `cargo clean` periodically when `target/` grows too
-large; it removes staged plugins and cached builds, so the next build is cold.
-Keep these cleanup runs between builds. Terminal toolchain inputs cached outside
-`target/` remain available. The intentionally broken
-[diagnostics demo](examples/diagnostics/README.md) is a separate workspace for
-trying Problems and diagnostic navigation.
+## Limitations
 
-`cargo xtask test-plugins` exercises the native plugin loading path. The separate
-widget showcase is available with:
-
-```sh
-cargo run --locked -p velk-editor --example widget-preview --features performance -- --showcase
-```
-
-Keep `Cargo.lock` committed. Use
-[Conventional Commits](https://www.conventionalcommits.org/), such as
-`feat(editor): add a document command` or `fix(plugins): handle a failed load`.
-For changes to shared contracts, update their documentation and consider the
-host and bundled plugins together.
+Velk is experimental. Rust is the primary exercised language integration; broader
+language coverage, fuller Vim behavior, and large-file handling need more work.
+There is no external plugin API, scripting environment, or browser build.
 
 ## License
 
-Velk is licensed under either [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE), at your option. Dependencies retain their own
-licenses and notices.
+Licensed under either [Apache License 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option.

@@ -673,10 +673,7 @@ mod snippet_tests {
     #[test]
     #[allow(unsafe_code)]
     fn templates_use_selected_provider_and_missing_provider_never_applies_imports() {
-        let plugins_directory = tempfile::tempdir().unwrap();
-        // SAFETY: this temporary directory contains no native images.
-        let host =
-            unsafe { velk_plugin_host::Runtime::start(plugins_directory.path().into()) }.unwrap();
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("main.rs");
         std::fs::write(&path, " ca").unwrap();

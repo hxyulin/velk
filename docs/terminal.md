@@ -87,7 +87,7 @@ cargo xtask setup-terminal
 cargo xtask build --release
 cargo xtask run --release -- path/to/file
 cargo xtask test
-VELK_TERMINAL_SHELL=/bin/sh cargo xtask test-plugins --release
+VELK_TERMINAL_SHELL=/bin/sh cargo xtask test-features --release
 ```
 
 The setup helper uses Python 3 and curl, caches the pinned Zig wheel from PyPI

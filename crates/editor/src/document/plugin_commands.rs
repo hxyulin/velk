@@ -387,6 +387,7 @@ impl Document {
             return;
         }
         match outcome {
+            Outcome::Accepted => {}
             Outcome::SignatureHelp { help } => {
                 if let Some(buffer) = self.buffer.as_ref() {
                     buffer
@@ -649,6 +650,28 @@ fn choice_indices(items: &[velk_commands::Choice], query: &str) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accepted_file_work_does_not_overwrite_an_earlier_failure_notice() {
+        let mut harness = super::super::tests::Harness::new();
+        harness
+            .request(velk_plugin_contracts::host::Request::NewBuffer {
+                text: String::new(),
+            })
+            .unwrap();
+        harness.runtime.update(|cx| {
+            harness.document.update(cx, |document, cx| {
+                document.notice(Some(
+                    "close the affected documents before deleting this path".into(),
+                ));
+                document.apply_command_outcome(velk_commands::Outcome::Accepted, cx);
+                assert_eq!(
+                    document.buffer.status.as_deref(),
+                    Some("close the affected documents before deleting this path")
+                );
+            })
+        });
+    }
+
     use super::*;
     use rxui::Runtime;
     use velk_commands::{Encoding, Position};
@@ -694,8 +717,8 @@ mod tests {
         let target = dir.path().join("target.rs");
         std::fs::write(&source, "source").unwrap();
         std::fs::write(&target, "a𐐀界 target").unwrap();
-        // SAFETY: this test directory contains no plugin images.
-        let host = unsafe { velk_plugin_host::Runtime::start(dir.path().join("plugins")) }.unwrap();
+
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let (service, session) = Service::external(|| {});
         let release = |request| {
             session.events().publish(Event::Command {
@@ -723,7 +746,7 @@ mod tests {
                     id: "test.commands".into(),
                     version: "1".into(),
                     generation: 1,
-                    loaded_path: dir.path().into(),
+
                     description: String::new(),
                     metadata: velk_plugin_host::PluginMetadata {
                         file_types: vec![velk_plugin_contracts::file_types::FileType {
@@ -738,7 +761,7 @@ mod tests {
                     },
                     settings_values: Default::default(),
                     settings_error: None,
-                    resident_code: false,
+
                     hooks: vec![],
                 });
                 document.plugins = Some(plugins);
@@ -957,10 +980,8 @@ mod tests {
             .request(velk_plugin_contracts::host::Request::OpenBuffer { path: path.clone() })
             .unwrap();
         harness.drain();
-        // SAFETY: this directory contains no plugin images.
-        let directory = tempfile::tempdir().unwrap();
-        let host =
-            unsafe { velk_plugin_host::Runtime::start(directory.path().to_path_buf()) }.unwrap();
+
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let (service, session) = Service::external(|| {});
         harness.runtime.update(|cx| {
             harness.document.update(cx, |document, cx| {
@@ -972,7 +993,7 @@ mod tests {
                     id: "test.commands".into(),
                     version: "1".into(),
                     generation: 1,
-                    loaded_path: directory.path().into(),
+
                     description: String::new(),
                     dependencies: Vec::new(),
                     metadata: velk_plugin_host::PluginMetadata {
@@ -986,7 +1007,7 @@ mod tests {
                     },
                     settings_values: Default::default(),
                     settings_error: None,
-                    resident_code: false,
+
                     hooks: vec![],
                 });
                 document.plugins = Some(plugins);
@@ -1281,8 +1302,8 @@ mod edit_interaction_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("source.rs");
         std::fs::write(&path, "fn old() {}").unwrap();
-        // SAFETY: this directory contains no plugin images.
-        let host = unsafe { velk_plugin_host::Runtime::start(dir.path().join("plugins")) }.unwrap();
+
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let (service, session) = velk_semantic::Service::external(|| {});
         let mut runtime = Runtime::new();
         let document = runtime.update(|cx| {
@@ -1312,7 +1333,7 @@ mod edit_interaction_tests {
                     id: "test.commands".into(),
                     version: "1".into(),
                     generation: 1,
-                    loaded_path: dir.path().into(),
+
                     description: String::new(),
                     metadata: velk_plugin_host::PluginMetadata {
                         file_types: vec![velk_plugin_contracts::file_types::FileType {
@@ -1343,7 +1364,7 @@ mod edit_interaction_tests {
                     },
                     settings_values: Default::default(),
                     settings_error: None,
-                    resident_code: false,
+
                     hooks: vec![],
                 });
                 d.plugins = Some(plugins);

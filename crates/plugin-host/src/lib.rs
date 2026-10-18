@@ -1,23 +1,13 @@
-//! Native plugins with host-scheduled async requests and scoped semantic sessions.
-//! No Rust future crosses the ABI. Language definitions resolve exact transport
-//! dependencies; manifests declare a validated dependency graph.
+//! Built-in feature services scheduled on an editor-owned worker.
 use serde::{Deserialize, Serialize};
-use std::{
-    path::{Component, Path, PathBuf},
-    sync::mpsc,
-    thread,
-};
+use std::{sync::mpsc, thread};
+mod builtins;
 mod disk_diagnostics;
 mod graph;
 mod native;
 mod services;
-mod wasm;
-pub use graph::{DependencyRow, InstallReason};
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
 pub use services::HostRequest;
-pub use wasm::{
-    CacheStats as WasmCacheStats, default_cache_directory as default_wasm_cache_directory,
-};
 
 /// The bundled default; callers may select any compatible loaded provider.
 pub const DEFAULT_MARKDOWN_PROVIDER: &str = "velk.markdown";
@@ -34,95 +24,23 @@ pub mod hook_name {
     };
 }
 pub type PluginStates = Vec<(String, Vec<u8>)>;
-pub const MANIFEST: &str = "plugins.json";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub plugins: Vec<PluginSpec>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PluginSpec {
-    #[serde(default)]
-    pub runtime: PluginRuntime,
-    #[serde(default)]
-    pub interfaces: velk_plugin_contracts::interfaces::Interfaces,
     pub id: String,
-    /// Relative path inside the plugin directory, normally content-addressed.
-    pub library: PathBuf,
-    pub digest: String,
-    /// Select this ID from a multi-plugin image. Absent/false means standalone.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub pack: bool,
-    /// Exact required plugin IDs. Distribution metadata, independent of packaging.
-    #[serde(default)]
+    pub interfaces: velk_plugin_contracts::interfaces::Interfaces,
     pub dependencies: Vec<String>,
-    #[serde(default)]
-    pub install_reason: InstallReason,
-}
-/// Artifact transport; Wasm currently supports only the pure matching service.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum PluginRuntime {
-    #[default]
-    Native,
-    WasmMatching {
-        metadata: PluginMetadata,
-        version: String,
-    },
 }
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
-        if self.plugins.len() > 256 {
-            return Err("plugin manifest exceeds 256 entries".into());
-        }
-        let mut ids = std::collections::HashSet::new();
-        let mut libraries = std::collections::HashMap::new();
-        for p in &self.plugins {
-            p.interfaces.validate()?;
-            if let PluginRuntime::WasmMatching { metadata, version } = &p.runtime {
-                metadata.validate()?;
-                if p.pack
-                    || version.is_empty()
-                    || version.len() > 32
-                    || version.chars().any(char::is_control)
-                    || !metadata.commands.is_empty()
-                    || !metadata.contributions.is_empty()
-                    || !metadata.file_types.is_empty()
-                    || !metadata.capabilities.is_empty()
-                    || !metadata.settings.is_empty()
-                    || !p.interfaces.implements.is_empty()
-                    || !p.interfaces.requires.is_empty()
-                {
-                    return Err(
-                        "Wasm matching supports only metadata and its typed matching service"
-                            .into(),
-                    );
-                }
-            }
-            if let Some(previous) = libraries.insert(&p.library, (&p.digest, p.pack, &p.runtime))
-                && previous != (&p.digest, p.pack, &p.runtime)
-            {
-                return Err("one library path has conflicting digests or formats".into());
-            }
-            if velk_plugin_api::parse_plugin_id(&p.id).is_none() {
-                return Err(format!(
-                    "invalid plugin ID: {} (expected author.[namespace.]name)",
-                    p.id
-                ));
-            }
-            if !ids.insert(&p.id) {
-                return Err(format!("duplicate plugin ID: {}", p.id));
-            }
-            if p.library.as_os_str().is_empty()
-                || p.library
-                    .components()
-                    .any(|c| !matches!(c, Component::Normal(_)))
-            {
-                return Err(format!("plugin {} needs a relative library path", p.id));
-            }
-            if p.digest.len() != 64 || !p.digest.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(format!("invalid digest for {}", p.id));
+        let mut ids = std::collections::BTreeSet::new();
+        for feature in &self.plugins {
+            feature.interfaces.validate()?;
+            if !ids.insert(&feature.id) {
+                return Err("duplicate built-in feature".into());
             }
         }
         self.dependency_order()?;
@@ -150,9 +68,6 @@ pub struct Report {
     /// Owned snapshot after this operation, including unchanged active plugins.
     pub plugins: Vec<PluginInfo>,
     pub events: Vec<Event>,
-    /// Manifest IDs, including plugins that are not loaded.
-    pub available: Vec<String>,
-    pub inventory: Vec<PluginSpec>,
 }
 enum Operation {
     Load(Vec<String>),
@@ -196,7 +111,6 @@ enum Request {
         reply: async_channel::Sender<Result<PluginStates, String>>,
     },
     Settings(settings::PluginValues),
-    Interfaces(velk_plugin_contracts::interfaces::Bindings),
     DependencyCall {
         caller: String,
         generation: u64,
@@ -233,7 +147,6 @@ impl Sender {
             Request::Emit { .. } => "hook.emit",
             Request::Snapshot { .. } => "snapshot",
             Request::Settings(_) => "settings",
-            Request::Interfaces(_) => "interfaces",
             Request::DependencyCall { .. } => "dependency_call",
             Request::Stop => "stop",
         };
@@ -299,21 +212,6 @@ impl Client {
         })?;
         receive.recv_blocking().map_err(|e| e.to_string())??;
         Ok(())
-    }
-    /// Interface changes take effect at the next coordinated load/restart.
-    pub fn set_interface_bindings(
-        &self,
-        bindings: velk_plugin_contracts::interfaces::Bindings,
-    ) -> Result<(), String> {
-        if bindings.len() > 128
-            || bindings.iter().any(|(i, p)| {
-                velk_plugin_api::parse_plugin_id(i).is_none()
-                    || velk_plugin_api::parse_plugin_id(p).is_none()
-            })
-        {
-            return Err("invalid interface bindings".into());
-        }
-        self.sender.try_send(Request::Interfaces(bindings))
     }
     /// Store overrides for the next load/restart; running instances are unchanged.
     pub fn set_settings(&self, settings: settings::PluginValues) -> Result<(), String> {
@@ -410,7 +308,7 @@ impl Client {
     ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
         self.request(Operation::Unload(id))
     }
-    /// Load only the requested manifest IDs, preserving a restored enabled set.
+    /// Initialize selected built-in services for bootstrap and isolated tests.
     pub fn load_selected(
         &self,
         ids: Vec<String>,
@@ -422,10 +320,9 @@ impl Client {
         ids: Vec<String>,
         states: PluginStates,
     ) -> Result<async_channel::Receiver<Result<Report, String>>, String> {
-        if states
-            .iter()
-            .any(|(id, bytes)| !ids.contains(id) || bytes.len() > velk_plugin_api::MAX_INPUT_BYTES)
-        {
+        if states.iter().any(|(id, bytes)| {
+            (!ids.is_empty() && !ids.contains(id)) || bytes.len() > velk_plugin_api::MAX_INPUT_BYTES
+        }) {
             return Err("invalid plugin session state".into());
         }
         self.request(Operation::LoadSelected(ids, states))
@@ -503,16 +400,9 @@ pub struct Runtime {
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Runtime {
-    /// # Safety
-    /// The directory must contain only trusted native libraries implementing the
-    /// v1 ABI and its unload contract. Native code is not sandboxed.
-    #[allow(unsafe_code)]
-    pub unsafe fn start(directory: PathBuf) -> Result<Self, String> {
-        Self::spawn(move || Manager::new(directory))
+    pub fn start() -> Result<Self, String> {
+        Self::spawn(Manager::new)
     }
-    // Construction stays private; the public entry point establishes native-code
-    // trust, and tests can supply a controlled in-process provider.
-    #[allow(unsafe_code)]
     fn spawn(make_manager: impl FnOnce() -> Manager + Send + 'static) -> Result<Self, String> {
         let (sender, receive) = mpsc::sync_channel::<Queued>(16);
         let host = services::Bridge::new();
@@ -538,10 +428,6 @@ impl Runtime {
                         Request::DependencyCall { caller, generation, provider, hook, interface, input, reply } => {
                             let result = if interface { manager.call_interface(&caller, generation, &hook, &input) } else { manager.call_dependency(&caller, generation, &provider, &hook, &input) };
                             let _ = reply.try_send(result);
-                            continue;
-                        }
-                        Request::Interfaces(bindings) => {
-                            manager.set_interface_bindings(bindings);
                             continue;
                         }
                         Request::Settings(settings) => {
@@ -597,15 +483,15 @@ impl Runtime {
                         Request::Lifecycle { operation, reply } => (operation, reply),
                     };
                     let events = match operation {
-                        // SAFETY: start's caller guarantees all artifacts obey v1.
-                        Operation::Load(excluded) => unsafe { manager.load_except(&excluded) },
+                        Operation::Load(excluded) => manager.load_except(&excluded),
                         Operation::LoadSelected(ids, states) => {
-                            unsafe { manager.load_selected(&ids) }.map(|mut events| {
+                            let initialized = if ids.is_empty() { manager.load() } else { manager.load_selected(&ids) };
+                            initialized.map(|mut events| {
                                 events.extend(manager.restore_plugins(states));
                                 events
                             })
                         }
-                        Operation::Restart(id) => unsafe { manager.restart(id.as_deref()) },
+                        Operation::Restart(id) => manager.restart(id.as_deref()),
                         Operation::UnloadAll => Ok(manager.unload_all()),
                         Operation::Unload(id) => Ok(manager.unload_with_dependents(&id)),
                     };
@@ -629,8 +515,6 @@ impl Runtime {
                         loaded: manager.plugins().count(),
                         plugins: manager.plugins().cloned().collect(),
                         events,
-                        available: manager.available(),
-                        inventory: manager.inventory(),
                     });
                     let _ = reply.try_send(result);
                 }
@@ -659,27 +543,6 @@ impl Drop for Runtime {
     }
 }
 
-pub fn default_directory() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("VELK_PLUGIN_DIR") {
-        return Ok(path.into());
-    }
-    Ok(std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .parent()
-        .ok_or("executable has no directory")?
-        .join("plugins"))
-}
-pub fn read_manifest(directory: &Path) -> Result<Manifest, String> {
-    let path = directory.join(MANIFEST);
-    if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
-        return Err("manifest exceeds 1 MiB".into());
-    }
-    let manifest: Manifest =
-        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    manifest.validate()?;
-    Ok(manifest)
-}
 /// Host-side documentation renderer bound to one provider ID.
 #[derive(Clone)]
 pub struct MarkdownRenderer {
@@ -708,57 +571,6 @@ impl velk_markup::Renderer for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn legacy_manifest_defaults_to_standalone_and_shared_artifacts_must_agree() {
-        let json = format!(
-            r#"{{"plugins":[{{"id":"test.one","library":"plugin.dylib","digest":"{}"}}]}}"#,
-            "0".repeat(64)
-        );
-        let mut manifest: Manifest = serde_json::from_str(&json).unwrap();
-        assert!(!manifest.plugins[0].pack);
-        manifest.plugins[0].pack = true;
-        let mut second = manifest.plugins[0].clone();
-        second.id = "test.two".into();
-        manifest.plugins.push(second);
-        assert!(manifest.validate().is_ok());
-        manifest.plugins[1].pack = false;
-        assert!(manifest.validate().is_err());
-        manifest.plugins[1].pack = true;
-        manifest.plugins[1].digest = "1".repeat(64);
-        assert!(manifest.validate().is_err());
-    }
-    #[test]
-    fn rejects_duplicate_ids_and_nonlocal_paths_before_loading() {
-        let spec = PluginSpec {
-            runtime: Default::default(),
-            interfaces: Default::default(),
-            id: "velk.test".into(),
-            dependencies: Vec::new(),
-            install_reason: Default::default(),
-            library: "../escape.dylib".into(),
-            digest: "0".repeat(64),
-            pack: false,
-        };
-        assert!(
-            Manifest {
-                plugins: vec![spec.clone()]
-            }
-            .validate()
-            .is_err()
-        );
-        let spec = PluginSpec {
-            interfaces: Default::default(),
-            library: "test/library.dylib".into(),
-            ..spec
-        };
-        assert!(
-            Manifest {
-                plugins: vec![spec.clone(), spec]
-            }
-            .validate()
-            .is_err()
-        );
-    }
     #[test]
     fn async_render_cancellation_and_unload_obey_call_lifetimes() {
         use std::{
@@ -844,11 +656,9 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn lifecycle_worker_sleeps_until_command_and_stops_even_with_client_clones() {
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: this test directory is empty and contains no native code.
-        let runtime = unsafe { Runtime::start(directory.path().into()).unwrap() };
+        let runtime = Runtime::start().unwrap();
         let client = runtime.client();
-        for result in [client.load().unwrap(), client.unload_all().unwrap()] {
+        for result in [client.unload_all().unwrap()] {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             loop {
                 if let Ok(report) = result.try_recv() {

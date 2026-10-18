@@ -16,7 +16,6 @@ mod panels;
 mod picker;
 mod plugin_commands;
 mod plugins;
-mod plugins_page;
 pub(crate) mod reload;
 mod saving;
 mod search;
@@ -37,14 +36,6 @@ struct SaveAs;
 impl Command for SaveAs {}
 struct SaveAll;
 impl Command for SaveAll {}
-struct LoadPlugins;
-impl Command for LoadPlugins {}
-struct UnloadPlugins;
-impl Command for UnloadPlugins {}
-struct TogglePlugins;
-impl Command for TogglePlugins {}
-struct ClosePlugins;
-impl Command for ClosePlugins {}
 struct Hover;
 impl Command for Hover {}
 struct ToggleSettings;
@@ -93,8 +84,6 @@ pub struct Document {
     restore_focus_action: std::cell::RefCell<Option<rxui::CommandAction<reload::RestoreFocus>>>,
     dialog: Option<DialogTask>,
     plugins: Option<plugins::State>,
-    plugin_menu_open: bool,
-    plugin_page: plugins_page::Page,
     editor_focus: rxui::FocusHandle,
     shell: shell::State,
     palette: palette::State,
@@ -149,7 +138,6 @@ impl Document {
                             .command::<shell::LayoutTiled>("Tiled"),
                     )
                     .separator()
-                    .command::<TogglePlugins>("Plugins")
                     .command::<ToggleSettings>("Settings"),
             )
     }
@@ -234,8 +222,6 @@ impl Document {
             restore_focus_action: Default::default(),
             dialog: None,
             plugins: None,
-            plugin_menu_open: false,
-            plugin_page: Default::default(),
             editor_focus,
             shell: shell::State::default(),
             palette: palette::State::default(),
@@ -671,32 +657,6 @@ impl View for Document {
                 KeyboardKey::Other("Named(F1)".into()),
                 Default::default(),
             ));
-        let toggle_plugins = cx
-            .command(TogglePlugins, |this, _, cx| {
-                this.set_plugin_menu(!this.plugin_menu_open, cx);
-            })
-            .label("Plugins (F4)")
-            .shortcut(Shortcut::new(
-                KeyboardKey::Other("F4".into()),
-                Default::default(),
-            ))
-            .shortcut(Shortcut::new(
-                KeyboardKey::Other("Named(F4)".into()),
-                Default::default(),
-            ));
-        let close_plugins = cx
-            .command(ClosePlugins, |this, _, cx| this.set_plugin_menu(false, cx))
-            .label("Close plugins")
-            .enabled(self.plugin_menu_open)
-            .shortcut(Shortcut::new(KeyboardKey::Escape, Default::default()));
-        let (load_plugins, unload_plugins) = self.plugin_actions(cx);
-        let plugin_menu = self.plugins_modal(
-            cx,
-            toggle_plugins.clone(),
-            close_plugins.clone(),
-            load_plugins.clone(),
-            unload_plugins.clone(),
-        );
         let toggle_settings = cx
             .command(ToggleSettings, |this, _, cx| {
                 this.set_settings(!this.shell.open, cx);
@@ -732,12 +692,6 @@ impl View for Document {
             .shortcut(Shortcut::primary("o").shift());
         let (layout_quiet, layout_rail, layout_tiled) = self.layout_actions(cx);
         let (find, search_bar) = self.search_bar(cx);
-        let restart_plugins = cx
-            .command(reload::RestartPlugins, |this, _, cx| {
-                this.plugin_operation(plugins::Operation::Restart(None), cx)
-            })
-            .label("Plugins: Restart active plugins")
-            .enabled(!self.plugins_busy() && !self.reloading());
         let reload_window = cx
             .command(reload::ReloadWindow, |this, _, cx| this.reload_window(cx))
             .label("Reload window")
@@ -824,25 +778,9 @@ impl View for Document {
                 toggle_settings.clone(),
                 palette::primary(","),
             ),
-            palette::Entry::new(
-                "velk.plugins.open",
-                toggle_plugins.clone().label("Plugins"),
-                "F4",
-            ),
             palette::Entry::new("velk.editor.hover", hover.clone(), "F1"),
-            palette::Entry::new(
-                "velk.plugins.load",
-                load_plugins.clone().label("Plugins: Load from disk"),
-                "",
-            ),
-            palette::Entry::new(
-                "velk.plugins.unload-all",
-                unload_plugins.clone().label("Plugins: Unload all"),
-                "",
-            ),
             palette::Entry::new("velk.window.close", close_window.clone(), ""),
             palette::Entry::new("velk.app.quit", quit.clone(), palette::primary("Q")),
-            palette::Entry::new("velk.plugins.restart", restart_plugins.clone(), ""),
             palette::Entry::new(
                 "velk.window.reload",
                 reload_window.clone(),
@@ -896,7 +834,6 @@ impl View for Document {
             .on_command(self.window_key_reservation(cx))
             .children(palette)
             .children(self.command_result_modal(cx))
-            .children(plugin_menu)
             .children(settings_menu)
             .children(self.close_confirmation(cx))
             .children(self.reloading().then(|| {
@@ -927,11 +864,8 @@ impl View for Document {
             .on_command(trace_start)
             .on_command(trace_stop)
             .on_command(trace_marker)
-            .on_command(restart_plugins)
             .on_command(reload_window)
             .on_command(toggle_palette)
-            .on_command(load_plugins)
-            .on_command(unload_plugins)
             .on_command(quit)
             .on_command(close_window)
             .on_command(open.clone())
@@ -945,7 +879,6 @@ impl View for Document {
             .on_command(save_all)
             .on_command(save)
             .on_command(hover)
-            .on_command(toggle_plugins)
             .on_command(toggle_settings)
             .on_command(find)
             .child(content);

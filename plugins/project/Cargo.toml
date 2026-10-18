@@ -6,14 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 [lib]
 crate-type = ["rlib"]
-[[example]]
-name = "velk_plugin_quick_open"
-path = "examples/quick_open.rs"
-crate-type = ["cdylib"]
-[[example]]
-name = "velk_plugin_workspace_find"
-path = "examples/workspace_find.rs"
-crate-type = ["cdylib"]
+
+
 [dependencies]
 velk-project-contracts.workspace = true
 velk-plugin-sdk.workspace = true

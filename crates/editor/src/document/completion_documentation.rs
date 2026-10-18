@@ -286,7 +286,7 @@ mod tests {
             id: "test.docs".into(),
             generation: 1,
             version: "1".into(),
-            loaded_path: Default::default(),
+
             description: String::new(),
             metadata: velk_plugin_host::PluginMetadata {
                 name: "Docs".into(),
@@ -294,7 +294,7 @@ mod tests {
             },
             settings_values: Default::default(),
             settings_error: None,
-            resident_code: false,
+
             hooks: vec![],
             dependencies: vec![],
         }];
@@ -342,9 +342,7 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn selection_changes_cancel_lazy_resolution_and_late_results_cannot_replace_current_docs() {
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: the directory has no native images.
-        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let mut harness = Harness::new();
         let path = harness.write_file("docs.rs", "");
         harness
@@ -379,9 +377,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn accepting_during_documentation_resolution_releases_the_slot_without_applying_docs_as_edits()
     {
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: the directory has no native images.
-        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let mut harness = Harness::new();
         let path = harness.write_file("docs.rs", "");
         harness
@@ -443,9 +439,7 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn signature_dismissal_rejects_late_reply_and_refresh_errors_end_the_session() {
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: the directory has no native images.
-        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let mut harness = Harness::new();
         let path = harness.write_file("signature.rs", "call(");
         harness

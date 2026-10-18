@@ -1,6 +1,5 @@
 mod document;
 mod file;
-mod plugins;
 mod recovery;
 mod session;
 mod settings;
@@ -24,6 +23,7 @@ enum Error {
     Usage,
     Open { path: PathBuf, source: io::Error },
     Application(ApplicationError),
+    Services(String),
 }
 
 impl fmt::Display for Error {
@@ -32,6 +32,7 @@ impl fmt::Display for Error {
             Self::Usage => write!(f, "expected at most one file path\nUsage: velk [file]"),
             Self::Open { path, source } => write!(f, "cannot open '{}': {source}", path.display()),
             Self::Application(error) => write!(f, "{error}"),
+            Self::Services(error) => write!(f, "cannot start editor services: {error}"),
         }
     }
 }
@@ -60,14 +61,10 @@ fn run() -> Result<(), Error> {
     let argument = file_argument(std::env::args_os().skip(1))?;
     let settings = settings::Store::load();
     undo::configure(&settings.preferences, None);
-    let plugins = plugins::start();
-    let plugin_client = plugins.as_ref().map(velk_plugin_host::Runtime::client);
+    let plugins = velk_plugin_host::Runtime::start().map_err(Error::Services)?;
+    let plugin_client = Some(plugins.client());
     if let Some(client) = &plugin_client
-        && let Err(error) = client
-            .set_settings(settings.preferences.plugins.clone())
-            .and_then(|_| {
-                client.set_interface_bindings(settings.preferences.interface_bindings.clone())
-            })
+        && let Err(error) = client.set_settings(settings.preferences.plugins.clone())
     {
         tracing::warn!(%error, "cannot configure plugin bootstrap");
     }
@@ -369,7 +366,7 @@ fn run() -> Result<(), Error> {
                     root.update(cx, |this, cx| {
                         this.enable_selected_plugins(
                             client,
-                            Some(session.ui.plugins.clone()),
+                            None,
                             session.plugin_states.clone(),
                             cx,
                         )

@@ -1,4 +1,9 @@
-# Feature backends and plugin dependencies
+# Internal feature backends
+
+These backends and frontends are built into the editor. The `plugins/` directory
+names and internal routing IDs do not describe independently installed code.
+There is no dynamic plugin loader or provider-selection UI. See
+[built-in services](plugin-api.md) for the current direction.
 
 Features have three responsibilities:
 
@@ -55,7 +60,7 @@ host find bar. It can show matches in another panel or drive its own commands.
 
 Declare `plugin.call` in the frontend's capabilities and an interface requirement
 in its manifest. The selected implementation resolves into a dependency edge; see
-[interfaces](plugin-interfaces.md). Exact-ID dependencies remain available when a
+[built-in feature services](plugin-api.md). Exact-ID dependencies remain available when a
 consumer specifically needs one implementation. Store the per-instance `Host` from `attach_host`.
 From an owned background worker:
 
@@ -103,46 +108,3 @@ Native plugins remain trusted in-process code; these checks are lifecycle and
 contract checks, not a sandbox.
 
 ## Dependency graph and install intent
-
-Each `plugins.json` entry records distribution information separately from its
-plugin's capability requirements:
-
-```json
-{
-  "id": "example.file-picker",
-  "library": "artifacts/<digest>/libexample.dylib",
-  "digest": "<digest>",
-  "pack": false,
-  "dependencies": ["velk.project.files"],
-  "install_reason": "explicit"
-}
-```
-
-`dependencies` is a list of exact required IDs. The graph rejects missing,
-duplicate, and cyclic edges before loading code. Dependencies load before their
-consumers. Selecting one frontend loads its dependency closure; explicitly
-disabled dependencies stay disabled and their consumers report a load failure.
-Enabling that dependency explicitly permits it to load again. Restarting a
-backend restarts its active consumers; disabling it stops those consumers first.
-Unrelated plugins keep their generations. Low-level `Manager::unload` refuses a
-provider with active dependents; the runtime uses the coordinated cascade.
-
-`install_reason` is `explicit`, `bundled`, or `dependency`. Omitted values mean
-`explicit`; omitted dependencies mean an empty list. These are normal manifest
-authoring defaults. Enabling/disabling is separate from installation intent and
-does not rewrite it. The current local distribution manifest supplies this
-information; there is no package installer or uninstall command yet.
-
-The plugin manager offers an installed view grouped by those reasons and a
-dependency tree. Shared subgraphs appear once with references on later edges;
-details link to both requirements and consumers. Disabled and failed plugins
-remain visible through the manifest inventory.
-
-`Manifest::orphaned_dependencies` calculates dependency-only entries unreachable
-from an explicit or bundled root. It provides the basis for future automatic
-removal: removing one frontend must retain shared backends and anything manually
-installed. This release does not delete plugins or artifacts automatically.
-Multiple logical plugins may share one native image, so artifact removal must
-also account for every remaining manifest entry using that image.
-
-Internal contract and ABI versions remain 1 during early development.

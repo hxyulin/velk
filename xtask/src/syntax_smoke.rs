@@ -1,29 +1,11 @@
-use super::*;
 use std::sync::Arc;
 use velk_plugin_contracts::syntax::{Edit, Language};
 
 #[allow(unsafe_code)]
-pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let specs = if pack {
-        stage_builtins(output, directory.path())?
-            .into_iter()
-            .filter(|s| s.id == "velk.tree-sitter")
-            .collect()
-    } else {
-        vec![stage_plugin(
-            &output.join("examples"),
-            directory.path(),
-            "velk.tree-sitter",
-            "velk_plugin_tree_sitter",
-        )?]
-    };
-    publish(directory.path(), specs)?;
-    let mut manager = velk_plugin_host::Manager::new(directory.path().into());
+pub(super) fn run() -> Result<(), String> {
+    let mut manager = velk_plugin_host::Manager::new();
     // SAFETY: both artifacts are built locally from the bundled SDK provider.
-    unsafe {
-        manager.load()?;
-    }
+    manager.load()?;
     let provider = manager.syntax_provider("velk.tree-sitter")?;
     assert!(provider.open(Language::new("custom-language")).is_err());
     let mut first = provider.open(Language::new("rust"))?;
@@ -55,9 +37,7 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     // Sessions remain destructible after logical retirement and pin their code.
     drop(first);
     drop(second);
-    unsafe {
-        manager.load()?;
-    }
+    manager.load()?;
     let replacement = manager.syntax_provider("velk.tree-sitter")?;
     assert!(!Arc::ptr_eq(&provider, &replacement));
     let mut session = replacement.open(Language::new("rust"))?;
@@ -76,7 +56,7 @@ pub(super) fn run(output: &Path, pack: bool) -> Result<(), String> {
     );
     drop(session);
     println!(
-        "Syntax service smoke passed: pack={pack}, independent sessions, Unicode captures, incremental edits, cancellation, invalid ranges, retirement, replacement and teardown after unload"
+        "Syntax service smoke passed: independent sessions, Unicode captures, incremental edits, cancellation, invalid ranges, retirement, replacement and teardown after unload"
     );
     Ok(())
 }

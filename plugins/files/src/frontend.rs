@@ -174,10 +174,7 @@ impl Files {
             .as_ref()
             .ok_or("file host unavailable")?
             .request(velk_plugin_sdk::host::Request::FileOperation { operation })?;
-        serde_json::to_vec(&velk_plugin_sdk::commands::Outcome::Message {
-            text: "File operation queued".into(),
-        })
-        .map_err(|e| e.to_string())
+        serde_json::to_vec(&velk_plugin_sdk::commands::Outcome::Accepted).map_err(|e| e.to_string())
     }
     fn request(&mut self, request: Request) -> Result<Reply, String> {
         let input = match request {

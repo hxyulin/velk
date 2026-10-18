@@ -684,7 +684,7 @@ mod tests {
             id: id.into(),
             generation,
             version: "1".into(),
-            loaded_path: Default::default(),
+
             description: String::new(),
             metadata: velk_plugin_host::PluginMetadata {
                 name: id.into(),
@@ -692,7 +692,7 @@ mod tests {
             },
             settings_values: Default::default(),
             settings_error: None,
-            resident_code: false,
+
             hooks: vec![],
             dependencies: vec![],
         }
@@ -718,9 +718,7 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn contributed_untitled_edits_are_undoable_and_retired_sources_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: the directory has no native plugin images.
-        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let mut harness = Harness::new();
         harness
             .request(velk_plugin_contracts::host::Request::NewBuffer { text: "pr".into() })
@@ -780,9 +778,8 @@ mod tests {
     #[allow(unsafe_code)]
     fn replacing_collection_waits_for_the_cancelled_semantic_terminal_event() {
         use velk_semantic::{Event, Input, Service, Status};
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: the directory has no native plugin images.
-        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let mut harness = Harness::new();
         let path = harness.write_file("completion.rs", "pr");
         harness
@@ -847,9 +844,8 @@ mod tests {
     fn continuations_survive_superseded_refreshes_but_not_completion_dismissal_or_generation_changes()
      {
         use velk_semantic::{Event, Input, Service, Status};
-        let directory = tempfile::tempdir().unwrap();
-        // SAFETY: the test directory contains no native code.
-        let host = unsafe { velk_plugin_host::Runtime::start(directory.path().into()) }.unwrap();
+
+        let host = velk_plugin_host::Runtime::start().unwrap();
         let mut harness = Harness::new();
         let path = harness.write_file("continuation.rs", "pr");
         harness
