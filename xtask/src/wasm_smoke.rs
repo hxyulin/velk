@@ -10,6 +10,31 @@ pub fn run(output: &Path) -> Result<(), String> {
     assert!(matches!(&events[..], [velk_plugin_host::Event::Loaded(_)]));
     let generation = manager.plugins().next().unwrap().generation;
     let provider = manager.matching_provider(&spec.id)?;
+    let long_labels: Vec<_> = (0..100)
+        .map(|n| {
+            format!(
+                "print_{n}_{}",
+                "long_nested_identifier_segment_".repeat(100)
+            )
+        })
+        .collect();
+    let long_labels: Vec<_> = long_labels.iter().map(String::as_str).collect();
+    for query in [
+        "print",
+        "pritn",
+        "pront",
+        "compleiton",
+        "Completion",
+        "界接",
+        "zzzz",
+        "",
+        "create_workspace",
+    ] {
+        assert_eq!(
+            provider.scores(query, &long_labels)?,
+            velk_completion_matching::scores(query, &long_labels)
+        );
+    }
     for query in [
         "",
         "print",
@@ -63,7 +88,7 @@ pub fn run(output: &Path) -> Result<(), String> {
         [velk_plugin_host::Event::Rejected { .. }]
     ));
     println!(
-        "Wasm matching smoke passed: native parity, Unicode/typos, maximum input, rejected oversized requests, restart, stale leases, unload, digest verification."
+        "Wasm matching smoke passed: native parity, Unicode/typos, bounded long-label requests, demand-grown buffers, maximum input, rejected oversized requests, restart, stale leases, unload, digest verification."
     );
     Ok(())
 }

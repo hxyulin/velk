@@ -59,8 +59,13 @@ and install reason, plus:
 Native entries default to `{"kind":"native"}`. Wasm metadata is distribution
 metadata; the host rejects declarations of currently unsupported contributions.
 Only the supplied bytes are hashed and compiled. Precompiled native `.cwasm`
-files are not accepted. Each load compiles its module on the lifecycle worker;
-the Wasmtime engine is reused, but persistent compiled-module caching is deferred.
+files are not accepted. Compilation runs on the lifecycle worker. Each manager
+owns one engine and an LRU cache of at most eight compiled modules, keyed by the
+BLAKE3 digest of their bytes. Hits reuse compiled code but create independent
+stores and memories. The engine configuration is fixed for that cache's lifetime;
+cache entries never cross engines. Every load still verifies the artifact digest.
+Compiled modules can remain resident after store retirement until cache eviction
+or manager destruction. Persistent disk caching is not implemented.
 
 ## Authoring a matching provider
 
@@ -137,11 +142,17 @@ the export macro also required a locally imported provider identifier.
 Exports are `memory`, `velk_abi_version() -> u32`,
 `velk_allocate(length: u32) -> u32`, and
 `velk_matching_v1(input: u32, length: u32, output: u32, capacity: u32) -> i32`.
-The allocator is called once for `BUFFER_BYTES`, returning a nonzero offset to a
-contiguous allocation. Input occupies `MAX_INPUT` bytes and output immediately
-follows it. The matching call returns the candidate count, or a negative error.
-The allocation belongs to the instance and is reclaimed when its store drops.
-The guest must not free or relocate the allocation between calls.
+The allocator returns a nonzero offset to at least the requested number of bytes,
+up to `BUFFER_BYTES`. The host initially requests 4 KiB and grows geometrically
+when the encoded request plus result records need more space. Calling the
+allocator again may relocate the allocation; the host validates and replaces its
+offset before accessing it. The SDK retains its largest buffer until retirement.
+For each call, input occupies exactly `length` bytes and output immediately
+follows it, with `capacity` set to the required result byte count. The guest checks
+that both regions are disjoint and belong to its current allocation. The matching
+call returns the candidate count, or a negative error. The allocation belongs to
+the instance and is reclaimed when its store drops; it must not move during a
+matching call.
 
 All integers in memory are little endian. Input contains a u32 query byte length,
 UTF-8 query, u32 candidate count, then u32 byte length and UTF-8 per candidate.
@@ -182,10 +193,15 @@ See [Wasmtime Memory](https://docs.wasmtime.dev/api/wasmtime/struct.Memory.html)
 ## Limits and failure
 
 Every store has a 32 MiB linear-memory limit, at most one memory, one instance,
-one table with at most 4,096 elements, a 512 KiB Wasm stack, and 50 million fuel
-units per matching call. Initialization, including start functions and allocation,
-shares a separate 50 million fuel allowance. Modules are limited to 4 MiB and may
-not import anything. No ambient filesystem, environment, process, or network
+one table with at most 4,096 elements, and a 512 KiB Wasm stack. A matching call
+receives `min(250_000_000, 50_000_000 + 256 * encoded_input_bytes)` fuel units,
+including any buffer growth. The input allowance lets larger valid batches do
+more work while the hard ceiling bounds hostile or unusually expensive requests.
+The entire candidate list is still scored in one invocation, preserving providers
+that use batch context. This policy replaces the original flat 50-million budget;
+it is an explicit runtime change, not a relaxed latency or correctness gate.
+Initialization, including start functions and initial allocation, shares a separate
+50 million fuel allowance. Modules are limited to 4 MiB and may not import anything. No ambient filesystem, environment, process, or network
 access is installed.
 
 Fuel bounds guest computation; it is not a wall-clock deadline or a bound on
@@ -196,6 +212,9 @@ invalid counts, and malformed output permanently drop the store, so later calls
 fail until the plugin is restarted. Valid requests with large batches of long
 labels can exhaust fuel even when they fit the byte/count limits; those limits do
 not promise that every allowed request completes within the execution budget.
+The profiling boundary diagnostic demonstrates this with 1,000 roughly 3 KiB
+labels. Fuel exhaustion still retires the generation; this is not successful
+ranking parity, even when the completion UI can fall back to prefix matching.
 A plugin can still return poor but structurally valid rankings.
 
 Retirement waits for any in-progress fuel-bounded call, then drops its store and

@@ -98,7 +98,7 @@ pub mod __private {
 
     pub use api::VERSION;
 
-    pub struct Buffer(Mutex<Option<Box<[u8]>>>);
+    pub struct Buffer(pub(super) Mutex<Vec<u8>>);
 
     impl Default for Buffer {
         fn default() -> Self {
@@ -108,18 +108,20 @@ pub mod __private {
 
     impl Buffer {
         pub const fn new() -> Self {
-            Self(Mutex::new(None))
+            Self(Mutex::new(Vec::new()))
         }
 
         pub fn allocate(&self, length: u32) -> u32 {
-            if length as usize != api::BUFFER_BYTES {
+            if !(8..=api::BUFFER_BYTES).contains(&(length as usize)) {
                 return 0;
             }
             let Ok(mut allocation) = self.0.try_lock() else {
                 return 0;
             };
-            let buffer = allocation.get_or_insert_with(|| vec![0; api::BUFFER_BYTES].into());
-            buffer.as_mut_ptr() as usize as u32
+            if allocation.len() < length as usize {
+                allocation.resize(length as usize, 0);
+            }
+            allocation.as_mut_ptr() as usize as u32
         }
 
         pub fn rank<P: Matching>(
@@ -132,19 +134,21 @@ pub mod __private {
             let Ok(mut allocation) = self.0.try_lock() else {
                 return api::INVALID;
             };
-            let Some(buffer) = allocation.as_mut() else {
+            if allocation.is_empty() {
                 return api::INVALID;
-            };
+            }
+            let buffer = &mut *allocation;
             let base = buffer.as_ptr() as usize as u32;
             if input != base
-                || base.checked_add(api::MAX_INPUT as u32) != Some(output)
+                || base.checked_add(length) != Some(output)
                 || length as usize > api::MAX_INPUT
                 || capacity as usize > api::MAX_OUTPUT
+                || length as usize + capacity as usize > buffer.len()
             {
                 return api::INVALID;
             }
-            let (input, output) = buffer.split_at_mut(api::MAX_INPUT);
-            dispatch::<P>(&input[..length as usize], &mut output[..capacity as usize])
+            let (input, output) = buffer.split_at_mut(length as usize);
+            dispatch::<P>(input, &mut output[..capacity as usize])
         }
     }
 }
@@ -226,6 +230,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reusable_buffer_grows_on_demand_and_accepts_only_owned_disjoint_regions() {
+        let buffer = __private::Buffer::new();
+        let input = request();
+        let length = input.len();
+        let base = buffer.allocate((length + 120) as u32);
+        {
+            let mut allocation = buffer.0.lock().unwrap();
+            assert_eq!(allocation.len(), length + 120);
+            allocation[..length].copy_from_slice(&input);
+        }
+        assert_eq!(
+            buffer.rank::<Lengths>(base, length as u32, base + length as u32, 120),
+            3
+        );
+        assert_eq!(
+            buffer.rank::<Lengths>(base, length as u32, base, 120),
+            api::INVALID
+        );
+        assert_eq!(
+            buffer.rank::<Lengths>(base, length as u32, base + length as u32, 121),
+            api::INVALID
+        );
+        assert_eq!(buffer.allocate((api::BUFFER_BYTES + 1) as u32), 0);
+        buffer.allocate(4096);
+        assert_eq!(buffer.0.lock().unwrap().len(), 4096);
+        buffer.allocate(8);
+        assert_eq!(buffer.0.lock().unwrap().len(), 4096);
+    }
     #[test]
     fn owned_buffer_rejects_unallocated_overlapping_and_foreign_regions() {
         let buffer = __private::Buffer::new();

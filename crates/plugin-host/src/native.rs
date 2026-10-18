@@ -376,7 +376,7 @@ pub struct Manager {
     directory: PathBuf,
     plugins: BTreeMap<String, Generation>,
     wasm_plugins: BTreeMap<String, WasmGeneration>,
-    wasm_engine: Option<wasmtime::Engine>,
+    wasm_engine: Option<crate::wasm::Runtime>,
     next_generation: u64,
     blocked: BTreeSet<String>,
     excluded: BTreeSet<String>,

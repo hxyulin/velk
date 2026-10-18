@@ -50,12 +50,14 @@ have a higher slowdown ratio than the pooled distribution suggests.
   independent process trials with each process's own pre-load RSS subtracted.
 - First load p95 at most 250 milliseconds; additional load p95 at most 50
   milliseconds. A fresh engine compiles on first load; later loads reuse the
-  engine and compile another module. These are warm-filesystem timings, not
+  engine and reuse the compiled module for identical bytes. Different module bytes
+  still require compilation; this experiment measures repeated instances of one
+  implementation, not cold loading ten distinct plugins. These are warm-filesystem timings, not
   cold-disk measurements or pure instantiation timings.
 - Exact score parity for every query in each normal corpus. Every one of the
   nine bounded long-label stress queries must return correct scores without
-  trapping. Missing stress data is an error. The production 50-million-fuel
-  limit remains enabled. Current valid long-label requests can fail this check;
+  trapping. Missing stress data is an error. The production bounded fuel policy remains enabled: 50 million plus 256
+  units per encoded input byte, capped at 250 million for the entire call. Any valid long-label request that traps fails this check;
   that failure must remain visible before adoption.
 
 The timing loop has 3 trials, 100 warmup rounds per workload and rotating mode
@@ -88,3 +90,19 @@ This is a single-service, single-machine experiment. It does not measure UI
 scheduling, provider contention, asynchronous imports, large document snapshots,
 LSP work or other plugin feature surfaces. Passing it would justify this matching
 provider, not migrating every plugin automatically.
+
+## Larger boundary diagnostic
+
+After building, run the worker directly to compare 100 and 1,000 roughly 3 KiB
+labels, with a fresh Wasm generation per query:
+
+```sh
+target/wasm-profile/release/velk-wasm-profile boundaries target/wasm-profile/release/libvelk_matching_native_fixture.dylib target/wasm32-unknown-unknown/release/velk_plugin_completion_wasm.wasm > target/wasm-profile/boundaries.jsonl
+```
+
+Use `.so` on Linux and adjust paths for `--target-dir`. This reports parity,
+errors, and first-call times, including allocation growth, rather than warm timing
+distributions. It is an additional diagnostic, not a retroactive change to the
+frozen gate's 100-label long-input workload. The 1,000-label case currently hits
+the hard fuel ceiling for most queries. A gate pass does not establish support
+for all inputs within the transport byte/count limits.

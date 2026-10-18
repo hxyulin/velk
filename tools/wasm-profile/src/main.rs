@@ -194,6 +194,30 @@ fn main() {
     load(&mut w, "velk.matching.wasm0");
     let native = n.manager.matching_provider(native_id(&native)).unwrap();
     let wasm = w.manager.matching_provider("velk.matching.wasm0").unwrap();
+    if command == "boundaries" {
+        for count in [100, 1000] {
+            let input = labels(count, true);
+            let refs: Vec<_> = input.iter().map(String::as_str).collect();
+            for query in QUERIES {
+                unsafe { w.manager.restart(Some("velk.matching.wasm0")) }.unwrap();
+                let provider = w.manager.matching_provider("velk.matching.wasm0").unwrap();
+                let start = Instant::now();
+                let expected = native.scores(query, &refs).unwrap();
+                let native_ns = start.elapsed().as_nanos() as u64;
+                let start = Instant::now();
+                let result = provider.scores(query, &refs);
+                let wasm_ns = start.elapsed().as_nanos() as u64;
+                let (ok, error) = match result {
+                    Ok(scores) => (scores == expected, None),
+                    Err(error) => (false, Some(error)),
+                };
+                emit(
+                    json!({"kind":"boundary", "count":count, "query":query, "native_ns":native_ns, "wasm_ns":wasm_ns, "ok":ok, "error":error}),
+                );
+            }
+        }
+        return;
+    }
     let mut measurements = Vec::new();
     let corpus: Vec<String> = serde_json::from_slice(&std::fs::read(&args[4]).unwrap()).unwrap();
     let workloads = [

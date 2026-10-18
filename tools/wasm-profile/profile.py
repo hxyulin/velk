@@ -383,7 +383,7 @@ def main():
         "limits": [
             "RSS is ps resident memory, baseline-subtracted per isolated process; allocator/page-cache noise remains",
             "first-load includes fresh engine and compile with warm filesystem, not a cold OS cache",
-            "additional Wasm loads reuse engine but recompile each module; no compiled module cache",
+            "additional Wasm loads reuse an engine-scoped compiled-module cache for identical bytes; distinct implementations still compile",
             "native instances use independent Managers because native metadata fixes ID; Wasm instances share one Manager/engine as production",
             "host executable includes Wasmtime and other host services; incremental Wasmtime executable size is unavailable without a no-runtime build",
             "single machine synthetic matching service; not evidence all plugin services fit Wasm",
