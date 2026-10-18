@@ -36,7 +36,8 @@ language services, Markdown, indentation, autopairs, and a terminal.
 
 Optional [Wasm matching](docs/wasm-plugins.md) runs the shared ranking algorithm in
 Wasmtime with fuel and memory limits. Build with `cargo xtask run --release --wasm -- path/to/file.rs`
-and choose `velk.completion.wasm` in Plugins > Interfaces.
+and choose `velk.completion.wasm` in Plugins > Interfaces. Migration remains subject
+to the [performance and memory adoption gate](docs/wasm-adoption.md).
 
 ## Previews
 

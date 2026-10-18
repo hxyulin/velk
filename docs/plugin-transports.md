@@ -6,6 +6,8 @@ and owned/bounded message data. Internal versions remain 1 during development.
 The first bounded Wasmtime adapter is implemented for completion matching; see
 [Wasm plugins](wasm-plugins.md) for building, ABI, memory behavior, and limits.
 This document records the broader transport direction and remaining experiments.
+The [Wasm adoption gate](wasm-adoption.md) defines measurable acceptance criteria
+before migrating a provider.
 
 ## Native options
 
