@@ -15,6 +15,9 @@ mod wasm;
 pub use graph::{DependencyRow, InstallReason};
 pub use native::{HookDescriptor, HookHandle, Manager, PluginInfo};
 pub use services::HostRequest;
+pub use wasm::{
+    CacheStats as WasmCacheStats, default_cache_directory as default_wasm_cache_directory,
+};
 
 /// The bundled default; callers may select any compatible loaded provider.
 pub const DEFAULT_MARKDOWN_PROVIDER: &str = "velk.markdown";

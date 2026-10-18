@@ -65,7 +65,41 @@ BLAKE3 digest of their bytes. Hits reuse compiled code but create independent
 stores and memories. The engine configuration is fixed for that cache's lifetime;
 cache entries never cross engines. Every load still verifies the artifact digest.
 Compiled modules can remain resident after store retirement until cache eviction
-or manager destruction. Persistent disk caching is not implemented.
+or manager destruction.
+
+Wasmtime's persistent compilation cache is enabled by default in Velk's per-user
+OS cache directory (`~/Library/Caches/velk/wasm` on macOS). Its keys account for
+module bytes, compiler/runtime version, target and relevant engine settings, so
+incompatible entries are not reused. Missing, unreadable or corrupt cache entries
+fall back to compilation. Cache configuration failures disable persistence without
+preventing plugin loading; individual write failures leave compilation usable. The disk cache has soft limits of 256 MiB and
+2,048 files, maintained asynchronously by Wasmtime.
+
+The cache contains locally generated native code and must stay in an app-owned,
+trusted directory. Plugin manifests still reference `.wasm`, never cached native
+artifacts; the host verifies their digest on every preparation and load. The
+compiled-code disk cache does not share guest memory or mutable plugin state.
+
+### Prepare compilation before activation
+
+`build`, `plugins` and `run` with `--wasm` prepare staged Wasm artifacts before
+launching the app. To prepare an already staged directory separately:
+
+```sh
+cargo xtask prepare-wasm
+cargo xtask prepare-wasm --release
+```
+
+The API is `Manager::prepare_wasm()`. It verifies all Wasm artifacts, skips native
+libraries, deduplicates identical digests and compiles without instantiating guests
+or executing their start functions. It reports the distinct artifact count;
+`wasm_cache_stats()` exposes disk-cache hits and misses. The first preparation
+still pays compilation cost; later processes load the cached code.
+
+Embedders and benchmarks can call `set_wasm_cache_directory(Some(absolute_path))`
+before initialization to select an app-owned directory, or pass `None` to disable
+persistence. Guest stores and the eight-entry in-memory module cache remain
+independent of this setting. Cache deletion affects future loads, not live stores.
 
 ## Authoring a matching provider
 

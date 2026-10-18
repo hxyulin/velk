@@ -377,6 +377,7 @@ pub struct Manager {
     plugins: BTreeMap<String, Generation>,
     wasm_plugins: BTreeMap<String, WasmGeneration>,
     wasm_engine: Option<crate::wasm::Runtime>,
+    wasm_cache_directory: Option<PathBuf>,
     next_generation: u64,
     blocked: BTreeSet<String>,
     excluded: BTreeSet<String>,
@@ -396,6 +397,7 @@ impl Manager {
             plugins: BTreeMap::new(),
             wasm_plugins: BTreeMap::new(),
             wasm_engine: None,
+            wasm_cache_directory: crate::default_wasm_cache_directory(),
             next_generation: 1,
             blocked: BTreeSet::new(),
             excluded: BTreeSet::new(),
@@ -406,6 +408,49 @@ impl Manager {
             interface_bindings: Default::default(),
             interface_routes: Default::default(),
         }
+    }
+    /// Select an app-owned compilation cache before preparing or loading Wasm.
+    /// `None` disables persistence; existing cached files are never removed here.
+    pub fn set_wasm_cache_directory(&mut self, directory: Option<PathBuf>) -> Result<(), String> {
+        if self.wasm_engine.is_some() {
+            return Err(
+                "Wasm compilation cache must be configured before runtime initialization".into(),
+            );
+        }
+        if directory.as_ref().is_some_and(|path| !path.is_absolute()) {
+            return Err("Wasm compilation cache directory must be absolute".into());
+        }
+        self.wasm_cache_directory = directory;
+        Ok(())
+    }
+
+    pub fn wasm_cache_stats(&self) -> crate::WasmCacheStats {
+        self.wasm_engine
+            .as_ref()
+            .map_or_else(Default::default, |runtime| runtime.cache_stats())
+    }
+
+    /// Verify and compile distinct Wasm artifacts without instantiating guest code.
+    /// Native artifacts are skipped. Returns the number of distinct Wasm digests.
+    pub fn prepare_wasm(&mut self) -> Result<usize, String> {
+        let mut digests = BTreeSet::new();
+        for spec in self.manifest()?.plugins {
+            if !matches!(&spec.runtime, crate::PluginRuntime::WasmMatching { .. }) {
+                continue;
+            }
+            let bytes = self.verified_wasm_bytes(&spec)?;
+            if digests.insert(spec.digest) {
+                self.wasm_runtime()?.prepare(&bytes)?;
+            }
+        }
+        Ok(digests.len())
+    }
+
+    fn wasm_runtime(&mut self) -> Result<&crate::wasm::Runtime, String> {
+        if self.wasm_engine.is_none() {
+            self.wasm_engine = Some(crate::wasm::engine(self.wasm_cache_directory.as_deref())?);
+        }
+        Ok(self.wasm_engine.as_ref().unwrap())
     }
     fn manifest(&self) -> Result<crate::Manifest, String> {
         read_manifest(&self.directory)?.resolve_interfaces(&self.interface_bindings)
@@ -709,6 +754,27 @@ impl Manager {
         metadata: velk_plugin_contracts::PluginMetadata,
         version: String,
     ) -> Result<WasmGeneration, String> {
+        let bytes = self.verified_wasm_bytes(spec)?;
+        let matching = Arc::new(crate::wasm::Matching::load(self.wasm_runtime()?, &bytes)?);
+        Ok(WasmGeneration {
+            info: PluginInfo {
+                id: spec.id.clone(),
+                version,
+                generation,
+                loaded_path: self.directory.join(&spec.library),
+                description: metadata.name.clone(),
+                metadata,
+                settings_values: Default::default(),
+                settings_error: None,
+                resident_code: false,
+                hooks: vec![velk_plugin_contracts::commands::completion::matching::HOOK.into()],
+                dependencies: spec.dependencies.clone(),
+            },
+            matching,
+        })
+    }
+
+    fn verified_wasm_bytes(&self, spec: &PluginSpec) -> Result<Vec<u8>, String> {
         use std::io::Read;
         let path = self.directory.join(&spec.library);
         let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
@@ -722,29 +788,7 @@ impl Manager {
         if blake3::hash(&bytes).to_hex().as_str() != spec.digest {
             return Err("Wasm module digest mismatch".into());
         }
-        if self.wasm_engine.is_none() {
-            self.wasm_engine = Some(crate::wasm::engine()?);
-        }
-        let matching = Arc::new(crate::wasm::Matching::load(
-            self.wasm_engine.as_ref().unwrap(),
-            &bytes,
-        )?);
-        Ok(WasmGeneration {
-            info: PluginInfo {
-                id: spec.id.clone(),
-                version,
-                generation,
-                loaded_path: path,
-                description: metadata.name.clone(),
-                metadata,
-                settings_values: Default::default(),
-                settings_error: None,
-                resident_code: false,
-                hooks: vec![velk_plugin_contracts::commands::completion::matching::HOOK.into()],
-                dependencies: spec.dependencies.clone(),
-            },
-            matching,
-        })
+        Ok(bytes)
     }
     /// Recreate active instances as one worker operation. Inactive plugins stay
     /// inactive. Optional named hooks transfer owned bytes, never native handles.

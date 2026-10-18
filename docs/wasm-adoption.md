@@ -106,3 +106,21 @@ all maximum-size requests or arbitrary plugin workloads. Native remains the
 default and Wasm remains opt-in. Broader adoption requires an execution strategy
 for expensive work that preserves responsiveness, rather than just a larger
 synchronous fuel allowance. See the tool's boundary command for reproduction.
+
+
+## Persistent preparation
+
+The host now enables Wasmtime's compilation cache in an app-owned per-user cache
+and provides `prepare_wasm()` to compile verified artifacts without starting
+guests. Staging commands with `--wasm` invoke it automatically; an explicit
+`cargo xtask prepare-wasm [--release]` prepares an existing manifest. Runtime and
+configuration changes invalidate incompatible compiled entries automatically.
+
+The scaling runner compares an uncached control with fresh processes loading a
+prepared disk cache, checks hit/miss counters, and records preparation CPU/time
+separately. This moves compilation out of launch rather than eliminating its
+cost. Cached launch also avoids touching much of the compiler working set, but
+per-module compiled code and per-instance state still consume resident memory.
+These optimizations do not change matching semantics or the hard execution limit
+that the larger boundary workload can still exceed. See the profiling tool's
+`--cache warm`, `cold` and `off` modes for reproduction.

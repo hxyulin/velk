@@ -41,6 +41,9 @@ and any checks that could not run.
   host, SDK, bundled plugins, and relevant docs together when a contract changes.
 - Native plugins are trusted in-process code. Capability declarations currently
   describe requirements; they do not enforce permissions or provide isolation.
+- Keep independent Wasm plugins' mutable memories private. Share compiled code
+  and host-owned resources through checked interfaces; do not introduce a shared
+  writable heap across independent plugins to avoid copies.
 
 ## Coding conventions
 

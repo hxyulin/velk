@@ -9,6 +9,35 @@ This document records the broader transport direction and remaining experiments.
 The [Wasm adoption gate](wasm-adoption.md) defines measurable acceptance criteria
 before migrating a provider.
 
+## Boundary and isolation policy
+
+Replaceability does not require dynamic loading. Components built with the editor
+can use linked Rust implementations, while independently installed extensions can
+use a runtime boundary. Prefer Wasm for third-party extensions as their required
+interfaces become available; today only matching has a Wasm adapter. Native
+libraries remain a trusted desktop option, not a fallback that preserves Wasm
+isolation. Supporting both transports does not require publishing two builds of
+every plugin.
+
+Keep independent Wasm plugins' mutable memories private. Share compiled code and
+host-owned resources through checked interfaces, with explicit ownership, grants,
+quotas and lifetimes. Sharing a writable heap joins the participating modules'
+memory trust boundary. Helpers within one plugin may share its memory; that does
+not justify exposing it to unrelated plugins. Generated bindings and resource
+handles do not themselves guarantee zero-copy access or authorization.
+
+Use upstream Wasmtime embedding APIs before considering runtime changes. Vendoring
+unmodified sources is a build/distribution choice; fork only for a demonstrated
+requirement that cannot be met through supported APIs. Measure duplicated guest
+code before introducing a shared allocator or runtime library.
+
+The browser is a separate host implementation. It cannot load desktop native
+libraries; linked Rust components would need a browser-compatible build, and Wasm
+guests still need browser implementations of their imports. Native process and
+filesystem services may require a separately authorized remote backend. Neither
+browser support nor enforcement of these future host-service grants is provided
+by the current matching-only adapter.
+
 ## Native options
 
 - **Linked Rust adapters:** ordinary Rust traits are suitable for components built

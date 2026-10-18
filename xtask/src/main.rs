@@ -375,6 +375,10 @@ fn run() -> Result<(), String> {
         }
         return checked(command.args(args));
     }
+    if action == "prepare-wasm" && args.is_empty() {
+        let (_, output) = paths(release)?;
+        return prepare_wasm(&output.join("plugins"));
+    }
     if action == "test-diagnostics" && args.is_empty() && !release {
         let (root, output) = paths(false)?;
         return diagnostics_smoke::run(&root, &output);
@@ -408,7 +412,7 @@ fn run() -> Result<(), String> {
     }
     if action == "help" {
         println!(
-            "cargo xtask setup-terminal\ncargo xtask test\ncargo xtask test-headless [filter]\ncargo xtask build [--release]\ncargo xtask plugins [--release] [--wasm]\ncargo xtask run [--release] [--wasm] -- [file]\ncargo xtask test-plugins [--release] [--wasm]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
+            "cargo xtask setup-terminal\ncargo xtask test\ncargo xtask test-headless [filter]\ncargo xtask build [--release]\ncargo xtask plugins [--release] [--wasm]\ncargo xtask run [--release] [--wasm] -- [file]\ncargo xtask test-plugins [--release] [--wasm]\ncargo xtask prepare-wasm [--release]\ncargo xtask profile -- <file>\ncargo xtask trace-summary <capture.trace.json>\ncargo xtask test-diagnostics"
         );
         return Ok(());
     }
@@ -442,6 +446,9 @@ fn run() -> Result<(), String> {
         plugins.push(stage_wasm(&output, &directory)?);
     }
     publish(&directory, plugins)?;
+    if wasm {
+        prepare_wasm(&directory)?;
+    }
     println!("Built plugins: {}", directory.display());
     if action == "run" {
         checked(
@@ -450,6 +457,21 @@ fn run() -> Result<(), String> {
                 .args(&args),
         )?;
     }
+    Ok(())
+}
+
+fn prepare_wasm(directory: &Path) -> Result<(), String> {
+    let mut manager = velk_plugin_host::Manager::new(directory.to_path_buf());
+    let count = manager.prepare_wasm()?;
+    let stats = manager.wasm_cache_stats();
+    if count > 0 && !stats.enabled {
+        println!("Prepared {count} Wasm modules without persistent caching");
+        return Ok(());
+    }
+    println!(
+        "Prepared {count} Wasm modules: {} disk cache hits, {} newly cached compilations",
+        stats.hits, stats.misses
+    );
     Ok(())
 }
 #[allow(unsafe_code)]

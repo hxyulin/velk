@@ -4,7 +4,10 @@ use velk_plugin_sdk::{Plugin, Registrar};
 pub struct Matching;
 
 impl Plugin for Matching {
-    const ID: &'static str = "velk.matching.profile";
+    const ID: &'static str = match option_env!("VELK_PROFILE_PLUGIN_ID") {
+        Some(id) => id,
+        None => "velk.matching.profile",
+    };
     const VERSION: &'static str = "0.0.0-dev";
 
     fn register(registrar: &mut Registrar<Self>) -> Result<(), String> {

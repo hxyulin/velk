@@ -6,6 +6,7 @@ use std::{
     time::Instant,
 };
 use velk_plugin_host::{Manager, Manifest, PluginMetadata, PluginRuntime, PluginSpec};
+mod scaling;
 const QUERIES: [&str; 9] = [
     "print",
     "pritn",
@@ -115,8 +116,10 @@ fn setup(source: &Path, wasm: bool, count: usize) -> Loaded {
         serde_json::to_vec(&Manifest { plugins }).unwrap(),
     )
     .unwrap();
+    let mut manager = Manager::new(directory.path().into());
+    manager.set_wasm_cache_directory(None).unwrap();
     Loaded {
-        manager: Manager::new(directory.path().into()),
+        manager,
         _directory: directory,
     }
 }
@@ -134,6 +137,10 @@ fn load(state: &mut Loaded, id: &str) -> u64 {
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     let command = &args[1];
+    if command == "scaling" {
+        scaling::run(&args[2..]);
+        return;
+    }
     let native = PathBuf::from(&args[2]);
     let wasm = PathBuf::from(&args[3]);
     if command == "lifecycle" {

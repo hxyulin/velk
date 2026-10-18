@@ -106,3 +106,72 @@ distributions. It is an additional diagnostic, not a retroactive change to the
 frozen gate's 100-label long-input workload. The 1,000-label case currently hits
 the hard fuel ceiling for most queries. A gate pass does not establish support
 for all inputs within the transport byte/count limits.
+
+## Plugin and module count scaling
+
+Run the controlled scaling experiment with:
+
+```sh
+python3 tools/wasm-profile/scaling.py
+```
+
+`--target-dir` can reuse the release build directory. The runner prepares fifty
+native fixtures with unique plugin IDs and fifty Wasm variants, then restores the
+ordinary native fixture. Builds finish before measurement begins. Raw samples,
+artifact hashes, worker hash, hardware metadata and summaries go under ignored
+`target/wasm-profile/scaling/`. `--skip-build` reuses those prepared artifacts.
+
+The default experiment uses 1, 5, 10, 25 and 50 providers, five fresh processes per
+case, alternating count order and rotating transport order. All cases use one
+Manager. The three series are:
+
+- Native: independently built matching-only libraries with unique plugin IDs.
+- Wasm shared: independent stores and memories using one compiled module.
+- Wasm distinct: independent stores using different module digests. Each variant
+  adds a unique custom section to the same guest, forcing Velk's digest cache to
+  miss while preserving equivalent matching work and compilation complexity.
+
+These are controlled equivalent implementations, not fifty different feature
+plugins. Actual plugins can have different code sizes, state and host-service
+requirements. The engine cache holds eight compiled modules; live stores retain
+whatever code they still need. Persistent caching is controlled explicitly by the runner and disabled by default
+for an uncached baseline, independently of the editor's enabled-by-default cache.
+
+RSS is sampled before load, after load and after warming every provider. The
+baseline includes staged fixtures, the Manager, corpus and reference outputs;
+report both total worker RSS and the incremental warmed RSS. Virtual reservations
+and the operating system's file cache are not counted as resident process memory.
+
+Process CPU time is user plus system time from `getrusage(RUSAGE_SELF)`, including
+all threads. Load CPU and wall time include runtime compilation. A 200 ms idle
+interval is followed by 1,000 calls to one provider, then fifty sweeps invoking
+every provider sequentially. Each timed request uses 1,000 short labels and the
+fixed typo query `pritn`; every provider first passes full parity checks across
+nine queries. CPU measurements include driver work and result destruction;
+individual-call wall timers stop before result destruction. The two active
+workloads have different lengths and fixed order, so compare each series within
+a workload rather than assuming their per-call costs are interchangeable.
+
+The unloaded snapshot retains retired provider handles to check stale-call
+rejection; it is diagnostic, not proof of a leak or complete library reclamation.
+No full editor UI, parallel provider execution, external processes or real-world
+feature mix is included. Frequency changes, scheduler behavior and allocator
+retention remain sources of variation; idle CPU includes the observer's overhead.
+
+### Persistent compilation cache comparison
+
+Use `--cache warm` to prepare all variants in a separate process before timing
+fresh-process loads. Preparation time and CPU are recorded in `preparation.json`;
+every measured Wasm load must report disk hits and zero misses. `--cache cold`
+uses a separate empty directory per worker, while `--cache off` disables disk
+caching entirely. Cache counters are included in raw records and summaries.
+
+```sh
+python3 tools/wasm-profile/scaling.py --cache warm --output target/wasm-profile/scaling-cached
+```
+
+Use a fresh output directory for a fresh preparation-cost measurement. Compiled
+cache files are generated beneath that output directory, never the user's app
+cache. These comparisons distinguish moving compilation to installation/staging
+from eliminating its CPU cost. Legacy `profile.py` measurements explicitly disable
+persistent caching to retain their uncached first-load semantics.

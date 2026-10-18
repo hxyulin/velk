@@ -1,9 +1,14 @@
 //! Wasmtime transport for the bounded, synchronous matching contract.
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use velk_plugin_contracts::commands::completion::matching::{Policy, Score};
 use velk_plugin_wasm_api as api;
 use wasmtime::{
-    Config, Engine, Instance, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
+    Cache, CacheConfig, Config, Engine, Instance, Memory, Module, Store, StoreLimits,
+    StoreLimitsBuilder, TypedFunc,
 };
 pub(crate) const MAX_MODULE_BYTES: usize = 4 * 1024 * 1024;
 const FUEL: u64 = 50_000_000;
@@ -21,18 +26,59 @@ const MAX_CACHED_MODULES: usize = 8;
 pub(crate) struct Runtime {
     engine: Engine,
     modules: Mutex<VecDeque<(blake3::Hash, Module)>>,
+    cache: Option<Cache>,
 }
 
-pub(crate) fn engine() -> Result<Runtime, String> {
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct CacheStats {
+    pub enabled: bool,
+    pub hits: usize,
+    pub misses: usize,
+}
+
+pub fn default_cache_directory() -> Option<PathBuf> {
+    directories_next::ProjectDirs::from("", "", "velk")
+        .map(|directories| directories.cache_dir().join("wasm"))
+}
+
+pub(crate) fn engine(directory: Option<&Path>) -> Result<Runtime, String> {
     let mut config = Config::new();
     config.consume_fuel(true).max_wasm_stack(512 * 1024);
+    let cache = directory.and_then(|directory| {
+        let mut cache = CacheConfig::new();
+        cache.with_directory(directory)
+            .with_files_total_size_soft_limit(256 * 1024 * 1024)
+            .with_file_count_soft_limit(2048);
+        match Cache::new(cache) {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                tracing::warn!(%error, "Wasm compilation cache unavailable; compiling without persistence");
+                None
+            }
+        }
+    });
+    config.cache(cache.clone());
     Ok(Runtime {
         engine: Engine::new(&config).map_err(|e| e.to_string())?,
         modules: Mutex::new(VecDeque::new()),
+        cache,
     })
 }
 
 impl Runtime {
+    pub(crate) fn cache_stats(&self) -> CacheStats {
+        self.cache
+            .as_ref()
+            .map_or_else(CacheStats::default, |cache| CacheStats {
+                enabled: true,
+                hits: cache.cache_hits(),
+                misses: cache.cache_misses(),
+            })
+    }
+
+    pub(crate) fn prepare(&self, bytes: &[u8]) -> Result<(), String> {
+        self.module(bytes).map(|_| ())
+    }
     fn module(&self, bytes: &[u8]) -> Result<Module, String> {
         if bytes.len() > MAX_MODULE_BYTES {
             return Err("Wasm module exceeds 4 MiB".into());
@@ -218,7 +264,128 @@ mod tests {
         .unwrap()
     }
     fn provider(body: &str) -> Matching {
-        Matching::load(&engine().unwrap(), &module(body)).unwrap()
+        Matching::load(&engine(None).unwrap(), &module(body)).unwrap()
+    }
+    #[test]
+    fn disk_cache_survives_new_engines_and_separates_compiler_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = module("i32.const 0");
+        let first = engine(Some(directory.path())).unwrap();
+        first.prepare(&bytes).unwrap();
+        assert_eq!(first.cache_stats().misses, 1);
+        drop(first);
+        let second = engine(Some(directory.path())).unwrap();
+        second.prepare(&bytes).unwrap();
+        assert_eq!(second.cache_stats().hits, 1);
+        assert_eq!(second.cache_stats().misses, 0);
+
+        let mut cache_config = CacheConfig::new();
+        cache_config.with_directory(directory.path());
+        let cache = Cache::new(cache_config).unwrap();
+        let mut config = Config::new();
+        config
+            .consume_fuel(false)
+            .max_wasm_stack(512 * 1024)
+            .cache(Some(cache.clone()));
+        let different = Engine::new(&config).unwrap();
+        Module::new(&different, &bytes).unwrap();
+        assert_eq!(cache.cache_hits(), 0);
+        assert_eq!(cache.cache_misses(), 1);
+    }
+
+    #[test]
+    fn corrupt_and_unavailable_disk_caches_fall_back_to_compilation() {
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = module("i32.const 0");
+        let first = engine(Some(directory.path())).unwrap();
+        first.prepare(&bytes).unwrap();
+        drop(first);
+        let compiler = std::fs::read_dir(directory.path().join("modules"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let entry = std::fs::read_dir(compiler)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_file() && path.extension().is_none())
+            .unwrap();
+        std::fs::write(entry, b"invalid compressed cache entry").unwrap();
+        let repaired = engine(Some(directory.path())).unwrap();
+        repaired.prepare(&bytes).unwrap();
+        assert_eq!(repaired.cache_stats().misses, 1);
+        drop(repaired);
+        let next = engine(Some(directory.path())).unwrap();
+        next.prepare(&bytes).unwrap();
+        assert_eq!(next.cache_stats().hits, 1);
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let unavailable = engine(Some(file.path())).unwrap();
+        unavailable.prepare(&bytes).unwrap();
+        assert!(!unavailable.cache_stats().enabled);
+    }
+
+    #[test]
+    fn preparation_checks_digests_deduplicates_and_does_not_run_start_functions() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let bytes = wat::parse_str(
+            r#"(module
+            (func $start (loop $spin br $spin)) (start $start))"#,
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("matching.wasm"), &bytes).unwrap();
+        let spec = crate::PluginSpec {
+            id: "test.matching".into(),
+            library: "matching.wasm".into(),
+            digest: blake3::hash(&bytes).to_hex().to_string(),
+            runtime: crate::PluginRuntime::WasmMatching {
+                metadata: crate::PluginMetadata {
+                    name: "Test".into(),
+                    ..Default::default()
+                },
+                version: "0.0.0-dev".into(),
+            },
+            pack: false,
+            dependencies: vec![],
+            install_reason: Default::default(),
+            interfaces: Default::default(),
+        };
+        let mut second = spec.clone();
+        second.id = "test.second".into();
+        let mut native = spec.clone();
+        native.id = "test.native".into();
+        native.library = "absent.dylib".into();
+        native.runtime = crate::PluginRuntime::Native;
+        std::fs::write(
+            directory.path().join(crate::MANIFEST),
+            serde_json::to_vec(&crate::Manifest {
+                plugins: vec![spec, second, native],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut manager = crate::Manager::new(directory.path().into());
+        assert!(
+            manager
+                .set_wasm_cache_directory(Some("relative".into()))
+                .is_err()
+        );
+        manager
+            .set_wasm_cache_directory(Some(cache.path().into()))
+            .unwrap();
+        assert_eq!(manager.prepare_wasm().unwrap(), 1);
+        assert_eq!(manager.plugins().count(), 0);
+        assert_eq!(manager.wasm_cache_stats().misses, 1);
+        assert!(manager.set_wasm_cache_directory(None).is_err());
+        std::fs::write(directory.path().join("matching.wasm"), b"changed artifact").unwrap();
+        assert!(
+            manager
+                .prepare_wasm()
+                .unwrap_err()
+                .contains("digest mismatch")
+        );
     }
     #[test]
     fn buffers_start_small_grow_only_when_needed_and_reject_invalid_reallocation() {
@@ -253,7 +420,7 @@ mod tests {
             (func (export "velk_matching_v1") (param i32 i32 i32 i32) (result i32) i32.const 0))"#,
         )
         .unwrap();
-        let provider = Matching::load(&engine().unwrap(), &bytes).unwrap();
+        let provider = Matching::load(&engine(None).unwrap(), &bytes).unwrap();
         assert!(
             provider
                 .scores(&"x".repeat(api::MAX_TEXT), &[])
@@ -280,7 +447,7 @@ mod tests {
     }
     #[test]
     fn compiled_modules_are_reused_bounded_and_scoped_to_the_runtime() {
-        let runtime = engine().unwrap();
+        let runtime = engine(None).unwrap();
         let bytes = module("i32.const 0");
         let compiled = runtime.module(&bytes).unwrap();
         assert!(Module::same(&compiled, &runtime.module(&bytes).unwrap()));
@@ -298,7 +465,7 @@ mod tests {
         assert_eq!(cache.len(), MAX_CACHED_MODULES);
         assert!(!cache.iter().any(|(key, _)| *key == blake3::hash(&bytes)));
         drop(cache);
-        let separate = engine().unwrap();
+        let separate = engine(None).unwrap();
         assert!(separate.modules.lock().unwrap().is_empty());
         assert!(runtime.module(b"invalid module").is_err());
         assert_eq!(runtime.modules.lock().unwrap().len(), MAX_CACHED_MODULES);
@@ -339,7 +506,7 @@ mod tests {
     }
     #[test]
     fn imports_versions_bad_allocations_start_loops_and_missing_exports_are_rejected() {
-        let engine = engine().unwrap();
+        let engine = engine(None).unwrap();
         let bytes = module("i32.const 0");
         // Different export implementations are compiled from text for each failure.
         for text in [
