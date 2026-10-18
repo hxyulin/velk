@@ -26,9 +26,12 @@ No state migrates between matching instances.
 
 - `crates/plugin-wasm-api` defines the checked buffer representation and limits.
   It has no Wasmtime, native ABI, editor, or feature implementation dependency.
+- `crates/plugin-wasm-sdk` owns safe guest authoring, exports, buffer ownership,
+  and checked score output. The host does not depend on this authoring crate.
 - `plugins/completion/matching` owns the transport-independent default algorithm.
   Both the native completion plugin and the Wasm guest use it.
-- `plugins/completion-wasm` exports the core-Wasm matching functions.
+- `plugins/completion-wasm` implements the safe matching trait and exports it
+  through the SDK.
 - `crates/plugin-host/src/wasm.rs` owns Wasmtime execution and implements the same
   `velk_commands::completion::matching::Policy` used by native providers.
 
@@ -58,6 +61,76 @@ metadata; the host rejects declarations of currently unsupported contributions.
 Only the supplied bytes are hashed and compiled. Precompiled native `.cwasm`
 files are not accepted. Each load compiles its module on the lifecycle worker;
 the Wasmtime engine is reused, but persistent compiled-module caching is deferred.
+
+## Authoring a matching provider
+
+Use a `cdylib` crate with `velk-plugin-wasm-sdk` as a dependency. Implement
+`Matching` and invoke the export macro once, using a crate-qualified provider path:
+
+```rust
+use velk_plugin_wasm_sdk::{InvalidScores, Matching, Request, Scores};
+
+struct PrefixMatching;
+
+impl Matching for PrefixMatching {
+    fn rank(request: Request<'_>, scores: &mut Scores<'_>) -> Result<(), InvalidScores> {
+        for candidate in request.candidates() {
+            let score = candidate.starts_with(request.query).then_some([0; 4]);
+            scores.push(score)?;
+        }
+        Ok(())
+    }
+}
+
+velk_plugin_wasm_sdk::export_matching!(crate::PrefixMatching);
+```
+
+Build with `cargo build --release --target wasm32-unknown-unknown`. Register the
+artifact and its digest with the manifest format above; the bundled xtask stages
+the bundled provider, rather than discovering arbitrary third-party guest crates.
+The SDK supplies all ABI exports and reusable allocation, checks incoming ranges,
+and rejects missing or excessive output scores. Plugin code uses borrowed UTF-8
+and typed scores without raw pointers, offsets, allocation exports, or byte codecs.
+It can use Rust's standard library, subject to the host's no-import restriction;
+APIs requiring filesystem, threads, networking, or operating system services are
+not available. Scores are lexicographically ordered: smaller scores rank first.
+
+For tests, `velk_plugin_wasm_sdk::dispatch::<Provider>(input, output)` runs the
+same checked request/response adapter on native slices. The low-level
+`velk-plugin-wasm-api` crate supplies request encoding and response decoding for
+fixtures. See `plugins/completion-wasm/src/lib.rs` for native algorithm parity
+coverage and run `cargo xtask test-plugins --wasm` for real runtime coverage.
+Native tests do not reproduce fuel, stack, memory, or import restrictions.
+
+This SDK covers matching only. Migrating other plugins requires concrete typed
+service contracts and deliberately granted host imports, including lifetimes and
+cancellation; adding a matching implementation does not provide those services.
+
+### Generated bindings and WIT
+
+The current SDK wraps Velk's custom core-Wasm buffer ABI; it does not generate
+WIT bindings or load Component Model artifacts. WIT describes typed interfaces,
+imports, exports, and resource handles. `wit-bindgen` generates guest traits and
+export glue, while Wasmtime's component bindings generate typed host calls.
+This could replace hand-maintained transport code as additional services emerge.
+See the [official Rust binding tutorial](https://component-model.bytecodealliance.org/language-support/building-a-simple-component/rust.html)
+and [Wasmtime component binding generator](https://docs.wasmtime.dev/api/wasmtime/component/macro.bindgen.html).
+
+Generated bindings still obey the
+[Canonical ABI](https://component-model.bytecodealliance.org/advanced/canonical-abi.html).
+Owned strings and lists can introduce allocations and transfers; code generation
+does not promise zero-copy. Before adopting that transport, compare generated
+bindings with this borrowed adapter using the same workload and resource limits.
+
+An isolated authoring experiment used `wit-bindgen` 0.57.1 with a WIT matching
+interface and the same algorithm crate. Its generated `Guest` implementation
+passed native score-parity tests and compiled for `wasm32-unknown-unknown`. The
+generated API accepted owned `String` and `Vec<String>` values and returned an
+owned score vector. Its release core module was 273,991 bytes, including component
+type metadata; it was not componentized or executed by a component runtime, so
+that number does not measure packaged component size or runtime overhead.
+Native test linking required gating the generated export macro to `wasm32`;
+the export macro also required a locally imported provider identifier.
 
 ## Buffer ABI
 

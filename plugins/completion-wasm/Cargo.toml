@@ -8,7 +8,10 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 [dependencies]
 velk-completion-matching.workspace = true
+velk-plugin-wasm-sdk.workspace = true
+[dev-dependencies]
 velk-plugin-wasm-api.workspace = true
+
 [lints.rust]
 unsafe_code = "deny"
 [lints.clippy]

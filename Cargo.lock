@@ -4640,6 +4640,7 @@ version = "0.0.0-dev"
 dependencies = [
  "velk-completion-matching",
  "velk-plugin-wasm-api",
+ "velk-plugin-wasm-sdk",
 ]
 
 [[package]]
@@ -4851,6 +4852,13 @@ dependencies = [
 [[package]]
 name = "velk-plugin-wasm-api"
 version = "0.0.0-dev"
+
+[[package]]
+name = "velk-plugin-wasm-sdk"
+version = "0.0.0-dev"
+dependencies = [
+ "velk-plugin-wasm-api",
+]
 
 [[package]]
 name = "velk-project-contracts"
